@@ -1,0 +1,131 @@
+name: Device Test APK
+
+# Trusted workflow lives on protected local; manually build an unmerged feat/* branch.
+# Build and signing run in separate jobs. Do not expose release keystore secrets to Gradle.
+on:
+  workflow_dispatch:
+    inputs:
+      feature_branch:
+        description: "Existing feature branch to test, e.g. feat/chat-image-zoom"
+        required: true
+        type: string
+
+run-name: Device QA - ${{ inputs.feature_branch }} - ${{ github.actor }}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: device-test-${{ inputs.feature_branch }}
+  cancel-in-progress: false
+
+jobs:
+  build-unsigned:
+    name: Build branch unsigned Release (no secrets)
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - name: Validate feature branch name
+        shell: bash
+        env:
+          FEATURE_BRANCH: ${{ inputs.feature_branch }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$FEATURE_BRANCH" =~ ^feat/[A-Za-z0-9._/-]+$ ]] || [[ "$FEATURE_BRANCH" == *..* ]]; then
+            echo "::error::Only existing feat/* branches are allowed."
+            exit 1
+          fi
+
+      - name: Checkout requested branch
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.feature_branch }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up canonical Eta build toolchain
+        uses: ./.github/actions/setup-build
+
+      - name: Build an unsigned Release APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual_sha="$(git rev-parse HEAD)"
+          echo "Testing commit: $actual_sha"
+          ./gradlew --no-daemon --no-configuration-cache \
+            "-Peta.buildMetadata=qa-${actual_sha:0:7}" :app:assembleRelease
+
+      - name: Upload unsigned APK for signing
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: unsigned-device-qa
+          path: app/build/outputs/apk/release/Eta-v*.apk
+          if-no-files-found: error
+          retention-days: 1
+
+  sign-test-apk:
+    name: Sign and upload device-test Release APK
+    needs: build-unsigned
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # Deliberately no checkout: do not execute unreviewed branch code with secrets.
+      - name: Set up Android signing tools
+        uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4
+        with:
+          packages: ""
+          log-accepted-android-sdk-licenses: false
+
+      - name: Download unsigned APK from this run
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: unsigned-device-qa
+          path: ${{ runner.temp }}/unsigned
+
+      - name: Zipalign and sign with existing release keystore
+        shell: bash
+        env:
+          ETA_RELEASE_KEYSTORE_BASE64: ${{ secrets.ETA_RELEASE_KEYSTORE_BASE64 }}
+          ETA_RELEASE_STORE_PASSWORD: ${{ secrets.ETA_RELEASE_STORE_PASSWORD }}
+          ETA_RELEASE_KEY_ALIAS: ${{ secrets.ETA_RELEASE_KEY_ALIAS }}
+          ETA_RELEASE_KEY_PASSWORD: ${{ secrets.ETA_RELEASE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$ETA_RELEASE_KEYSTORE_BASE64" || -z "$ETA_RELEASE_STORE_PASSWORD" ||
+                -z "$ETA_RELEASE_KEY_ALIAS" || -z "$ETA_RELEASE_KEY_PASSWORD" ]]; then
+            echo "::error::Missing release-signing secrets"
+            exit 1
+          fi
+          printf '%s' "$ETA_RELEASE_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release.jks"
+          chmod 600 "$RUNNER_TEMP/release.jks"
+          shopt -s nullglob
+          apks=("$RUNNER_TEMP"/unsigned/Eta-v*.apk)
+          if [[ ${#apks[@]} -ne 1 ]]; then
+            echo "::error::Expected exactly one unsigned APK"
+            exit 1
+          fi
+          tools="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
+          test -x "$tools/zipalign"
+          test -x "$tools/apksigner"
+          mkdir -p "$RUNNER_TEMP/signed"
+          "$tools/zipalign" -f -p 4 "${apks[0]}" "$RUNNER_TEMP/aligned.apk"
+          target="$RUNNER_TEMP/signed/$(basename "${apks[0]}")"
+          "$tools/apksigner" sign \
+            --ks "$RUNNER_TEMP/release.jks" \
+            --ks-key-alias "$ETA_RELEASE_KEY_ALIAS" \
+            --ks-pass env:ETA_RELEASE_STORE_PASSWORD \
+            --key-pass env:ETA_RELEASE_KEY_PASSWORD \
+            --out "$target" "$RUNNER_TEMP/aligned.apk"
+          "$tools/apksigner" verify --print-certs "$target"
+          "$tools/zipalign" -c -p 4 "$target"
+          sha256sum "$target"
+          rm -f "$RUNNER_TEMP/release.jks"
+
+      - name: Upload installable Release APK
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: Eta-device-test-${{ github.run_id }}
+          path: ${{ runner.temp }}/signed/*.apk
+          archive: false
+          if-no-files-found: error
+          retention-days: 14
