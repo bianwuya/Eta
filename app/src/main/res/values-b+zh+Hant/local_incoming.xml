@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="local_incoming_importing">正在匯入到 Eta…</string>
+    <string name="local_incoming_drop_hint">放開以加入草稿 · 不會自動傳送</string>
+    <string name="local_incoming_added">已加入草稿，確認後再傳送。</string>
+    <string name="local_incoming_partial">已加入草稿；部分內容已略過、截斷或作為一般檔案附加。</string>
+    <string name="local_incoming_unreadable">無法讀取分享內容，請重新分享文字、圖片或可讀取的檔案。</string>
+    <string name="local_incoming_inbox_error">無法更新收件匣，請檢查儲存空間及待處理分享後重試。</string>
+    <string name="local_incoming_finish_edit">請先完成或取消訊息編輯，接收內容已保留在收件匣。</string>
+</resources>

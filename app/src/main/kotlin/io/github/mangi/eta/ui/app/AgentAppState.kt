@@ -1752,6 +1752,22 @@ internal class AgentAppState(
         ).show()
     }
 
+    /** Local ingress has already copied and inspected attachments; apply without asynchronous owner races. */
+    internal fun attachIncomingContent(
+        images: List<PendingImageUi>,
+        files: List<PendingFileReferenceUi>,
+    ): Boolean {
+        if (!homeState.isConversationLoaded || homeState.messageEdit != null) return false
+        updateCurrentConversation(
+            homeState.copy(
+                pendingImages = (homeState.pendingImages + images).distinctBy { it.uri },
+                pendingFileReferences = (homeState.pendingFileReferences + files).distinctBy { it.reference.absolutePath },
+            ),
+            updateTimestamp = false,
+        )
+        return true
+    }
+
     fun attachImage(uri: String) {
         scope.launch(Dispatchers.IO) {
             try {

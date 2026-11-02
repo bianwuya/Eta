@@ -76,6 +76,26 @@
             </intent-filter>
         </activity>
 
+        <!-- Local extension: system Sharesheet target. URI grants are consumed before handoff. -->
+        <activity
+            android:name=".local.incoming.IncomingShareActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:label="@string/app_name"
+            android:icon="@mipmap/ic_launcher"
+            android:theme="@style/Theme.Eta">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+        </activity>
+
         <activity
             android:name=".ui.screens.browser.AgentBrowserActivity"
             android:exported="false"

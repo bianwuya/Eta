@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="local_incoming_importing">Importing into Eta…</string>
+    <string name="local_incoming_drop_hint">Drop to add to the draft · not sent automatically</string>
+    <string name="local_incoming_added">Added to the draft. Send when ready.</string>
+    <string name="local_incoming_partial">Added to the draft. Some items were skipped, truncated, or attached as files.</string>
+    <string name="local_incoming_unreadable">Could not read the shared content. Try sharing text, images, or readable files again.</string>
+    <string name="local_incoming_inbox_error">Could not update the inbox. Check free space and pending shares, then try again.</string>
+    <string name="local_incoming_finish_edit">Finish or cancel message editing first. The received content is kept in the inbox.</string>
+</resources>

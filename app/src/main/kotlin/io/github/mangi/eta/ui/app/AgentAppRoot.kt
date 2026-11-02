@@ -366,6 +366,14 @@ fun AgentAppRoot(
     val swipeDismiss = swipeBackDirection.takeIf {
         LocalAppearanceSettings.current.swipeDismissEnabled
     }
+    io.github.mangi.eta.local.incoming.IncomingContentHost(
+        agentState = agentState,
+        dropEnabled = backStack.lastOrNull() == AppRoute.Home && !conversationPaneOpen,
+        onOpenHome = {
+            conversationPaneOpen = false
+            navigator.popToHome()
+        },
+    ) {
     key(navigationResetKey) {
         NavDisplay(
             backStack = backStack,
@@ -778,6 +786,8 @@ fun AgentAppRoot(
             }
         }
     }
+
+    } // IncomingContentHost: keep local ingress isolated from upstream navigation.
 
     characterStore.notice?.let { notice ->
         WindowDialog(

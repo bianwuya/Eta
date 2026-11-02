@@ -151,6 +151,7 @@ internal fun AgentChatInputBar(
     val hapticFeedback = LocalHapticFeedback.current
     val focusRequester = remember { FocusRequester() }
     val textFieldState = rememberTextFieldState(initialText = input)
+    io.github.mangi.eta.local.incoming.BindIncomingDraft(textFieldState)
     val speechSettings by remember { SpeechSettingsRepository.settingsFlow() }.collectAsState(initial = null)
     val recognitionEnabled = speechSettings?.recognitionEnabled == true
     val dictation = rememberSpeechInput { recognized ->
