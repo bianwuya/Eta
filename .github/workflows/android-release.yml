@@ -1,9 +1,10 @@
 name: Eta Build
 
 on:
+  # 只有 local 是个人版发布源；main 保持原作者原样。
   push:
     branches:
-      - main
+      - local
     tags:
       - "v*"
   workflow_dispatch:
@@ -16,9 +17,43 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # 不读取签名 Secrets。防止误从 main 手动构建个人版，或给上游代码打发布标签。
+  validate-source:
+    name: 验证个人版来源 (local)
+    if: github.ref == 'refs/heads/local' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: 检出对应提交
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: 检查构建分支或标签是否属于 local
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF_TYPE" == "branch" ]]; then
+            if [[ "$GITHUB_REF_NAME" != "local" ]]; then
+              echo "::error::个人版只能从 local 构建。"
+              exit 1
+            fi
+          elif [[ "$GITHUB_REF_TYPE" == "tag" && "$GITHUB_REF_NAME" == v* ]]; then
+            git fetch --no-tags origin '+refs/heads/local:refs/remotes/origin/local'
+            if ! git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/local; then
+              echo "::error::发布标签不属于 local 提交历史，拒绝生成个人版 APK。"
+              exit 1
+            fi
+          else
+            echo "::error::不支持此构建来源。"
+            exit 1
+          fi
+
   # 与打包并行且不接触签名 Secrets；失败不影响 APK 上传，但会阻止发版草稿
   verify:
     name: Lint 与单元测试
+    needs: validate-source
     runs-on: ubuntu-latest
     timeout-minutes: 40
 
@@ -49,12 +84,15 @@ jobs:
 
   build-apks:
     name: 构建 Debug 与 Release APK
+    needs: validate-source
     runs-on: ubuntu-latest
     timeout-minutes: 40
 
     steps:
       - name: 检出代码
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
 
       - name: 配置构建环境
         uses: ./.github/actions/setup-build
