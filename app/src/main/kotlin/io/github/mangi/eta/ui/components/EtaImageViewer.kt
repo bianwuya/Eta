@@ -4,7 +4,11 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateCentroid
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -21,9 +25,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.res.stringResource
@@ -59,15 +65,48 @@ internal fun ImageViewerDialog(dataUrl: String?, onDismiss: () -> Unit) {
                 // Gestures belong to the untransformed parent: 1px of finger travel
                 // always corresponds to 1px of visual translation, regardless of zoom.
                 .pointerInput(dataUrl) {
-                    detectTransformGestures { centroid, pan, zoomChange, _ ->
-                        transform = ImageViewerGestureMath.onGesture(
-                            current = transform,
-                            centroid = centroid,
-                            pan = pan,
-                            zoomChange = zoomChange,
-                            viewport = viewport,
-                            bitmap = bitmapSize,
-                        )
+                    // detectTransformGestures discards movement until touch slop is
+                    // crossed. That leaves the grabbed bitmap pixel several pixels
+                    // behind the finger for the rest of the drag. Read each sample
+                    // directly when zoomed, while still filtering accidental taps
+                    // and one-finger swipes at the unzoomed 1x scale.
+                    awaitEachGesture {
+                        awaitFirstDown(requireUnconsumed = false)
+                        var unzoomedMovement = Offset.Zero
+                        do {
+                            val event = awaitPointerEvent()
+                            val pan = event.calculatePan()
+                            val zoomChange = event.calculateZoom()
+                            val centroid = event.calculateCentroid(useCurrent = false)
+                            val pointersDown = event.changes.count { it.pressed }
+                            val canTransform = transform.zoom > 1f || pointersDown > 1
+
+                            if (pointersDown > 0 && canTransform &&
+                                centroid != Offset.Unspecified &&
+                                (pan != Offset.Zero || zoomChange != 1f)
+                            ) {
+                                transform = ImageViewerGestureMath.onGesture(
+                                    current = transform,
+                                    centroid = centroid,
+                                    pan = pan,
+                                    zoomChange = zoomChange,
+                                    viewport = viewport,
+                                    bitmap = bitmapSize,
+                                )
+                                event.changes.forEach { change ->
+                                    if (change.positionChanged()) change.consume()
+                                }
+                            } else if (pointersDown == 1 && !canTransform) {
+                                unzoomedMovement += pan
+                                // At 1x the image cannot pan. Still consume large
+                                // swipes so they do not become a tap-to-dismiss.
+                                if (unzoomedMovement.getDistance() > viewConfiguration.touchSlop) {
+                                    event.changes.forEach { change ->
+                                        if (change.positionChanged()) change.consume()
+                                    }
+                                }
+                            }
+                        } while (event.changes.any { it.pressed })
                     }
                 }
                 .pointerInput(dataUrl) {
