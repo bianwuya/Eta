@@ -2,6 +2,8 @@ name: PR Check
 
 on:
   pull_request:
+    # Include retargeted PRs and Draft -> Ready transitions in review checks.
+    types: [opened, synchronize, reopened, edited, ready_for_review]
     branches:
       - local
   workflow_dispatch:
