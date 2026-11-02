@@ -585,6 +585,7 @@ private fun PendingImageStrip(
     onRemoveImage: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    var viewedImage by remember { mutableStateOf<String?>(null) }
     Row(
         modifier = modifier
             .fillMaxWidth()
@@ -597,9 +598,12 @@ private fun PendingImageStrip(
                 modifier = Modifier
                     .size(60.dp)
                     .clip(RoundedCornerShape(12.dp))
-                    .background(MiuixTheme.colorScheme.surfaceContainer),
+                    .background(MiuixTheme.colorScheme.surfaceContainer)
+                    .clickable(interactionSource = null, indication = null) {
+                        viewedImage = image.displayUrl
+                    },
             ) {
-                rememberDataUrlBitmap(image.dataUrl)?.let { bitmap ->
+                rememberDataUrlBitmap(image.dataUrl, CHAT_THUMBNAIL_MAX_PIXELS)?.let { bitmap ->
                     Image(
                         bitmap = bitmap,
                         contentDescription = null,
@@ -634,4 +638,5 @@ private fun PendingImageStrip(
             }
         }
     }
+    ImageViewerDialog(dataUrl = viewedImage, onDismiss = { viewedImage = null })
 }

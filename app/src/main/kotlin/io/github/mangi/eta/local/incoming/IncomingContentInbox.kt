@@ -87,9 +87,13 @@ internal object IncomingContentInbox {
                                 continue
                             }
                             val preview = AgentImageCodec.previewFromReference(app, image)
+                            val display = AgentImageCodec.displayFromReference(app, image)
                             images += PendingImageUi(
-                                UUID.randomUUID().toString(), reference.absolutePath,
-                                preview?.reference ?: reference.absolutePath, image.mimeType,
+                                id = UUID.randomUUID().toString(),
+                                uri = reference.absolutePath,
+                                dataUrl = preview?.reference ?: image.reference,
+                                mimeType = image.mimeType,
+                                displayUrl = display?.reference ?: preview?.reference ?: image.reference,
                             )
                         }
                         is Resolution.Failure -> skipped++
@@ -170,6 +174,7 @@ internal object IncomingContentInbox {
             content.images.forEach { image -> add(buildJsonObject {
                 put("id", JsonPrimitive(image.id)); put("uri", JsonPrimitive(image.uri))
                 put("dataUrl", JsonPrimitive(image.dataUrl)); put("mime", JsonPrimitive(image.mimeType))
+                put("displayUrl", JsonPrimitive(image.displayUrl))
             }) }
         })
         put("files", buildJsonArray {
@@ -187,8 +192,14 @@ internal object IncomingContentInbox {
             obj.getValue("text").jsonPrimitive.content,
             obj["images"]?.jsonArray?.map { item ->
                 val image = item.jsonObject
-                PendingImageUi(image.getValue("id").jsonPrimitive.content, image.getValue("uri").jsonPrimitive.content,
-                    image.getValue("dataUrl").jsonPrimitive.content, image.getValue("mime").jsonPrimitive.content)
+                PendingImageUi(
+                    id = image.getValue("id").jsonPrimitive.content,
+                    uri = image.getValue("uri").jsonPrimitive.content,
+                    dataUrl = image.getValue("dataUrl").jsonPrimitive.content,
+                    mimeType = image.getValue("mime").jsonPrimitive.content,
+                    displayUrl = image["displayUrl"]?.jsonPrimitive?.content
+                        ?: image.getValue("dataUrl").jsonPrimitive.content,
+                )
             }.orEmpty(),
             obj["files"]?.jsonArray?.map { item ->
                 val file = item.jsonObject
