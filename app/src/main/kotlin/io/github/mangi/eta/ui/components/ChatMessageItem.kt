@@ -116,17 +116,30 @@ import top.yukonga.miuix.kmp.squircle.squircleBorder
 import top.yukonga.miuix.kmp.squircle.squircleSurface
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
-@Composable
-internal fun rememberDataUrlBitmap(dataUrl: String) = remember(dataUrl) {
-    decodeDataUrlBitmap(dataUrl)
-}
+/** Decode thumbnails at reduced resolution; viewer calls maxPixels=0 for its 1600px display copy. */
+internal const val CHAT_THUMBNAIL_MAX_PIXELS = 400_000L
 
-internal fun decodeDataUrlBitmap(dataUrl: String): ImageBitmap? {
+@Composable
+internal fun rememberDataUrlBitmap(dataUrl: String, maxPixels: Long = 0L) =
+    remember(dataUrl, maxPixels) { decodeDataUrlBitmap(dataUrl, maxPixels) }
+
+internal fun decodeDataUrlBitmap(dataUrl: String, maxPixels: Long = 0L): ImageBitmap? {
     val base64 = dataUrl.substringAfter("base64,", "")
     if (base64.isBlank()) return null
     return runCatching {
         val bytes = Base64.decode(base64, Base64.NO_WRAP)
-        BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+        val options = BitmapFactory.Options()
+        if (maxPixels > 0L) {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@runCatching null
+            var sample = 1
+            while (bounds.outWidth.toLong() * bounds.outHeight.toLong() >
+                maxPixels * sample.toLong() * sample.toLong() && sample < 1024
+            ) sample *= 2
+            options.inSampleSize = sample
+        }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)?.asImageBitmap()
     }.getOrNull()
 }
 
@@ -400,24 +413,7 @@ private fun UserMessageBubble(
                     ),
             ) {
                 if (message.images.isNotEmpty()) {
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        modifier = Modifier.padding(bottom = 8.dp)
-                    ) {
-                        message.images.forEach { dataUrl ->
-                            val bitmap = rememberDataUrlBitmap(dataUrl)
-                            if (bitmap != null) {
-                                Image(
-                                    bitmap = bitmap,
-                                    contentDescription = stringResource(R.string.chat_image_attachment),
-                                    modifier = Modifier
-                                        .size(100.dp)
-                                        .clip(RoundedCornerShape(12.dp)),
-                                    contentScale = ContentScale.Crop,
-                                )
-                            }
-                        }
-                    }
+                    MessageImageRow(message.images)
                 }
                 if (visiblePrompt.references.isNotEmpty()) {
                     SentFileReferenceFlow(
@@ -1169,4 +1165,32 @@ private fun SuggestionChipsRow(
             }
         }
     }
+}
+
+/** A message can contain multiple images; only the selected one opens the viewer. */
+@Composable
+private fun MessageImageRow(images: List<String>) {
+    var viewedImage by remember { mutableStateOf<String?>(null) }
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        modifier = Modifier.padding(bottom = 8.dp),
+    ) {
+        images.forEach { dataUrl ->
+            val bitmap = rememberDataUrlBitmap(dataUrl, CHAT_THUMBNAIL_MAX_PIXELS)
+            if (bitmap != null) {
+                Image(
+                    bitmap = bitmap,
+                    contentDescription = stringResource(R.string.chat_image_attachment),
+                    modifier = Modifier
+                        .size(100.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable(interactionSource = null, indication = null) {
+                            viewedImage = dataUrl
+                        },
+                    contentScale = ContentScale.Crop,
+                )
+            }
+        }
+    }
+    ImageViewerDialog(dataUrl = viewedImage, onDismiss = { viewedImage = null })
 }

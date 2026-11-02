@@ -1302,7 +1302,7 @@ internal class AgentAppState(
         val userMessage = UserMessageUi(
             id = editBoundary?.userMessage?.id ?: "user-$runId",
             content = runtimePrompt,
-            images = pendingImages.map { it.dataUrl },
+            images = pendingImages.map { it.displayUrl },
             isEdited = editBoundary != null,
         )
         val history = editBoundary?.historyPrefix ?: state.history
@@ -1787,12 +1787,14 @@ internal class AgentAppState(
                     return@launch
                 }
                 val preview = AgentImageCodec.previewFromReference(appContext, image) ?: image
+                val display = AgentImageCodec.displayFromReference(appContext, image) ?: preview
                 val pending = PendingImageUi(
                     id = "img-${UUID.randomUUID()}",
                     // 后续发送使用首次读取后的稳定引用，不再依赖 ROM Photo Picker URI 的授权生命周期。
                     uri = image.reference,
                     dataUrl = preview.reference,
                     mimeType = image.mimeType,
+                    displayUrl = display.reference,
                 )
                 withContext(Dispatchers.Main) {
                     updateCurrentConversation(homeState.copy(pendingImages = homeState.pendingImages + pending))
