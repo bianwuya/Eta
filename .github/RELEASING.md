@@ -102,3 +102,24 @@ git push origin v3.4.1
 - PR Check 不使用证书；仅 local/tags 允许个人版 Build；Tag 需要 local 历史校验。
 - Release 自动创建的是**草稿**，绝不自动发布或升级手机里的 App。
 - 官方 main 的默认工作流存在于上游代码中，不应为禁用它而破坏 main 的原样镜像。
+
+## 功能分支 APK 实机验收（不合并也能安装）
+
+在 `local` 启用 `.github/workflows/device-test-apk.yml` 后：
+
+1. 新功能在 `feat/*` 分支开发，先创建指向 `local` 的 Draft PR，并等待 `PR Check` 成功。
+2. 打开 `Actions > Device Test APK > Run workflow`；运行工作流的分支保持 `local`。
+3. 在 `feature_branch` 输入完整功能分支名，例如 `feat/chat-image-zoom`，执行手动构建。
+4. 工作流先在无 Secrets 环境构建未签名 Release，再由**不检出功能代码**的独立 Job 使用原有证书签名。
+5. 进入该次 Actions 运行页面的 Artifacts，下载 `Eta-device-test-...`，获得 APK 后在手机上直接安装测试。
+6. 实测单图、多图、手势、长会话内存、配置保留、旧聊天和新功能；记录对应分支的完整提交 SHA。
+7. 实机通过后再合并 PR 到 `local`；合并后原有 `Eta Build` 会生成稳定签名版。
+
+**版本限制**：功能分支测试包与 `local` 保持相同 `applicationId`、Release 签名、`versionCode`。Android 通常允许同版本号覆盖安装；
+如果设备上已装更高的 `versionCode`、证书不匹配或某些 ROM 拒绝等版本覆盖，则会安装失败，不能通过卸载来盲目解决，以免丢失数据。
+`versionName` 会附加 `+qa-<commit>` 以便辨认；版本名变化本身不会提高 `versionCode`。
+测试前应备份重要数据；不要把生成的测试 APK 当作正式 Release 发布。
+
+**安全边界**：不要给不可信来源的分支签名；在 Actions 页面确认实际分支名和提交号。
+测试工作流使用只读权限，不在运行 Gradle 时注入发布密钥，签名 Job 不检出分支代码。
+为进一步加强保护，可以在 GitHub Environment 中为签名 Job 设置人工批准要求。
