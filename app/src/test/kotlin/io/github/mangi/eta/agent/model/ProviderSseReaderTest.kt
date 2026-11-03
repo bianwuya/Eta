@@ -5,6 +5,7 @@ import io.github.mangi.eta.agent.runtime.AgentRunController
 import java.io.ByteArrayInputStream
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertSame
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -57,6 +58,35 @@ class ProviderSseReaderTest {
         }.exceptionOrNull()
         assertSame(expected, failure)
         assertTrue(stream.closed)
+    }
+
+    @Test
+    fun truncatedJsonTailIsRetryableButCompleteMalformedFrameIsNot() {
+        val tail = "data: {\"choices\":["
+        val failure = assertThrows(AgentModelFailure::class.java) {
+            readProviderSse(tail.byteInputStream(), AgentRunController()) { _, data ->
+                org.json.JSONObject(data)
+                true
+            }
+        }
+        assertEquals("STREAM_INCOMPLETE", failure.code)
+        assertTrue(failure.retryable)
+        assertThrows(org.json.JSONException::class.java) {
+            readProviderSse((tail + "\n\n").byteInputStream(), AgentRunController()) { _, data ->
+                org.json.JSONObject(data)
+                true
+            }
+        }
+    }
+
+    @Test
+    fun validJsonTailWithoutBlankLineStillReachesConsumer() {
+        val events = mutableListOf<String>()
+        readProviderSse("data: {\"status\":\"completed\"}".byteInputStream(), AgentRunController()) { _, data ->
+            events += org.json.JSONObject(data).getString("status")
+            false
+        }
+        assertEquals(listOf("completed"), events)
     }
 
     private class TrackedStream(

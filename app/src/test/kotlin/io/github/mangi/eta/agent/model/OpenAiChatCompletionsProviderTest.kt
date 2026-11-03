@@ -1,6 +1,7 @@
 package io.github.mangi.eta.agent.model
 
 import com.sun.net.httpserver.HttpServer
+import io.github.mangi.eta.agent.runtime.AgentEvent
 import io.github.mangi.eta.agent.runtime.AgentRunController
 import java.io.OutputStream
 import java.net.InetSocketAddress
@@ -17,6 +18,40 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class OpenAiChatCompletionsProviderTest {
+    @Test
+    fun truncatedStreamRetriesSameRequestAndCommitsOnlyCompleteResponse() {
+        val requests = mutableListOf<String>()
+        var attempts = 0
+        val events = mutableListOf<AgentEvent>()
+        withSseServer(
+            body = "",
+            onRequest = requests::add,
+            writeBody = { output ->
+                val body = if (attempts++ == 0) {
+                    sseChunk(JSONObject().put("content", "半截回答")) + "data: {\"choices\":["
+                } else {
+                    sseChunk(JSONObject().put("content", "完整回答"), finishReason = "stop") + "data: [DONE]\n\n"
+                }
+                output.write(body.toByteArray(Charsets.UTF_8))
+            },
+        ) { baseUrl ->
+            val result = AgentModelRetry { _, _ -> }.complete(
+                initialRound = 1,
+                request = providerRequest(baseUrl),
+                provider = OpenAiChatCompletionsProvider,
+                controller = AgentRunController(),
+                onEvent = events::add,
+                onProviderEvent = { _, _ -> },
+                discardAttemptReasoning = {},
+            )
+            assertEquals("完整回答", result.response.assistantMessage.getString("content"))
+            assertEquals(2, requests.size)
+            assertEquals(requests[0], requests[1])
+            assertEquals("STREAM_INCOMPLETE", events.filterIsInstance<AgentEvent.ModelRetryScheduled>()
+                .single().reasonCode)
+        }
+    }
+
     @Test
     fun thinkingStreamsBeforeDoneAndClosesBeforeTheUsageTail() {
         val firstDelta = CountDownLatch(1)
