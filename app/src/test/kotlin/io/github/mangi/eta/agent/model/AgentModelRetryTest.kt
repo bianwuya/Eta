@@ -1,5 +1,6 @@
 package io.github.mangi.eta.agent.model
 
+import io.github.mangi.eta.agent.runtime.AgentEvent
 import io.github.mangi.eta.agent.runtime.AgentRunCancelledException
 import io.github.mangi.eta.agent.runtime.AgentRunController
 import org.json.JSONArray
@@ -87,11 +88,65 @@ class AgentModelRetryTest {
         assertFalse(AgentModelFailure.http(503, "secret request text").message.orEmpty().contains("secret"))
     }
 
+    @Test
+    fun truncatedSseTailRetriesThroughExistingBudget() {
+        var calls = 0
+        val events = mutableListOf<AgentEvent>()
+        val result = complete(AgentModelRetry { _, _ -> }, provider { _, _ ->
+            if (calls++ == 0) {
+                readProviderSse("data: {\"choices\":[".byteInputStream(), AgentRunController()) { _, data ->
+                    JSONObject(data)
+                    true
+                }
+            }
+            response()
+        }, onEvent = events::add)
+        assertEquals(2, calls)
+        assertEquals("完成", result.response.assistantMessage.getString("content"))
+        assertEquals("STREAM_INCOMPLETE", events.filterIsInstance<AgentEvent.ModelRetryScheduled>().single().reasonCode)
+    }
+
+    @Test
+    fun repeatedIncompleteStreamsStopAtExistingRetryLimit() {
+        var calls = 0
+        val failure = assertThrows(AgentModelFailure::class.java) {
+            complete(AgentModelRetry { _, _ -> }, provider { _, _ ->
+                calls++
+                throw AgentModelFailure.incompleteStream("模型接口 SSE 流未正常结束")
+            })
+        }
+        assertEquals(4, calls)
+        assertFalse(failure.retryable)
+        assertEquals("STREAM_INCOMPLETE", failure.code)
+    }
+
+    @Test
+    @Suppress("INVISIBLE_MEMBER", "INVISIBLE_REFERENCE")
+    fun actualOkHttpHttp2DisconnectsRetryWithoutChangingProtocol() {
+        for (failure in listOf(
+            okhttp3.internal.http2.StreamResetException(okhttp3.internal.http2.ErrorCode.CANCEL),
+            okhttp3.internal.http2.StreamResetException(okhttp3.internal.http2.ErrorCode.REFUSED_STREAM),
+            okhttp3.internal.http2.ConnectionShutdownException(),
+        )) {
+            var calls = 0
+            val events = mutableListOf<AgentEvent>()
+            complete(AgentModelRetry { _, _ -> }, provider { _, _ ->
+                if (calls++ == 0) throw failure
+                response()
+            }, onEvent = events::add)
+            assertEquals(2, calls)
+            assertEquals("MODEL_CONNECTION_FAILED", events.filterIsInstance<AgentEvent.ModelRetryScheduled>().single().reasonCode)
+        }
+        // 协议配置和证书问题不因“HTTP/2 断流”一起放宽。
+        assertNull(AgentModelFailure.transport(java.net.ProtocolException("unexpected protocol")))
+    }
+
     private fun complete(
         retry: AgentModelRetry,
         provider: AgentProviderClient,
         controller: AgentRunController = AgentRunController(),
         onProviderEvent: (Int, ProviderEvent) -> Unit = { _, _ -> },
+        onEvent: (AgentEvent) -> Unit = {},
     ) = retry.complete(
         initialRound = 1,
         request = ProviderRequest(
@@ -100,7 +155,7 @@ class AgentModelRetryTest {
         ),
         provider = provider,
         controller = controller,
-        onEvent = {},
+        onEvent = onEvent,
         onProviderEvent = onProviderEvent,
         discardAttemptReasoning = {},
     )

@@ -56,6 +56,7 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
             .build()
 
         val requestJson = buildRequestJson(config, request.messages, request.effectiveTools).apply {
+            OpenAiPromptCache.apply(this, request)
             if (!request.purpose.allowsTools) {
                 remove("tools")
                 remove("tool_choice")
@@ -188,8 +189,16 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
             val chunk = JSONObject(payload)
             throwStreamingErrorIfPresent(chunk)
             parseUsage(chunk)?.let { parsedUsage ->
-                usage = parsedUsage
-                onEvent(ProviderEvent.Usage(parsedUsage))
+                val previous = usage
+                val merged = parsedUsage.copy(
+                    contextTokens = parsedUsage.contextTokens ?: previous?.contextTokens,
+                    inputTokens = parsedUsage.inputTokens ?: previous?.inputTokens,
+                    outputTokens = parsedUsage.outputTokens ?: previous?.outputTokens,
+                    reasoningTokens = parsedUsage.reasoningTokens ?: previous?.reasoningTokens,
+                    cachedTokens = parsedUsage.cachedTokens ?: previous?.cachedTokens,
+                )
+                usage = merged
+                onEvent(ProviderEvent.Usage(merged))
             }
             val choices = chunk.optJSONArray("choices")
             if (choices == null || choices.length() == 0) return@readProviderSse true
@@ -405,7 +414,7 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
             // 兼容端点各用各的字段：OpenAI 嵌套在 prompt_tokens_details，DeepSeek 为 prompt_cache_hit_tokens，
             // 部分端点直接放在顶层 cached_tokens。
             cachedTokens = usage.firstNestedInt(
-                "prompt_tokens_details",
+                "prompt_tokens_details", "input_tokens_details",
                 childKey = "cached_tokens"
             ) ?: usage.firstInt("cache_read_input_tokens", "prompt_cache_hit_tokens", "cached_tokens")
         ).takeUnless { it.isEmpty }

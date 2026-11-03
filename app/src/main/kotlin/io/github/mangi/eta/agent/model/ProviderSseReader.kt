@@ -29,7 +29,12 @@ internal fun readProviderSse(
             runController.throwIfCancelled()
             val line = reader.readLine()
             if (line == null) {
-                dispatch()
+                try {
+                    dispatch()
+                } catch (_: org.json.JSONException) {
+                    // 仅 EOF 尾帧的解析失败视为截断；完整帧中的坏 JSON 仍原样报错。
+                    throw AgentModelFailure.incompleteStream("模型接口 SSE 尾帧不完整，连接已结束。")
+                }
                 break
             }
             when {

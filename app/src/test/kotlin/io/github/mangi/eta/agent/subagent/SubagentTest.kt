@@ -31,6 +31,23 @@ import org.robolectric.annotation.Config
 @Config(sdk = [36])
 class SubagentTest {
     @Test
+    fun retryIsVisibleAndFailedAttemptDoesNotPollutePartialOutput() {
+        val tracker = SubagentExecutor.StepTracker("child", "coder", "test", "prompt", "model", false)
+        tracker.onChildEvent(AgentEvent.RoundStarted(1, 1))
+        tracker.onChildEvent(AgentEvent.AssistantBlockDelta(1, AgentEvent.AssistantBlockKind.THINKING, 0, deltaChars = 6, delta = "失败的思考"))
+        tracker.onChildEvent(AgentEvent.AssistantBlockDelta(1, AgentEvent.AssistantBlockKind.TEXT, 1, deltaChars = 4, delta = "半截输出"))
+        val retry = AgentEvent.ModelRetryScheduled(1, 1, 3, 2_000, "STREAM_INCOMPLETE")
+        assertTrue(tracker.onChildEvent(retry))
+        assertEquals(retry.displayMessage, tracker.snapshot().currentAction)
+        assertEquals("", tracker.partialOutput())
+        assertEquals(SubagentStepSnapshot.STATUS_FAILED, tracker.snapshot().steps.single().status)
+        assertEquals(SubagentActivitySnapshot.STATUS_RUNNING, tracker.snapshot().status)
+        tracker.onChildEvent(AgentEvent.RoundStarted(2, 1))
+        tracker.onChildEvent(AgentEvent.AssistantBlockDelta(2, AgentEvent.AssistantBlockKind.TEXT, 0, deltaChars = 4, delta = "新的输出"))
+        assertEquals("新的输出", tracker.partialOutput())
+    }
+
+    @Test
     fun builtinProfilesEnforceReadOnlyAndForbidRecursiveOrGuiTools() {
         val fullCatalog = AgentToolCatalog.build(
             terminalTools = true,

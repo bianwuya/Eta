@@ -391,7 +391,7 @@ internal class SubagentExecutor(
                 .toString(),
         )
 
-    private class StepTracker(
+    internal class StepTracker(
         private val subagentId: String,
         private val subagentType: String,
         private val description: String,
@@ -411,6 +411,14 @@ internal class SubagentExecutor(
             when (event) {
                 is AgentEvent.RoundStarted -> {
                     currentAction = if (event.round <= 1) "正在思考…" else "第 ${event.round} 轮思考…"
+                    true
+                }
+
+                is AgentEvent.ModelRetryScheduled -> {
+                    // 失败尝试只留作步骤记录，不拼进后续的部分汇报。
+                    roundTexts.remove(event.round)
+                    finishAllRunningSteps(SubagentStepSnapshot.STATUS_FAILED)
+                    currentAction = event.displayMessage
                     true
                 }
 
