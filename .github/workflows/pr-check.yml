@@ -2,8 +2,10 @@ name: PR Check
 
 on:
   pull_request:
+    # Include retargeted PRs and Draft -> Ready transitions in review checks.
+    types: [opened, synchronize, reopened, edited, ready_for_review]
     branches:
-      - main
+      - local
   workflow_dispatch:
 
 permissions:
@@ -15,7 +17,7 @@ concurrency:
 
 jobs:
   check:
-    # 名称会作为 main 分支规则集的必需检查，修改时同步更新仓库规则集
+    # local 的 PR 必需检查名称保持稳定；如设置分支规则，请将此 job 名称列为必需检查
     name: Lint / Test / Debug Build
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -29,7 +31,7 @@ jobs:
       - name: 配置构建环境
         uses: ./.github/actions/setup-build
 
-      # PR 来自 fork 时拿不到 Secrets，这里只做无需签名的检查
+      # 仅测试合入 local 的候选代码；不会读取 Release 签名 Secrets
       # 提交号取 PR 头部提交，而非 GitHub 生成的临时合并提交
       - name: Lint、单元测试与 Debug 构建
         env:

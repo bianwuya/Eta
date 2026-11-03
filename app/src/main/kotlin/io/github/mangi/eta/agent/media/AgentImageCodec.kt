@@ -71,6 +71,12 @@ internal object AgentImageCodec {
         image: AgentModelClient.ModelImage,
     ): AgentModelClient.ModelImage? = AgentModelImageEncoder.preview(context, image)
 
+    /** Bounded higher-quality copy for local full-screen viewing; never sent to model requests. */
+    fun displayFromReference(
+        context: Context,
+        image: AgentModelClient.ModelImage,
+    ): AgentModelClient.ModelImage? = AgentModelImageEncoder.display(context, image)
+
     /** 文件工具图片会在发送模型前压缩，避免多张原图撑大 OpenAI 兼容请求体。 */
     fun fromToolFile(file: File, source: String): AgentModelClient.ModelImage? = runCatching {
         AgentModelImageEncoder.toolVision(file.readBytesLimited(), source)

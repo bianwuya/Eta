@@ -57,6 +57,13 @@ internal object AgentModelImageEncoder {
         mimeType = "image/jpeg",
         quality = PREVIEW_JPEG_QUALITY,
     )
+    private val displayProfile = EncodingProfile(
+        maxLongEdge = 1600,
+        maxPixels = 2_000_000L,
+        format = Bitmap.CompressFormat.JPEG,
+        mimeType = "image/jpeg",
+        quality = 88,
+    )
     private val toolVisionProfile = EncodingProfile(
         format = Bitmap.CompressFormat.JPEG,
         mimeType = "image/jpeg",
@@ -105,10 +112,21 @@ internal object AgentModelImageEncoder {
     fun preview(
         context: Context,
         image: AgentModelClient.ModelImage,
+    ): AgentModelClient.ModelImage? = rescale(context, image, previewProfile)
+
+    fun display(
+        context: Context,
+        image: AgentModelClient.ModelImage,
+    ): AgentModelClient.ModelImage? = rescale(context, image, displayProfile)
+
+    private fun rescale(
+        context: Context,
+        image: AgentModelClient.ModelImage,
+        profile: EncodingProfile,
     ): AgentModelClient.ModelImage? = runCatching {
         val width = image.width ?: return@runCatching null
         val height = image.height ?: return@runCatching null
-        val target = targetSize(width, height, previewProfile)
+        val target = targetSize(width, height, profile)
         val openStream = referenceStreamFactory(context, image.reference) ?: return@runCatching null
         val options = BitmapFactory.Options().apply {
             inPreferredConfig = Bitmap.Config.ARGB_8888
@@ -118,7 +136,7 @@ internal object AgentModelImageEncoder {
             BitmapFactory.decodeStream(input, null, options)
         } ?: return@runCatching null
         try {
-            encodeBitmap(decoded, image.source, previewProfile, flattenAlpha = true)
+            encodeBitmap(decoded, image.source, profile, flattenAlpha = true)
         } finally {
             if (!decoded.isRecycled) decoded.recycle()
         }
