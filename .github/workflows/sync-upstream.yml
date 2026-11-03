@@ -2,8 +2,8 @@ name: Sync upstream main
 
 on:
   schedule:
-    # UTC，每 6 小时；GitHub 可能延迟执行。
-    - cron: '23 */6 * * *'
+    # UTC，每小时检测官方版本；GitHub 可能延迟执行。
+    - cron: '23 * * * *'
   workflow_dispatch:
 
 permissions:
@@ -38,7 +38,7 @@ jobs:
           {
             echo '## Upstream main sync'
             echo 'Source: Mangi-11/Eta → bianwuya/Eta main'
-            echo 'local was not modified. Merge upstream updates through a main → local PR.'
+            echo 'local was not modified. The auto-integrate-upstream workflow will prepare a guarded PR for local.'
             echo '[Review / create PR](https://github.com/bianwuya/Eta/compare/local...main?expand=1)'
             echo '```json'
             cat "$RUNNER_TEMP/upstream-sync.json"
