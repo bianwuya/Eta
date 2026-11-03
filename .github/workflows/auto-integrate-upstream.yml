@@ -1,0 +1,157 @@
+name: Auto integrate upstream into local
+
+on:
+  workflow_run:
+    workflows:
+      - Sync upstream main
+      - PR Check
+    types: [completed]
+  schedule:
+    # UTC: periodic fallback when a workflow_run event is missed or delayed.
+    - cron: '41 */2 * * *'
+  workflow_dispatch:
+
+# No signing secrets and no PR code execution in this privileged workflow.
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+
+concurrency:
+  group: eta-auto-upstream-to-local
+  cancel-in-progress: false
+
+jobs:
+  integrate:
+    if: github.repository == 'bianwuya/Eta'
+    name: Safely reconcile upstream with local
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Checkout protected stable baseline
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: local
+          fetch-depth: 0
+
+      - name: Prepare, check and merge upstream-only PR
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch origin +refs/heads/main:refs/remotes/origin/main +refs/heads/local:refs/remotes/origin/local
+          main_sha=$(git rev-parse origin/main)
+          local_sha=$(git rev-parse origin/local)
+          official_sha=$(gh api repos/Mangi-11/Eta/branches/main --jq '.commit.sha')
+
+          # main must remain an exact mirror of the upstream author.
+          if [[ "$main_sha" != "$official_sha" ]]; then
+            echo "::notice::Fork main is not yet synchronized; wait for Sync upstream main."
+            exit 0
+          fi
+          if git merge-base --is-ancestor "$main_sha" "$local_sha"; then
+            echo 'local already contains the current official main.'
+            exit 0
+          fi
+
+          # At most one automated upstream PR at a time.
+          pending=$(gh pr list --state open --base local --limit 100 \
+            --json number,headRefName \
+            --jq '[.[] | select(.headRefName | startswith("automation/upstream-"))] | first | .number // empty')
+          if [[ -n "$pending" ]]; then
+            pr_number="$pending"
+            branch=$(gh pr view "$pr_number" --json headRefName --jq '.headRefName')
+          else
+            branch="automation/upstream-${main_sha:0:12}-on-${local_sha:0:12}"
+            if ! git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+              git switch -c "$branch" origin/local
+              # Conflicts are not guessed away or resolved by 'ours'.
+              if ! git merge --no-ff --no-edit origin/main; then
+                git merge --abort || true
+                echo "::error::Official update has merge conflicts. Resolve on a review branch."
+                exit 1
+              fi
+              git push origin "HEAD:refs/heads/$branch"
+            fi
+
+            if ! gh pr create --base local --head "$branch" \
+              --title "chore(upstream): integrate official Eta ${main_sha:0:12}" \
+              --body "Automated upstream-only merge. Official commit: $main_sha. Original local: $local_sha. No Eta666 changes. Required CI and protected branch rules must pass. Conflicts and high-risk changes require review."; then
+              echo "::warning::Could not open PR with GITHUB_TOKEN. The integration branch is preserved for GitHub-app supervision."
+              echo "Open a PR from $branch into local (GitHub Actions PR creation may be disabled)." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            pr_number=$(gh pr list --state open --base local --head "$branch" --json number --jq '.[0].number')
+            # GITHUB_TOKEN-authored PR events may not start a normal PR CI run.
+            # workflow_dispatch is explicitly permitted to trigger another workflow.
+            gh workflow run pr-check.yml --ref "$branch"
+            echo "Created PR #$pr_number and dispatched validation."
+            exit 0
+          fi
+
+          head_sha=$(gh pr view "$pr_number" --json headRefOid --jq '.headRefOid')
+          pr_repo=$(gh api "repos/$GH_REPO/pulls/$pr_number" --jq '.head.repo.full_name')
+          if [[ "$pr_repo" != "$GH_REPO" ]]; then
+            echo "::error::Unexpected cross-repository PR; will not merge."
+            exit 1
+          fi
+
+          # Only auto-merge an unmodified, two-parent integration commit.
+          # If an AI/human has made repair commits, a reviewer must handle that PR.
+          parents=$(gh api "repos/$GH_REPO/git/commits/$head_sha" --jq '.parents | map(.sha) | join(" ")')
+          read -ra parent_list <<< "$parents"
+          if [[ "${#parent_list[@]}" -ne 2 ]]; then
+            echo "::warning::Integration PR was modified beyond the original merge. Review required."
+            exit 0
+          fi
+          if [[ "${parent_list[0]}" != "$local_sha" ]]; then
+            # A stale bot-produced PR would otherwise block all subsequent updates.
+            # Never auto-close a PR with human/AI repair commits (guarded above).
+            gh pr close "$pr_number" --comment "Superseded: local advanced. A new upstream merge candidate will be prepared on the next run."
+            echo "::notice::Closed stale automated PR #$pr_number; next run will use the latest local."
+            exit 0
+          fi
+          if ! git merge-base --is-ancestor "${parent_list[1]}" "$main_sha"; then
+            echo "::error::PR merge commit does not track the fork's official main history."
+            exit 1
+          fi
+
+          check=$(gh api "repos/$GH_REPO/commits/$head_sha/check-runs?per_page=100" \
+            --jq '[.check_runs[] | select(.name == "Lint / Test / Debug Build")] | sort_by(.started_at) | last | (.conclusion // .status) // "missing"')
+          case "$check" in
+            missing)
+              gh workflow run pr-check.yml --ref "$branch"
+              echo "Triggered required CI for PR #$pr_number."
+              exit 0
+              ;;
+            queued|in_progress|pending|waiting|requested)
+              echo "PR #$pr_number is waiting for required CI ($check)."
+              exit 0
+              ;;
+            success) ;;
+            *)
+              echo "::error::PR #$pr_number CI result is $check; repair in a separate branch and re-test."
+              exit 1
+              ;;
+          esac
+
+          # Sensitive changes need human/agent review even if basic CI passes.
+          changed_files=$(gh api --paginate "repos/$GH_REPO/pulls/$pr_number/files?per_page=100" --jq '.[].filename')
+          if grep -Eq '^(\.github/workflows/|\.github/actions/|app/src/main/AndroidManifest\.xml$|app/build\.gradle\.kts$|gradle\.properties$|gradle/libs\.versions\.toml$)' <<< "$changed_files"; then
+            echo "::warning::PR #$pr_number modifies build, permissions or workflows. Review required before merging."
+            exit 0
+          fi
+
+          mergeable=$(gh pr view "$pr_number" --json mergeable --jq '.mergeable')
+          if [[ "$mergeable" != 'MERGEABLE' ]]; then
+            echo "::warning::PR #$pr_number is not yet mergeable ($mergeable)."
+            exit 0
+          fi
+
+          # GitHub enforces the local branch ruleset; never bypass status checks.
+          gh pr merge "$pr_number" --merge --match-head-commit "$head_sha"
+          echo "Merged safe official update via PR #$pr_number." >> "$GITHUB_STEP_SUMMARY"
