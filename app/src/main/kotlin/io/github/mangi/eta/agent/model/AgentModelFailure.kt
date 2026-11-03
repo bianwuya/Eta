@@ -21,6 +21,7 @@ internal class AgentModelFailure(
         private val transientCodes = setOf(
             "rate_limit_exceeded", "rate_limit_error", "overloaded_error", "server_error",
             "api_error", "internal_error", "provider_unavailable", "service_unavailable",
+            "upstream_http2_stream_error", "upstream_error", "upstream_failed",
             "RESOURCE_EXHAUSTED", "UNAVAILABLE", "INTERNAL", "DEADLINE_EXCEEDED",
         )
 
@@ -68,10 +69,14 @@ internal class AgentModelFailure(
                 error.optString("status"),
                 error.optJSONObject("metadata")?.optString("error_type").orEmpty(),
             )
+            // 中转可能只给message，或用unknown_error/openai_error包装上游502。
+            // 只接纳确切的通用上游失败；明确参数/认证错误不走消息兜底。
+            val untypedUpstreamFailure = codes.all { it in setOf("", "unknown_error", "openai_error") } &&
+                error.optString("message").trim().equals("upstream failed", ignoreCase = true)
             return AgentModelFailure(
                 code = "PROVIDER_STREAM_ERROR",
                 retryable = !isPermanent(error, error.optString("message")) &&
-                    codes.any { it in transientCodes || it.toIntOrNull() in transientStatus },
+                    (untypedUpstreamFailure || codes.any { it in transientCodes || it.toIntOrNull() in transientStatus }),
                 message = message,
             )
         }
