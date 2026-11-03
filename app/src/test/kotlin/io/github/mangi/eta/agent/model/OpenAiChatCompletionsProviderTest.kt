@@ -53,6 +53,53 @@ class OpenAiChatCompletionsProviderTest {
     }
 
     @Test
+    fun gptConversationCacheKeySurvivesSeparateHttpRequests() {
+        val requests = mutableListOf<JSONObject>()
+        val body = sseChunk(JSONObject().put("content", "ok"), finishReason = "stop") + "data: [DONE]\n\n"
+        withSseServer(body, onRequest = { requests += JSONObject(it) }) { baseUrl ->
+            val first = providerRequest(baseUrl) { it.copy(model = "gpt-fixture") }.copy(sessionId = "conv-cache")
+            OpenAiChatCompletionsProvider.complete(first, AgentRunController()) {}
+            OpenAiChatCompletionsProvider.complete(first.copy(messages = JSONArray(first.messages.toString())
+                .put(JSONObject().put("role", "assistant").put("content", "ok"))
+                .put(JSONObject().put("role", "user").put("content", "继续"))), AgentRunController()) {}
+        }
+        assertTrue(requests.first().getString("prompt_cache_key").isNotBlank())
+        assertEquals(requests[0].getString("prompt_cache_key"), requests[1].getString("prompt_cache_key"))
+    }
+
+    @Test
+    fun cacheUsageAcceptsInputDetailsAndPreservesCountsMissingFromLaterChunks() {
+        val usages = listOf(
+            JSONObject().put("prompt_tokens", 20_000).put("input_tokens_details", JSONObject().put("cached_tokens", 18_000)),
+            JSONObject().put("completion_tokens", 30).put("total_tokens", 20_030),
+        )
+        val body = sseChunk(JSONObject().put("content", "ok"), finishReason = "stop") +
+            usages.joinToString("") { usageChunk(it) } + "data: [DONE]\n\n"
+        withSseServer(body) { baseUrl ->
+            val events = mutableListOf<ProviderEvent>()
+            val response = OpenAiChatCompletionsProvider.complete(providerRequest(baseUrl), AgentRunController(), events::add)
+            val last = events.filterIsInstance<ProviderEvent.Usage>().last().usage
+            assertEquals(18_000, last.cachedTokens)
+            assertEquals(20_000, last.inputTokens)
+            assertEquals(30, last.outputTokens)
+            assertEquals(20_030, last.contextTokens)
+            assertEquals(18_000, response.assistantMessage.getJSONObject("usage").getInt("cached_tokens"))
+        }
+    }
+
+    @Test
+    fun explicitZeroCacheUsageStillOverridesPreviousCount() {
+        val body = sseChunk(JSONObject().put("content", "ok"), finishReason = "stop") +
+            usageChunk(JSONObject().put("cached_tokens", 18_000)) +
+            usageChunk(JSONObject().put("cached_tokens", 0)) + "data: [DONE]\n\n"
+        withSseServer(body) { baseUrl ->
+            val events = mutableListOf<ProviderEvent>()
+            OpenAiChatCompletionsProvider.complete(providerRequest(baseUrl), AgentRunController(), events::add)
+            assertEquals(0, events.filterIsInstance<ProviderEvent.Usage>().last().usage.cachedTokens)
+        }
+    }
+
+    @Test
     fun thinkingStreamsBeforeDoneAndClosesBeforeTheUsageTail() {
         val firstDelta = CountDownLatch(1)
         val textEnded = CountDownLatch(1)
