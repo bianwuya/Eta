@@ -1,0 +1,46 @@
+name: Sync upstream main
+
+on:
+  schedule:
+    # UTC，每 6 小时；GitHub 可能延迟执行。
+    - cron: '23 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream-main
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.repository == 'bianwuya/Eta'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # API 只同步 fork 的 main，不检出/执行上游代码，不接触签名 Secrets。
+      # main 分叉或存在冲突时 API 报错，不强推；local 由人工通过 PR 合并。
+      - name: Fast-forward main from Mangi-11/Eta
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          status=$(gh api "repos/$GH_REPO/compare/main...Mangi-11:main" --jq '.status')
+          case "$status" in
+            ahead|identical) ;;
+            *) echo "::error::main is not a pure upstream ancestor (status=$status); refusing to merge."; exit 1 ;;
+          esac
+          gh api --method POST "repos/$GH_REPO/merge-upstream" \
+            -f branch=main > "$RUNNER_TEMP/upstream-sync.json"
+          cat "$RUNNER_TEMP/upstream-sync.json"
+          {
+            echo '## Upstream main sync'
+            echo 'Source: Mangi-11/Eta → bianwuya/Eta main'
+            echo 'local was not modified. Merge upstream updates through a main → local PR.'
+            echo '[Review / create PR](https://github.com/bianwuya/Eta/compare/local...main?expand=1)'
+            echo '```json'
+            cat "$RUNNER_TEMP/upstream-sync.json"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

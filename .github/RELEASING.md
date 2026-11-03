@@ -5,7 +5,10 @@
 - `main`：原作者 `Mangi-11/Eta` 的同步镜像。不要在 main 提交自己的功能、工作流或签名改动。
 - `local`：自己的稳定版，保留系统分享等定制能力，是**唯一的个人版构建与发布来源**。
 - `feat/<功能名>`：从 local 创建的功能分支。每个功能单独 PR，审查后合并到 local。
-- 同步顺序：原作者更新 → GitHub 的 `Sync fork` 更新 main → 创建 `main -> local` 的 PR → 自动测试 → 人工确认合并 → local 构建。
+- 同步顺序：原作者更新 → `Sync upstream main` 每 6 小时自动更新 main → 创建 `main -> local` 的 PR → 自动测试 → 人工确认合并 → local 构建。
+- 自动同步工作流保存在默认分支 `local`，只通过 GitHub API 快进 `main`，不修改 `local`，无需额外 PAT，不使用签名 Secrets。若 main 分叉则失败并保留现场，不强推。
+- 立即同步：`Actions > Sync upstream main > Run workflow`，分支选 `local`。定时执行可能延迟；公开仓库长期无活动可能被 GitHub 暂停，届时在 Actions 重新启用。
+- 需要合入定制版时，打开 https://github.com/bianwuya/Eta/compare/local...main?expand=1 ，确认 **base=local、compare=main** 后创建 PR。通过检查并人工确认后，用 **Create a merge commit** 合并，保留主线祖先关系，后续重复同步不会反复引入旧提交。不要启用自动合并，也不要把 local 反向合入 main。
 
 > 注意：GitHub 的默认分支与上述工作流中的 main/local 是两回事。若要新建 PR 默认指向 local，
 > 还需在 GitHub `Settings > General > Default branch` 将默认分支切换到 local。
