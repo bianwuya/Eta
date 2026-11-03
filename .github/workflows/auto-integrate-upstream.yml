@@ -104,8 +104,15 @@ jobs:
           # If an AI/human has made repair commits, a reviewer must handle that PR.
           parents=$(gh api "repos/$GH_REPO/git/commits/$head_sha" --jq '.parents | map(.sha) | join(" ")')
           read -ra parent_list <<< "$parents"
-          if [[ "${#parent_list[@]}" -ne 2 || "${parent_list[0]}" != "$local_sha" ]]; then
-            echo "::warning::Integration branch has changed or local advanced; review required."
+          if [[ "${#parent_list[@]}" -ne 2 ]]; then
+            echo "::warning::Integration PR was modified beyond the original merge. Review required."
+            exit 0
+          fi
+          if [[ "${parent_list[0]}" != "$local_sha" ]]; then
+            # A stale bot-produced PR would otherwise block all subsequent updates.
+            # Never auto-close a PR with human/AI repair commits (guarded above).
+            gh pr close "$pr_number" --comment "Superseded: local advanced. A new upstream merge candidate will be prepared on the next run."
+            echo "::notice::Closed stale automated PR #$pr_number; next run will use the latest local."
             exit 0
           fi
           if ! git merge-base --is-ancestor "${parent_list[1]}" "$main_sha"; then
