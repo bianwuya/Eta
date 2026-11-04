@@ -189,7 +189,7 @@ class ProviderCredentialSessionsTest {
         val sessions = ProviderCredentialSessions(storage, client) { NOW }
         val executor = Executors.newSingleThreadExecutor()
         try {
-            val first = executor.submit<ProviderAccountSummary> {
+            val first = executor.submit<ProviderCredential> {
                 sessions.login(PROVIDER_ID, AUTH_MODE, AgentRunController()) {}
             }
             await(firstStarted)

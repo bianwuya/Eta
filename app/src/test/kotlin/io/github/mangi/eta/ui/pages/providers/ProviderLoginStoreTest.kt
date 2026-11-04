@@ -3,6 +3,8 @@ package io.github.mangi.eta.ui.pages.providers
 import io.github.mangi.eta.agent.auth.ProviderAccountSummary
 import io.github.mangi.eta.agent.auth.ProviderAuthException
 import io.github.mangi.eta.agent.auth.ProviderLoginPrompt
+import io.github.mangi.eta.data.repository.CodexAccountView
+import io.github.mangi.eta.data.repository.ProviderAccountLogin
 import io.github.mangi.eta.agent.runtime.AgentRunController
 import io.github.mangi.eta.data.model.CustomProviderSetting
 import io.github.mangi.eta.data.model.ProviderAuthModes
@@ -161,34 +163,154 @@ class ProviderLoginStoreTest {
         } finally { store.close() }
     }
 
+    @Test
+    fun addingSecondAccountKeepsTheCurrentSelectionAndSkipsModelSync() = runBlocking {
+        val operations = FakeOperations(addUnselectedSecondAccount = true)
+        val store = ProviderLoginStore(provider.id, this, operations)
+        try {
+            store.login(provider)
+            val state = withTimeout(2_000) { store.state.first { !it.isBusy } }
+
+            assertEquals(listOf("save", "login"), operations.calls.toList())
+            assertEquals(account, state.account)
+            assertEquals("first", state.selected?.accountId)
+            assertEquals(2, state.accounts.size)
+            assertFalse(state.accounts.single { it.accountId == "second" }.selected)
+            assertEquals("已添加账号 test@example.com", state.message)
+        } finally {
+            store.close()
+        }
+    }
+
+    @Test
+    fun selectingAnotherAccountSwitchesTheCurrentOneWithoutTouchingModels() = runBlocking {
+        val operations = FakeOperations(addUnselectedSecondAccount = true)
+        val store = ProviderLoginStore(provider.id, this, operations)
+        try {
+            store.login(provider)
+            withTimeout(2_000) { store.state.first { !it.isBusy } }
+
+            store.select("second")
+            val state = withTimeout(2_000) { store.state.first { !it.isBusy && "select:second" in operations.calls } }
+
+            assertEquals("second", operations.views.single { it.selected }.accountId)
+            assertEquals("second", state.selected?.accountId)
+            assertTrue("sync" !in operations.calls.toList())
+            assertTrue(state.message.orEmpty().contains("已切换到所选账号"))
+        } finally {
+            store.close()
+        }
+    }
+
+    @Test
+    fun reloginTargetsOnlyTheGivenAccountAndKeepsTheSelection() = runBlocking {
+        val operations = FakeOperations(addUnselectedSecondAccount = true)
+        val store = ProviderLoginStore(provider.id, this, operations)
+        try {
+            store.login(provider)
+            withTimeout(2_000) { store.state.first { !it.isBusy } }
+
+            store.login(provider, reloginAccountId = "second")
+            withTimeout(2_000) { store.state.first { !it.isBusy } }
+
+            assertTrue("relogin:second" in operations.calls.toList())
+            assertEquals("first", store.state.value.selected?.accountId)
+        } finally {
+            store.close()
+        }
+    }
+
+    @Test
+    fun deletingCurrentAccountLeavesNoSelectionInsteadOfFallingBack() = runBlocking {
+        val operations = FakeOperations(addUnselectedSecondAccount = true)
+        val store = ProviderLoginStore(provider.id, this, operations)
+        try {
+            store.login(provider)
+            withTimeout(2_000) { store.state.first { !it.isBusy } }
+
+            store.remove("first")
+            val state = withTimeout(2_000) { store.state.first { !it.isBusy && "remove:first" in operations.calls } }
+
+            assertNull(state.account)
+            assertNull(state.selected)
+            assertEquals("已删除账号", state.message)
+        } finally {
+            store.close()
+        }
+    }
+
     private class FakeOperations(
         val waitForCancellation: Boolean = false,
         val saveError: Exception? = null,
         val revoked: Boolean = true,
         val syncError: Exception? = null,
         val syncRelease: CompletableDeferred<Unit>? = null,
+        /** 模拟新增第二个账号：登录成功但不会成为当前账号。 */
+        val addUnselectedSecondAccount: Boolean = false,
     ) : ProviderLoginOperations {
         val calls = Collections.synchronizedList(mutableListOf<String>())
         @Volatile var controller: AgentRunController? = null
+        @Volatile var currentAccount: ProviderAccountSummary? = account
+        val views = Collections.synchronizedList(
+            mutableListOf(CodexAccountView("first", "", account.email, null, true, false, true)),
+        )
 
         override suspend fun save(provider: ProviderSetting) {
             calls += "save"
             saveError?.let { throw it }
         }
 
-        override fun account(providerId: String, authMode: String): ProviderAccountSummary = account
+        override fun account(providerId: String, authMode: String): ProviderAccountSummary? = currentAccount
+
+        override fun accounts(providerId: String, authMode: String): List<CodexAccountView> = views.toList()
+
+        override fun selectAccount(providerId: String, authMode: String, accountId: String) {
+            calls += "select:$accountId"
+            replaceSelection(accountId)
+        }
+
+        override fun renameAccount(providerId: String, accountId: String, name: String) {
+            calls += "rename:$accountId"
+            views.replaceAll { if (it.accountId == accountId) it.copy(name = name) else it }
+        }
+
+        override fun removeAccount(
+            providerId: String,
+            authMode: String,
+            accountId: String,
+            controller: AgentRunController,
+        ): Boolean {
+            calls += "remove:$accountId"
+            views.removeAll { it.accountId == accountId }
+            if (views.none { it.selected }) currentAccount = null
+            return revoked
+        }
 
         override fun login(
             providerId: String,
             authMode: String,
             controller: AgentRunController,
             onPrompt: (ProviderLoginPrompt) -> Unit,
-        ): ProviderAccountSummary {
-            calls += "login"
+            accountId: String?,
+        ): ProviderAccountLogin {
+            calls += if (accountId == null) "login" else "relogin:$accountId"
             this.controller = controller
             onPrompt(ProviderLoginPrompt("https://auth.example.com/authorize", "TEST-CODE"))
             if (waitForCancellation) controller.awaitRetryDelay(60_000)
-            return account
+            if (accountId != null) {
+                val selected = views.single { it.accountId == accountId }.selected
+                return ProviderAccountLogin(accountId, account, selected = selected, added = false)
+            }
+            if (addUnselectedSecondAccount) {
+                views += CodexAccountView("second", "备用", "second@example.com", null, false, false, true)
+                return ProviderAccountLogin("second", account, selected = false, added = true)
+            }
+            return ProviderAccountLogin("first", account, selected = true, added = true)
+        }
+
+        private fun replaceSelection(accountId: String) {
+            views.replaceAll { it.copy(selected = it.accountId == accountId) }
+            if (accountId == "first") currentAccount = account
         }
 
         override suspend fun syncModels(providerId: String, authMode: String): Int {
@@ -199,7 +321,12 @@ class ProviderLoginStoreTest {
             return 2
         }
 
-        override fun disconnect(providerId: String, authMode: String, controller: AgentRunController): Boolean = revoked
+        override fun disconnect(providerId: String, authMode: String, controller: AgentRunController): Boolean {
+            calls += "disconnect"
+            views.replaceAll { it.copy(needsReauthentication = true) }
+            currentAccount = null
+            return revoked
+        }
     }
 
     private companion object {

@@ -1,8 +1,11 @@
 package io.github.mangi.eta.agent.model
 
+import io.github.mangi.eta.agent.auth.ProviderCredentialBinding
 import io.github.mangi.eta.agent.runtime.AgentRunController
 import io.github.mangi.eta.agent.runtime.AgentTokenUsage
+import io.github.mangi.eta.data.model.ProviderAuthModes
 import io.github.mangi.eta.data.provider.ProviderConnectionProfile
+import io.github.mangi.eta.data.repository.ProviderCredentialRepository
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -46,7 +49,21 @@ internal data class ProviderRequest(
     val tools: JSONArray,
     val sessionId: String = java.util.UUID.randomUUID().toString(),
     val purpose: ProviderRequestPurpose = ProviderRequestPurpose.CHAT,
+    /** 调用方已解析的账号绑定；为空时在首次使用处解析一次。 */
+    val credentialBinding: ProviderCredentialBinding? = null,
 ) {
+    /**
+     * 本次模型请求开始时固定的认证绑定：同一次请求的重试与 401 刷新都沿用它，
+     * 因此 UI 切换账号不会让在途请求改用其他账号。
+     */
+    val accountBinding: ProviderCredentialBinding? by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+        credentialBinding ?: if (ProviderAuthModes.isOAuth(config.authMode)) {
+            ProviderCredentialRepository.bindingOrNull(config.providerId, config.authMode)
+        } else {
+            null
+        }
+    }
+
     val effectiveConfig: AgentModelClient.ModelConfig get() {
         val connected = ProviderConnectionProfile.forAuthMode(config.authMode)?.let { profile ->
             config.copy(

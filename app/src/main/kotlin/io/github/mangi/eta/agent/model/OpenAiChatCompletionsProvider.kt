@@ -74,12 +74,15 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
 
         runController.throwIfCancelled()
         onEvent(ProviderEvent.RequestStarted)
+        // 请求开始时固定账号绑定，同一次请求的重试与 401 刷新不会改用其他账号。
+        val accountBinding = request.accountBinding
         return AuthorizedProviderHttp.execute(
             client = AgentHttpClient.modelClient(request.purpose),
             providerId = config.providerId,
             authMode = config.authMode,
             request = httpRequest,
             controller = runController,
+            binding = accountBinding,
         ) { response ->
             onEvent(ProviderEvent.ResponseHeaders(response.code))
             if (!response.isSuccessful) {

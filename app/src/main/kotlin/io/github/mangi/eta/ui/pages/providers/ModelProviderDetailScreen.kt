@@ -263,6 +263,17 @@ private fun ProviderConfigTab(
                     },
                     onDisconnect = loginStore::disconnect,
                     onCancel = loginStore::cancel,
+                    onSelectAccount = loginStore::select,
+                    onReloginAccount = { accountId ->
+                        val validationError = validateProviderDraft(context, draft)
+                        if (validationError != null) {
+                            status = context.getString(R.string.provider_error, validationError)
+                        } else {
+                            loginStore.login(draft.toProvider(provider), reloginAccountId = accountId)
+                        }
+                    },
+                    onRenameAccount = loginStore::rename,
+                    onRemoveAccount = loginStore::remove,
                 )
                 BasicComponent(
                     title = stringResource(R.string.ui_test_connection_10b7d8),

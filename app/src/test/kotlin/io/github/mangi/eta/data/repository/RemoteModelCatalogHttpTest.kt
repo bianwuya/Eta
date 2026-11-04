@@ -41,6 +41,8 @@ class RemoteModelCatalogHttpTest {
             assertEquals(260000, result.models.first().contextWindow)
             assertEquals(ReasoningEffort.HIGH, result.models.first().reasoningCapabilities!!.defaultEffort)
             assertEquals(credentials.binding, result.accountBinding)
+            // 同一次目录读取只解析一次账号绑定：401 重试与结尾有效性检查都用它。
+            assertEquals(1, credentials.bindingReads.get())
             assertEquals(2, credentials.rejectedTokens.size)
             assertEquals(listOf("workspace-old", "workspace-new"), seen.map { it.accountId })
             assertTrue(seen.all { it.originator == "eta" && it.authorization?.startsWith("Bearer ") == true })
@@ -109,7 +111,7 @@ class RemoteModelCatalogHttpTest {
         val noOAuth = object : RemoteModelFetcher.Credentials {
             override fun binding(providerId: String, authMode: String): ProviderCredentialBinding = error("不应读取 OAuth 账号")
             override fun isCurrent(binding: ProviderCredentialBinding): Boolean = error("不应读取 OAuth 账号")
-            override fun accessToken(providerId: String, authMode: String, controller: AgentRunController, rejected: String?): String =
+            override fun accessToken(binding: ProviderCredentialBinding, controller: AgentRunController, rejected: String?): String =
                 error("不应读取 OAuth 令牌")
         }
         withServer(listOf(200 to """{"data":[{"id":"api-chat","name":"API 模型"}]}""")) { url, seen ->
@@ -125,12 +127,16 @@ class RemoteModelCatalogHttpTest {
     private class FixtureCredentials(providerId: String, authMode: String) : RemoteModelFetcher.Credentials {
         val binding = ProviderCredentialBinding(providerId, authMode, 7)
         @Volatile var current = true
+        val bindingReads = AtomicInteger()
         val rejectedTokens = mutableListOf<String?>()
-        override fun binding(providerId: String, authMode: String) = binding
+        override fun binding(providerId: String, authMode: String): ProviderCredentialBinding {
+            bindingReads.incrementAndGet()
+            return binding
+        }
         override fun isCurrent(binding: ProviderCredentialBinding) = current && this.binding == binding
-        override fun accessToken(providerId: String, authMode: String, controller: AgentRunController, rejected: String?): String {
+        override fun accessToken(binding: ProviderCredentialBinding, controller: AgentRunController, rejected: String?): String {
             rejectedTokens += rejected
-            return if (authMode == ProviderAuthModes.OPENAI_CHATGPT) {
+            return if (binding.authMode == ProviderAuthModes.OPENAI_CHATGPT) {
                 CodexOAuthFixture.accessToken(if (rejected == null) "workspace-old" else "workspace-new")
             } else if (rejected == null) "fixture-old" else "fixture-new"
         }
