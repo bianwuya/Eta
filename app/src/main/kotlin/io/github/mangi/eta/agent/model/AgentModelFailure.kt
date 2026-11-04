@@ -90,11 +90,31 @@ internal class AgentModelFailure(
                 "模型请求等待超时（连接或写入超时，或读取响应等待超过 ${AgentHttpClient.MODEL_READ_TIMEOUT_MS / 60_000} 分钟）。",
                 failure,
             )
-            is SSLException, is ProtocolException -> null
+            is SSLException -> if (isTransientTlsClosure(failure)) AgentModelFailure(
+                "MODEL_CONNECTION_FAILED", true, "模型 TLS 连接提前关闭，将尝试重新连接。", failure,
+            ) else null
+            is ProtocolException -> null
             is IOException -> AgentModelFailure(
                 "MODEL_CONNECTION_FAILED", true, "模型连接中断或暂时无法建立，请检查网络与服务商状态。", failure,
             )
             else -> null
+        }
+
+        /** 只接纳明确的传输关闭；证书、对端身份与握手配置错误仍不能靠重试掩盖。 */
+        private fun isTransientTlsClosure(failure: SSLException): Boolean {
+            val causes = mutableListOf<Throwable>()
+            var current: Throwable? = failure
+            while (current != null && causes.none { it === current }) {
+                causes += current
+                current = current.cause
+            }
+            if (causes.any {
+                it is javax.net.ssl.SSLHandshakeException ||
+                    it is javax.net.ssl.SSLPeerUnverifiedException ||
+                    it is java.security.cert.CertificateException
+            }) return false
+            return causes.any { it is java.io.EOFException } ||
+                failure.message?.trim()?.lowercase() in setOf("connection closed", "connection closed by peer")
         }
 
         private fun isContextOverflow(error: JSONObject?): Boolean {
