@@ -47,7 +47,7 @@ import io.github.mangi.eta.ui.model.ToolActivityMessageUi
 import io.github.mangi.eta.ui.model.ToolActivityStatusUi
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.basic.TextButton
+import top.yukonga.miuix.kmp.preference.ArrowPreference
 import top.yukonga.miuix.kmp.overlay.OverlayBottomSheet
 import top.yukonga.miuix.kmp.squircle.squircleSurface
 import top.yukonga.miuix.kmp.theme.MiuixTheme
@@ -63,6 +63,7 @@ internal fun SubagentActivityRow(
     modifier: Modifier = Modifier,
 ) {
     var showInspector by rememberSaveable(message.id) { mutableStateOf(false) }
+    var showFullDetails by rememberSaveable(message.id) { mutableStateOf(false) }
     val running = message.status == ToolActivityStatusUi.Running &&
         snapshot.status in setOf("running", "queued", "pausing", "paused", "waiting_decision", "cancelling")
     val failed = message.status == ToolActivityStatusUi.Failed ||
@@ -143,7 +144,7 @@ internal fun SubagentActivityRow(
     }
 
     OverlayBottomSheet(
-        show = showInspector,
+        show = showInspector && !showFullDetails,
         title = taskTitle,
         onDismissRequest = { showInspector = false },
     ) {
@@ -151,7 +152,15 @@ internal fun SubagentActivityRow(
             snapshot = snapshot,
             running = running,
             failed = failed,
+            onOpenDetails = { showFullDetails = true },
         )
+    }
+    OverlayBottomSheet(
+        show = showFullDetails,
+        title = "任务详情",
+        onDismissRequest = { showFullDetails = false },
+    ) {
+        if (showFullDetails) SubagentFullDetails(snapshot.detailId, allowDelete = !running)
     }
 }
 
@@ -194,11 +203,11 @@ private fun SubagentInspectorContent(
     snapshot: SubagentActivitySnapshot,
     running: Boolean,
     failed: Boolean,
+    onOpenDetails: () -> Unit,
 ) {
     val density = LocalDensity.current
     val maxSheetHeight = with(density) { LocalWindowInfo.current.containerSize.height.toDp() } * 0.76f
     var promptExpanded by rememberSaveable(snapshot.subagentId) { mutableStateOf(false) }
-    var showFullDetails by rememberSaveable(snapshot.detailId) { mutableStateOf(false) }
     val pulse = rememberDrawPhasePulse(active = running)
 
     Column(
@@ -251,8 +260,7 @@ private fun SubagentInspectorContent(
 
         if (snapshot.previewTruncated) Text("这是实时预览，内容已截短；不是模型收到的完整指令。", style = MiuixTheme.textStyles.footnote2)
         if (snapshot.detailId.isNotBlank()) {
-            TextButton(text = if (showFullDetails) "收起保留详情" else "按需查看完整保留详情", onClick = { showFullDetails = !showFullDetails })
-            if (showFullDetails) SubagentFullDetails(snapshot.detailId, allowDelete = !running)
+            ArrowPreference(title = "保留详情", onClick = onOpenDetails)
         } else if (snapshot.previewTruncated) {
             Text("旧记录未保留全文，已丢内容无法恢复。", style = MiuixTheme.textStyles.footnote2)
         }

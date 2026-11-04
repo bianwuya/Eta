@@ -1,6 +1,5 @@
 package io.github.mangi.eta.local.subagentstats
 
-import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -22,14 +21,17 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.FileDownload
 import io.github.mangi.eta.data.db.EtaDatabase
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
+import io.github.mangi.eta.ui.components.MiuixDialogActions
+import io.github.mangi.eta.ui.components.ListEmptyState
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -40,16 +42,22 @@ import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.basic.TextButton
+import top.yukonga.miuix.kmp.basic.Icon
+import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.preference.ArrowPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import top.yukonga.miuix.kmp.window.WindowDialog
 
 @Composable
-internal fun SubagentStatsScreen(onBack: () -> Unit) {
+internal fun SubagentStatsScreen(
+    onBack: () -> Unit,
+    conversationId: String? = null,
+    onOpenConversation: (String) -> Unit = {},
+) {
     val context = LocalContext.current
     var records by remember { mutableStateOf<List<SubagentRequestStat>>(emptyList()) }
     var titles by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
-    var selected by rememberSaveable { mutableStateOf<String?>(null) }
+    val selected = conversationId
     var loadError by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val settingsFlow = remember { SettingsDataStore.subagentSettingsFlow() }
@@ -74,7 +82,6 @@ internal fun SubagentStatsScreen(onBack: () -> Unit) {
             }
         }
     }
-    BackHandler { if (selected != null) selected = null else onBack() }
     val visible = remember(records, selected) { records.filter { selected == null || it.conversationId == selected } }
     var groups by remember { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
     var modelTotals by remember { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
@@ -89,6 +96,7 @@ internal fun SubagentStatsScreen(onBack: () -> Unit) {
     }
     val exportRecords by rememberUpdatedState(visible)
     var exportStatus by remember { mutableStateOf<String?>(null) }
+    var confirmClear by remember { mutableStateOf(false) }
     val export = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
         if (uri != null) scope.launch {
             val snapshot = exportRecords
@@ -101,38 +109,51 @@ internal fun SubagentStatsScreen(onBack: () -> Unit) {
     }
     MiuixScaffoldPage(
         title = if (selected == null) "子代理请求统计" else "会话请求明细",
-        onBack = { if (selected != null) selected = null else onBack() },
+        onBack = onBack,
         actions = {
-            TextButton(text = "导出", onClick = { export.launch("eta-subagent-stats.json") })
+            IconButton(onClick = { export.launch("eta-subagent-stats.json") }, enabled = visible.isNotEmpty()) {
+                Icon(Icons.Rounded.FileDownload, contentDescription = "导出请求统计")
+            }
+        },
+        overlay = {
+            WindowDialog(show = confirmClear, title = "清除历史统计", onDismissRequest = { confirmClear = false }) {
+                Column(verticalArrangement = Arrangement.spacedBy(20.dp)) {
+                    Text("删除本机保留的全部请求统计，不影响聊天记录。")
+                    MiuixDialogActions(confirmText = "清除", destructive = true,
+                        onCancel = { confirmClear = false }, onConfirm = {
+                            confirmClear = false
+                            scope.launch {
+                                runCatching { withContext(Dispatchers.IO) { SubagentStatsStore.get(context).clear() } }
+                                    .onSuccess { records = emptyList() }.onFailure { loadError = true }
+                            }
+                        })
+                }
+            }
         },
     ) {
-        item(key = "collection") {
-            Card(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
-                SwitchPreference(
-                    title = "采集请求统计",
-                    summary = "默认关闭。关闭后跳过新请求的解析、指纹和写库；在途记录正常收尾，历史仍可查看。重新开启建立新对照。",
-                    checked = settings.collectRequestStats,
-                    onCheckedChange = { enabled -> scope.launch {
-                        SettingsDataStore.setRequestStatsEnabled(enabled)
-                    } },
-                )
-                TextButton(text = "清除历史统计", onClick = { scope.launch {
-                    runCatching { withContext(Dispatchers.IO) { SubagentStatsStore.get(context).clear() } }
-                        .onSuccess { records = emptyList() }.onFailure { loadError = true }
-                } })
+        if (selected == null) {
+            item(key = "collection") {
+                SmallTitle("采集设置")
+                Card(Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
+                    SwitchPreference(
+                        title = "采集请求统计",
+                        summary = "默认关闭，历史记录仍可查看",
+                        checked = settings.collectRequestStats,
+                        onCheckedChange = { enabled -> scope.launch {
+                            SettingsDataStore.setRequestStatsEnabled(enabled)
+                        } },
+                    )
+                    ArrowPreference(title = "清除历史统计", enabled = records.isNotEmpty(), onClick = { confirmClear = true })
+                }
             }
         }
         item(key = "explanation") {
             Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text("按会话归类，每次模型尝试分别记录；保留最近 5000 条。仅统计安装此版本之后的请求，包含失败与重试。",
-                    style = MiuixTheme.textStyles.footnote1)
-                Text("缓存数字来自服务商响应，未知不等于零。命中率 = 有完整用量记录的缓存 token ÷ 对应输入 token；不混入未知样本。",
-                    style = MiuixTheme.textStyles.footnote1)
-                Text("指纹来自实际发送的 JSON。旧消息完全保留但缓存下降，只能排除已检查的 Eta 前缀变化，不能单凭它断言中转故障。",
-                    style = MiuixTheme.textStyles.footnote1)
+                Text("缓存用量来自服务商响应，未知不计入命中率。保留最近 5000 条。",
+                    style = MiuixTheme.textStyles.footnote2, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
                 exportStatus?.let { Text(it, style = MiuixTheme.textStyles.footnote1) }
                 if (loadError) Text("统计读取失败，请稍后重试。")
-                if (records.isEmpty()) Text("暂无统计。仅在开启采集后记录正常请求，无需额外测试请求。")
+                if (visible.isEmpty()) ListEmptyState(title = "暂无请求统计")
             }
         }
         if (selected == null) {
@@ -141,7 +162,7 @@ internal fun SubagentStatsScreen(onBack: () -> Unit) {
                     ArrowPreference(
                         title = titles[conversationId] ?: conversationId,
                         summary = summary,
-                        onClick = { selected = conversationId },
+                        onClick = { onOpenConversation(conversationId) },
                     )
                 }
             }

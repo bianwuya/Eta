@@ -31,7 +31,6 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -92,17 +91,9 @@ private data class CustomSubagentDraft(
 @Composable
 internal fun SubagentSettingsScreen(
     onBack: () -> Unit,
+    onOpenCompaction: () -> Unit,
+    onOpenRequestStats: () -> Unit,
 ) {
-    var showCompactionSettings by rememberSaveable { mutableStateOf(false) }
-    if (showCompactionSettings) {
-        io.github.mangi.eta.local.compaction.CompactionSettingsScreen(onBack = { showCompactionSettings = false })
-        return
-    }
-    var showRequestStats by rememberSaveable { mutableStateOf(false) }
-    if (showRequestStats) {
-        io.github.mangi.eta.local.subagentstats.SubagentStatsScreen(onBack = { showRequestStats = false })
-        return
-    }
     val scope = rememberCoroutineScope()
     val agentPrefs = remember { Prefs.localAgentPreferences() }
     val defaultEnabled = Prefs.Keys.BOOLEAN_DEFAULTS.getValue(Prefs.Keys.AGENT_SUBAGENT_ENABLED)
@@ -379,12 +370,12 @@ internal fun SubagentSettingsScreen(
                 ArrowPreference(
                     title = "上下文压缩",
                     summary = "主/子代理统一的压缩模型、思考强度和摘要提示词",
-                    onClick = { showCompactionSettings = true },
+                    onClick = onOpenCompaction,
                 )
                 ArrowPreference(
                     title = "子代理请求统计",
                     summary = "按会话查看输入、缓存命中与历史前缀变化",
-                    onClick = { showRequestStats = true },
+                    onClick = onOpenRequestStats,
                 )
                 ArrowPreference(
                     title = "Subagent 模型",

@@ -28,6 +28,15 @@ sealed interface AppRoute : NavKey {
     data object Subagents : AppRoute
 
     @Serializable
+    data object CompactionSettings : AppRoute
+
+    @Serializable
+    data object SubagentStats : AppRoute
+
+    @Serializable
+    data class SubagentConversationStats(val conversationId: String) : AppRoute
+
+    @Serializable
     data object Characters : AppRoute
 
     @Serializable

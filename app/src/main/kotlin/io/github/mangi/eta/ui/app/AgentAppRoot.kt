@@ -478,7 +478,26 @@ fun AgentAppRoot(
                 WebToolsSettingsScreen(onBack = ::popRoute)
             }
             entry<AppRoute.Subagents>(swipeDismiss = swipeDismiss) {
-                SubagentSettingsScreen(onBack = ::popRoute)
+                SubagentSettingsScreen(
+                    onBack = ::popRoute,
+                    onOpenCompaction = { pushRoute(AppRoute.CompactionSettings) },
+                    onOpenRequestStats = { pushRoute(AppRoute.SubagentStats) },
+                )
+            }
+            entry<AppRoute.CompactionSettings>(swipeDismiss = swipeDismiss) {
+                io.github.mangi.eta.local.compaction.CompactionSettingsScreen(onBack = ::popRoute)
+            }
+            entry<AppRoute.SubagentStats>(swipeDismiss = swipeDismiss) {
+                io.github.mangi.eta.local.subagentstats.SubagentStatsScreen(
+                    onBack = ::popRoute,
+                    onOpenConversation = { pushRoute(AppRoute.SubagentConversationStats(it)) },
+                )
+            }
+            entry<AppRoute.SubagentConversationStats>(swipeDismiss = swipeDismiss) { route ->
+                io.github.mangi.eta.local.subagentstats.SubagentStatsScreen(
+                    onBack = ::popRoute,
+                    conversationId = route.conversationId,
+                )
             }
             entry<AppRoute.Skills>(swipeDismiss = swipeDismiss) {
                 LaunchedEffect(Unit) {
