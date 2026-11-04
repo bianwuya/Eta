@@ -155,6 +155,7 @@ internal sealed interface AgentEvent {
         val index: Int,
         val text: String,
         val queueMessageId: String = "",
+        val images: List<String> = emptyList(),
     ) : AgentEvent {
         override fun toLogLine(): String =
             "user_supplement_received index=$index, chars=${text.length}"

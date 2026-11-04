@@ -283,14 +283,14 @@ internal class AgentLoop(
     }
 
     private fun appendPendingSteeringMessage(): Boolean {
-        val supplement = runController.pollSteeringMessage() ?: return false
+        val supplement = runController.pollSteeringInput() ?: return false
         appendMessage(steeringMessage(supplement))
         context.userAppended()
         return true
     }
 
     private fun appendPendingSteeringOrSeal(): Boolean {
-        val supplement = runController.pollSteeringOrSeal() ?: return false
+        val supplement = runController.pollSteeringInputOrSeal() ?: return false
         appendMessage(steeringMessage(supplement))
         context.userAppended()
         return true
@@ -299,8 +299,8 @@ internal class AgentLoop(
     private fun steeringPrompt(supplement: String): String =
         "用户补充指令：$supplement\n\n请基于当前任务上下文继续执行，不要从头重复已经完成或已经验证过的操作。"
 
-    private fun steeringMessage(supplement: String): JSONObject =
-        AgentConversationCodec.userTextMessage(steeringPrompt(supplement))
+    private fun steeringMessage(supplement: AgentRunController.SteeringInput): JSONObject =
+        AgentConversationCodec.userMessage(steeringPrompt(supplement.text), supplement.images)
             .put("_eta_message_id", "user-$operationId-supplement-${++supplementIndex}")
 
     private fun executeToolBatch(

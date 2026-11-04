@@ -19,7 +19,8 @@ internal class AgentRunController {
 
     private val lock = ReentrantLock()
     private val pauseCondition = lock.newCondition()
-    private val steeringMessages = ArrayDeque<String>()
+    data class SteeringInput(val text: String, val images: List<io.github.mangi.eta.agent.model.AgentModelClient.ModelImage> = emptyList())
+    private val steeringMessages = ArrayDeque<SteeringInput>()
     private var acceptingSteering = true
     @Volatile
     private var paused = false
@@ -43,26 +44,28 @@ internal class AgentRunController {
     /**
      * 将补充指令排入下一个 turn。steering 不取消当前模型请求或工具批次。
      */
-    fun steer(text: String): Boolean {
+    fun steer(text: String, images: List<io.github.mangi.eta.agent.model.AgentModelClient.ModelImage> = emptyList()): Boolean {
         val prompt = text.trim()
-        if (prompt.isBlank()) return false
+        if (prompt.isBlank() && images.isEmpty()) return false
         lock.withLock {
             if (cancelled || !acceptingSteering) return false
-            steeringMessages.addLast(prompt)
+            steeringMessages.addLast(SteeringInput(prompt, images.toList()))
             pauseCondition.signalAll()
         }
         return true
     }
 
     /** 默认逐条消费，避免后来的补充指令越过前一条的模型回合。 */
-    fun pollSteeringMessage(): String? =
-        lock.withLock { steeringMessages.pollFirst() }
+    fun pollSteeringInput(): SteeringInput? = lock.withLock { steeringMessages.pollFirst() }
+    fun pollSteeringMessage(): String? = pollSteeringInput()?.text
 
     /**
      * 自然结束前原子地消费最后一条 steering；若队列为空则永久关闭本 run 的接收入口。
      * 这样 Service 不会在 loop 已返回后仍把补充指令误报为已接收。
      */
-    fun pollSteeringOrSeal(): String? =
+    fun pollSteeringOrSeal(): String? = pollSteeringInputOrSeal()?.text
+
+    fun pollSteeringInputOrSeal(): SteeringInput? =
         lock.withLock {
             steeringMessages.pollFirst()?.let { return it }
             acceptingSteering = false

@@ -81,21 +81,24 @@ internal class RuntimeRunRegistry(private val capacity: Int = MAX_ACTIVE_RUNS) {
             onRequestIngested()
         }
 
-        fun supplement(text: String, queueMessageId: String = ""): AgentEvent.UserSupplementReceived? {
+        fun supplement(text: String, queueMessageId: String = "",
+            images: List<io.github.mangi.eta.agent.model.AgentModelClient.ModelImage> = emptyList(),
+            previews: List<String> = emptyList()): AgentEvent.UserSupplementReceived? {
             if (queueMessageId.isNotBlank()) {
                 synchronized(supplementsLock) { supplements.firstOrNull { it.queueMessageId == queueMessageId } }
-                    ?.let { return AgentEvent.UserSupplementReceived(it.index, it.text, it.queueMessageId) }
+                    ?.let { return AgentEvent.UserSupplementReceived(it.index, it.text, it.queueMessageId, it.images) }
             }
-            return session.steer(text) {
+            return session.steer(text, images) {
                 synchronized(supplementsLock) {
                     val supplement = AgentUiHandoffPayload.Supplement(
                         index = nextSupplementIndex++,
                         text = text,
                         createdAt = System.currentTimeMillis(),
                         queueMessageId = queueMessageId,
+                        images = previews,
                     )
                     supplements += supplement
-                    AgentEvent.UserSupplementReceived(supplement.index, supplement.text, queueMessageId)
+                    AgentEvent.UserSupplementReceived(supplement.index, supplement.text, queueMessageId, supplement.images)
                 }
             }
         }

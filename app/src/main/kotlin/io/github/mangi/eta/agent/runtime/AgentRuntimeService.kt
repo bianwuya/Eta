@@ -12,6 +12,7 @@ import android.content.Intent
 import android.content.res.Configuration
 import android.graphics.PixelFormat
 import android.graphics.Rect
+import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
@@ -218,7 +219,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                 if (msg.what == AgentRuntimeWire.MSG_START_RUN) {
                     AgentRuntimeWire.closeImageDescriptors(msg.data)
                 } else if (msg.what == AgentRuntimeWire.MSG_STEER_RUN) {
-                    AgentWireText.close(msg.data)
+                    AgentRuntimeWire.closeImageDescriptors(msg.data)
                 }
                 return
             }
@@ -249,30 +250,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
 
                 AgentRuntimeWire.MSG_STEER_RUN -> {
                     val data = msg.data ?: return
-                    val runId = AgentRuntimeWire.runIdFromBundle(data)
-                    val queueMessageId = data.getString("queue_message_id").orEmpty()
-                    val text = try {
-                        runCatching { AgentWireText.read(data, "steering_text").orEmpty().trim() }.getOrDefault("")
-                    } finally {
-                        AgentWireText.close(data)
-                    }
-                    val active = runs.get(runId)
-                    val event = if (msg.sendingUid == Process.myUid() && queueMessageId.isNotBlank() && text.isNotBlank() &&
-                        active?.request?.handoff?.source == AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE) {
-                        active.supplement(text, queueMessageId)
-                    } else null
-                    if (event != null && active != null) {
-                        active.overlayState = active.overlayState.applyEvent(event)
-                        if (displayedRun?.runId == runId) state.value = active.overlayState
-                    }
-                    runCatching {
-                        msg.replyTo?.send(Message.obtain(null, AgentRuntimeWire.MSG_STEER_RUN_RESPONSE).apply {
-                            this.data = AgentRuntimeWire.ackBundle(runId).apply {
-                                putString("queue_message_id", queueMessageId)
-                                putBoolean("accepted", event != null)
-                            }
-                        })
-                    }
+                    ingestSteering(data, msg.replyTo, msg.sendingUid == Process.myUid())
                 }
 
                 AgentRuntimeWire.MSG_CANCEL -> {
@@ -314,6 +292,58 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                         runId = AgentRuntimeWire.runIdFromBundle(msg.data ?: return),
                         replyTo = msg.replyTo,
                     )
+                }
+            }
+        }
+    }
+
+    /** Decode image FDs away from main; acknowledge only after actual enqueue, never on preparation alone. */
+    private fun ingestSteering(data: Bundle, replyTo: Messenger?, sameUid: Boolean) {
+        val runId = AgentRuntimeWire.runIdFromBundle(data)
+        val queueId = data.getString("queue_message_id").orEmpty()
+        fun acknowledge(accepted: Boolean, invalid: Boolean = false) {
+            runCatching { replyTo?.send(Message.obtain(null, AgentRuntimeWire.MSG_STEER_RUN_RESPONSE).apply {
+                this.data = AgentRuntimeWire.ackBundle(runId).apply {
+                    putString("queue_message_id", queueId)
+                    putBoolean("accepted", accepted)
+                    putBoolean("invalid_input", invalid)
+                }
+            }) }
+        }
+        val active = runs.get(runId)
+        if (!sameUid || queueId.isBlank() || active?.request?.handoff?.source != AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE) {
+            AgentRuntimeWire.closeImageDescriptors(data)
+            acknowledge(false)
+            return
+        }
+        val wireImages = try { AgentRuntimeWire.incomingImages(data) } catch (_: Exception) {
+            acknowledge(false, true); return
+        }
+        fun accept(text: String, images: List<AgentModelClient.ModelImage>, previews: List<String>) {
+            val event = if (!destroyed && runs.contains(active)) active.supplement(text, queueId, images, previews) else null
+            if (event != null) {
+                active.overlayState = active.overlayState.applyEvent(event)
+                if (displayedRun?.runId == runId) state.value = active.overlayState
+            }
+            acknowledge(event != null)
+        }
+        if (wireImages.isEmpty()) {
+            try { accept(AgentWireText.read(data, "steering_text").orEmpty().trim(), emptyList(), emptyList()) }
+            catch (_: Exception) { acknowledge(false, true) }
+            finally { AgentRuntimeWire.closeImageDescriptors(data) }
+        } else {
+            thread(name = "agent-runtime-steering-images") {
+                val prepared = runCatching {
+                    val text = AgentWireText.read(data, "steering_text").orEmpty().trim()
+                    val images = AgentRuntimeImageTransfer.materializeImages(wireImages)
+                    val previews = images.map { it.reference }
+                    // History/recovery retains the original encoded input; UI samples its own thumbnail.
+                    Triple(text, images, previews)
+                }
+                AgentRuntimeWire.closeImageDescriptors(data)
+                mainHandler.post {
+                    prepared.fold(onSuccess = { (text, images, previews) -> accept(text, images, previews) },
+                        onFailure = { acknowledge(false, true) })
                 }
             }
         }
@@ -627,6 +657,14 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         target: Messenger?,
         event: AgentEvent,
     ) {
+        if (event is AgentEvent.UserSupplementReceived) {
+            dispatchResultIo {
+                val message = Message.obtain(null, AgentRuntimeWire.MSG_EVENT)
+                message.data = AgentRuntimeWire.eventToBundle(event, cacheDir)
+                AgentWireText.send(target, message)
+            }
+            return
+        }
         runCatching {
             val msg = Message.obtain(null, AgentRuntimeWire.MSG_EVENT)
             msg.data = AgentRuntimeWire.eventToBundle(event)
@@ -707,9 +745,10 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         runCatching {
             val msg = Message.obtain(null, AgentRuntimeWire.MSG_DRAIN_RESULTS_RESPONSE)
             msg.data = AgentRuntimeWire.completedRunsToBundle(
-                if (referencesOnly) AgentRuntimeResultStore.pendingPage(this) else AgentRuntimeResultStore.list(this).take(8)
+                if (referencesOnly) AgentRuntimeResultStore.pendingPage(this) else AgentRuntimeResultStore.list(this).take(8),
+                cacheDir,
             )
-            replyTo?.send(msg)
+            AgentWireText.send(replyTo, msg)
         }.onFailure { throwable ->
             AndroidAgentLogger.warnThrottled("runtime_drain_results_failed") {
                 "Agent runtime drain results failed: type=${throwable.safeLogType()}"

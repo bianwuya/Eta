@@ -47,7 +47,9 @@ internal object AgentPendingResultRecovery {
                 promptSupplement?.let { supplement ->
                     AgentModelClient.buildUserHistoryMessage(
                         text = supplement.text,
-                        images = emptyList(),
+                        images = supplement.images.map { reference -> AgentModelClient.ModelImage(reference,
+                            reference.substringAfter("data:").substringBefore(';').takeIf { it.startsWith("image/") } ?: "image/jpeg",
+                            reference.length, source = "user_attach") },
                     ).copy(messageId = supplementMessageId(runId, supplement.index))
                 }
             ) + result.transcript,
@@ -136,7 +138,7 @@ internal object AgentPendingResultRecovery {
         supplements.sortedBy { it.index }.forEach { supplement ->
             val id = supplementMessageId(runId, supplement.index)
             if (updated.any { it.id == id }) return@forEach
-            val userMessage = UserMessageUi(id = id, content = supplement.text)
+            val userMessage = UserMessageUi(id = id, content = supplement.text, images = supplement.images)
             val assistantIndex = updated.indexOfLast {
                 it is AgentMessageUi &&
                     it.isAssistantForRun(runId) &&

@@ -1,5 +1,6 @@
 package io.github.mangi.eta.agent.runtime
 
+import io.github.mangi.eta.agent.model.AgentModelClient
 import android.content.Context
 import android.os.Bundle
 import android.os.Handler
@@ -118,11 +119,12 @@ internal class AgentRuntimeClient(
         }
     }
 
-    enum class SteeringOutcome { Accepted, NotAccepted, Unavailable }
+    enum class SteeringOutcome { Accepted, NotAccepted, InvalidInput, Unavailable }
 
     /** 接收确认与在途模型流分离；超时不表示拒绝，调用方不得据此重复发送。 */
-    fun steerRun(runId: String, queueMessageId: String, text: String): SteeringOutcome {
-        if (runId.isBlank() || queueMessageId.isBlank() || text.isBlank()) return SteeringOutcome.NotAccepted
+    fun steerRun(runId: String, queueMessageId: String, text: String,
+        images: List<AgentModelClient.ModelImage> = emptyList()): SteeringOutcome {
+        if (runId.isBlank() || queueMessageId.isBlank() || (text.isBlank() && images.isEmpty())) return SteeringOutcome.NotAccepted
         val received = CountDownLatch(1)
         val outcome = AtomicReference(SteeringOutcome.Unavailable)
         val receiver = Messenger(object : Handler(Looper.getMainLooper()) {
@@ -131,21 +133,26 @@ internal class AgentRuntimeClient(
                 val data = msg.data ?: return
                 if (AgentRuntimeWire.runIdFromBundle(data) != runId ||
                     data.getString("queue_message_id") != queueMessageId) return
-                outcome.set(if (data.getBoolean("accepted")) SteeringOutcome.Accepted else SteeringOutcome.NotAccepted)
+                outcome.set(when {
+                    data.getBoolean("accepted") -> SteeringOutcome.Accepted
+                    data.getBoolean("invalid_input") -> SteeringOutcome.InvalidInput
+                    else -> SteeringOutcome.NotAccepted
+                })
                 received.countDown()
             }
         })
-        return withRuntimeMessenger(SteeringOutcome.Unavailable) { service ->
-            val data = AgentRuntimeWire.ackBundle(runId).apply {
-                putString("queue_message_id", queueMessageId)
-                AgentWireText.put(this, "steering_text", text, context.cacheDir)
+        val prepared = try { AgentRuntimeImageTransfer.prepare(context, images) }
+            catch (_: AgentRuntimeImageTransfer.ImageTransferException) { return SteeringOutcome.InvalidInput }
+        return prepared.use {
+            withRuntimeMessenger(SteeringOutcome.Unavailable) { service ->
+                val data = AgentRuntimeWire.steeringBundle(runId, queueMessageId, text, prepared.images, context.cacheDir)
+                AgentWireText.send(service, Message.obtain(null, AgentRuntimeWire.MSG_STEER_RUN).apply {
+                    replyTo = receiver
+                    this.data = data
+                })
+                if (received.await(RESPONSE_TIMEOUT_SECONDS, TimeUnit.SECONDS)) outcome.get()
+                else SteeringOutcome.Unavailable
             }
-            AgentWireText.send(service, Message.obtain(null, AgentRuntimeWire.MSG_STEER_RUN).apply {
-                replyTo = receiver
-                this.data = data
-            })
-            if (received.await(RESPONSE_TIMEOUT_SECONDS, TimeUnit.SECONDS)) outcome.get()
-            else SteeringOutcome.Unavailable
         }
     }
 

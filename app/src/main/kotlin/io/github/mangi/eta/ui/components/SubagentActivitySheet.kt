@@ -208,8 +208,6 @@ private fun SubagentInspectorContent(
     val density = LocalDensity.current
     val maxSheetHeight = with(density) { LocalWindowInfo.current.containerSize.height.toDp() } * 0.76f
     var promptExpanded by rememberSaveable(snapshot.subagentId) { mutableStateOf(false) }
-    val pulse = rememberDrawPhasePulse(active = running)
-
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -219,44 +217,11 @@ private fun SubagentInspectorContent(
             .padding(bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        // 顶部状态与元信息横条：留白克制，只展示关键身份与实时状态
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(7.dp)
-                    .graphicsLayer { alpha = pulse?.value ?: 1f }
-                    .clip(CircleShape)
-                    .background(
-                        when {
-                            running -> MiuixTheme.colorScheme.primary
-                            failed -> StatusError
-                            else -> StatusSuccess
-                        },
-                    ),
-            )
-            SubagentTypeBadge(type = snapshot.subagentType.ifBlank { "subagent" }, active = running)
-            if (snapshot.subagentId.isNotBlank()) {
-                Text(
-                    text = snapshot.subagentId,
-                    style = MiuixTheme.textStyles.footnote2.copy(fontFamily = FontFamily.Monospace),
-                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary.copy(alpha = 0.75f),
-                )
-            }
-            if (snapshot.model.isNotBlank()) {
-                Text(
-                    text = "· ${snapshot.model}",
-                    style = MiuixTheme.textStyles.footnote2,
-                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary.copy(alpha = 0.75f),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f, fill = false),
-                )
-            }
-        }
+        Text(
+            text = when { running -> "进行中"; failed -> "执行失败"; else -> "已结束" },
+            style = MiuixTheme.textStyles.footnote2,
+            color = when { running -> MiuixTheme.colorScheme.primary; failed -> StatusError; else -> StatusSuccess },
+        )
 
         if (snapshot.previewTruncated) Text("这是实时预览，内容已截短；不是模型收到的完整指令。", style = MiuixTheme.textStyles.footnote2)
         if (snapshot.detailId.isNotBlank()) {

@@ -1952,8 +1952,8 @@ internal class AgentAppState(
         val conversationId = selectedConversationId ?: return
         val runId = runStore.activeRunId(conversationId) ?: return
         val item = conversationsById[conversationId]?.queuedMessages?.firstOrNull { it.id == queueMessageId } ?: return
-        // 图片仍走现有完整摄取通道；不能为“引导”丢附件或取消在途请求。
-        if (item.pendingImages.isNotEmpty() || runStore.isStopRequested(runId) ||
+        // Original attachment references use the same bounded FD ingestion as a normal send.
+        if (runStore.isStopRequested(runId) ||
             queueMessageId in steeringJobs || queueMessageId in unconfirmedSteering) return
         val job = scope.launch(start = CoroutineStart.LAZY) {
             try {
@@ -1962,7 +1962,10 @@ internal class AgentAppState(
                     if (current.queuedMessages.none { it.id == queueMessageId } || runStore.isStopRequested(runId)) return@withLock
                     val text = AgentFileReferencePromptCodec.format(item.content, item.pendingFileReferences.map { it.reference })
                     val outcome = withContext(Dispatchers.IO) {
-                        AgentRuntimeClient(appContext, AndroidAgentLogger).steerRun(runId, queueMessageId, text)
+                        AgentRuntimeClient(appContext, AndroidAgentLogger).steerRun(runId, queueMessageId, text,
+                            item.pendingImages.map { image -> AgentModelClient.ModelImage(
+                                reference = image.uri, mimeType = image.mimeType, bytes = 0, source = "user_attach",
+                            ) })
                     }
                     when (outcome) {
                         AgentRuntimeClient.SteeringOutcome.Accepted -> {
@@ -1971,6 +1974,9 @@ internal class AgentAppState(
                                 updateConversation(conversationId, AgentMessageQueueReducer.remove(it, queueMessageId), updateTimestamp = false)
                             }
                             persistConversations()
+                        }
+                        AgentRuntimeClient.SteeringOutcome.InvalidInput -> {
+                            Toast.makeText(appContext, "图片无法读取或格式不支持，已保留队列，请撤回检查后重发。", Toast.LENGTH_LONG).show()
                         }
                         AgentRuntimeClient.SteeringOutcome.NotAccepted -> Unit // 已收尾/准备中：原队列自然续发。
                         AgentRuntimeClient.SteeringOutcome.Unavailable -> {
@@ -1982,6 +1988,9 @@ internal class AgentAppState(
                         }
                     }
                 }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+            catch (_: Exception) {
+                Toast.makeText(appContext, "插队附件发送失败，已保留队列，请检查图片后重试。", Toast.LENGTH_LONG).show()
             } finally {
                 steeringJobs.remove(queueMessageId)
             }
@@ -2047,7 +2056,7 @@ internal class AgentAppState(
                 conversationIdForRun(runId)?.let { id -> conversationsById[id]?.let { state ->
                     updateConversation(id, AgentMessageQueueReducer.remove(state, event.queueMessageId), updateTimestamp = false)
                 } }
-                insertSupplementMessage(runId, event.index, event.text, persist = persistSupplement)
+                insertSupplementMessage(runId, event.index, event.text, persist = persistSupplement, images = event.images)
             }
             is AgentEvent.RunStarted -> if (runStore.isStopRequested(runId)) scope.launch(Dispatchers.IO) {
                 AgentRuntimeClient(appContext, AndroidAgentLogger).cancelRun(runId)
@@ -2191,6 +2200,7 @@ internal class AgentAppState(
         index: Int,
         text: String,
         persist: Boolean = true,
+        images: List<String> = emptyList(),
     ) {
         updateMessages(runId) { messages ->
             AgentPendingResultRecovery.mergeSupplements(
@@ -2200,6 +2210,7 @@ internal class AgentAppState(
                         index = index,
                         text = text,
                         createdAt = System.currentTimeMillis(),
+                        images = images,
                     )
                 ),
                 messages = messages,

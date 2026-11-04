@@ -260,6 +260,7 @@ internal object AgentRuntimeWire {
         val rewriteTargetMessageId: String? = null,
     )
 
+    @Serializable
     data class EntryHandoff(
         val id: String,
         val source: String,
@@ -267,6 +268,7 @@ internal object AgentRuntimeWire {
         val dismissEntrySurfaceOnForegroundOperation: Boolean = false
     )
 
+    @Serializable
     data class CompletedRun(
         val handoff: EntryHandoff,
         val result: RunResult,
@@ -283,7 +285,10 @@ internal object AgentRuntimeWire {
 
     fun toBundle(request: RunRequest, images: List<WireImage>, payloadDirectory: File? = null): Bundle {
         require(images.size == request.images.size) { "图片传输项与请求图片数量不一致" }
-        val imageBundles = images.map { image ->
+        return requestBundle(request, imageBundles(images), payloadDirectory)
+    }
+
+    private fun imageBundles(images: List<WireImage>): List<Bundle> = images.map { image ->
             require((image.remoteUrl == null) xor (image.fileDescriptor == null)) {
                 "图片传输项必须且只能包含远程 URL 或文件描述符"
             }
@@ -298,8 +303,16 @@ internal object AgentRuntimeWire {
                 putBoolean(KEY_PRESERVE_ORIGINAL, image.preserveOriginal)
             }
         }
-        return requestBundle(request, imageBundles, payloadDirectory)
-    }
+
+    fun steeringBundle(runId: String, queueId: String, text: String, images: List<WireImage>, directory: File): Bundle =
+        ackBundle(runId).apply {
+            putString("queue_message_id", queueId)
+            AgentWireText.put(this, "steering_text", text, directory)
+            putParcelableArrayList(KEY_IMAGES, ArrayList(imageBundles(images)))
+        }.also { bundle ->
+            try { requireStartRequestWithinBinderBudget(bundle) }
+            catch (failure: Exception) { AgentWireText.close(bundle); throw failure }
+        }
 
     /** 兼容旧客户端与协议测试；新请求不得通过 Binder 内联图片正文。 */
     fun toLegacyBundle(request: RunRequest): Bundle = requestBundle(
@@ -383,7 +396,7 @@ internal object AgentRuntimeWire {
         }
     }
 
-    fun incomingRunRequestFromBundle(bundle: Bundle): IncomingRunRequest {
+    fun incomingImages(bundle: Bundle): List<WireImage> {
         val images = mutableListOf<WireImage>()
         try {
             bundle.getParcelableArrayList(KEY_IMAGES, Bundle::class.java).orEmpty().forEach { image ->
@@ -404,15 +417,15 @@ internal object AgentRuntimeWire {
                     preserveOriginal = image.getBoolean(KEY_PRESERVE_ORIGINAL, false),
                 )
             }
-            return IncomingRunRequest(
-                request = requestFromBundle(bundle, images = emptyList(), readText = false),
-                images = images,
-                textBundle = bundle,
-            )
-        } catch (throwable: Throwable) {
-            closeImageDescriptors(bundle)
-            throw throwable
-        }
+            return images
+        } catch (failure: Throwable) { closeImageDescriptors(bundle); throw failure }
+    }
+
+    fun incomingRunRequestFromBundle(bundle: Bundle): IncomingRunRequest {
+        val images = incomingImages(bundle)
+        return try {
+            IncomingRunRequest(requestFromBundle(bundle, images = emptyList(), readText = false), images, bundle)
+        } catch (failure: Throwable) { closeImageDescriptors(bundle); throw failure }
     }
 
     /** 拒绝或解析失败的请求不会进入 [IncomingRunRequest]，需显式释放其中的描述符。 */
@@ -626,7 +639,11 @@ internal object AgentRuntimeWire {
             createdAt = bundle.getLong(KEY_CREATED_AT)
         )
 
-    fun completedRunsToBundle(results: List<CompletedRun>): Bundle = Bundle().apply {
+    fun completedRunsToBundle(results: List<CompletedRun>, directory: File? = null): Bundle = Bundle().apply {
+        if (directory != null) {
+            AgentWireText.put(this, "completed_runs_json", json.encodeToString(results), directory)
+            return@apply
+        }
         putParcelableArrayList(
             KEY_RESULTS,
             ArrayList(results.map { it.toBundle(compactForDrain = true) }),
@@ -634,6 +651,7 @@ internal object AgentRuntimeWire {
     }
 
     fun completedRunsFromBundle(bundle: Bundle): List<CompletedRun> =
+        AgentWireText.read(bundle, "completed_runs_json")?.let { json.decodeFromString<List<CompletedRun>>(it) } ?:
         bundle.getParcelableArrayList(KEY_RESULTS, Bundle::class.java)
             .orEmpty()
             .map(::completedRunFromBundle)
@@ -693,7 +711,7 @@ internal object AgentRuntimeWire {
     }
 
     /** 将 [AgentEvent] 打包为可跨进程传递的 [Bundle]。 */
-    fun eventToBundle(event: AgentEvent): Bundle = Bundle().apply {
+    fun eventToBundle(event: AgentEvent, directory: File? = null): Bundle = Bundle().apply {
         when (event) {
             is AgentEvent.GuiControlChanged -> {
                 putString(KEY_TYPE, "gui_control_changed")
@@ -796,7 +814,8 @@ internal object AgentRuntimeWire {
             is AgentEvent.UserSupplementReceived -> {
                 putString(KEY_TYPE, "user_supplement_received")
                 putInt("index", event.index)
-                putString("text", event.text)
+                AgentWireText.put(this, "text", event.text, directory)
+                AgentWireText.put(this, "supplement_images", org.json.JSONArray(event.images).toString(), directory)
                 putString("queue_message_id", event.queueMessageId)
             }
 
@@ -967,8 +986,11 @@ internal object AgentRuntimeWire {
 
         "user_supplement_received" -> AgentEvent.UserSupplementReceived(
             index = bundle.getInt("index"),
-            text = bundle.getString("text").orEmpty(),
+            text = AgentWireText.read(bundle, "text").orEmpty(),
             queueMessageId = bundle.getString("queue_message_id").orEmpty(),
+            images = org.json.JSONArray(AgentWireText.read(bundle, "supplement_images") ?: "[]").let { a ->
+                (0 until a.length()).map { a.getString(it) }
+            },
         )
 
         "tool_started" -> AgentEvent.ToolStarted(
