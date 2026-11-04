@@ -49,6 +49,51 @@ internal data class SubagentActivitySnapshot(
 
     fun encode(): String = json.encodeToString(this)
 
+    /** Bound the display payload before serialization so transport never cuts a JSON token. */
+    fun encodeBounded(maxChars: Int): String {
+        val encoded = encode()
+        if (encoded.length <= maxChars) return encoded
+
+        require(maxChars >= 512)
+        var recentSteps = steps.takeLast(48)
+        fun preview(limit: Int): SubagentActivitySnapshot = copy(
+            description = description.take(limit),
+            prompt = prompt.take(limit),
+            currentAction = currentAction.take(limit),
+            steps = recentSteps.map { step ->
+                step.copy(
+                    id = step.id.take(limit),
+                    kind = step.kind.take(limit),
+                    title = step.title.take(limit),
+                    detail = step.detail.takeLast(limit),
+                    toolName = step.toolName.take(limit),
+                )
+            },
+            output = output.takeLast(limit),
+            error = error?.take(limit),
+        )
+
+        // Account for JSON escaping and structural overhead, including many short steps.
+        while (preview(0).encode().length > maxChars && recentSteps.isNotEmpty()) {
+            recentSteps = recentSteps.drop(1)
+        }
+        var best = preview(0).encode()
+        require(best.length <= maxChars)
+        var low = 1
+        var high = maxChars
+        while (low <= high) {
+            val limit = low + (high - low) / 2
+            val candidate = preview(limit).encode()
+            if (candidate.length <= maxChars) {
+                best = candidate
+                low = limit + 1
+            } else {
+                high = limit - 1
+            }
+        }
+        return best
+    }
+
     companion object {
         const val STATUS_RUNNING = "running"
         const val STATUS_COMPLETED = "completed"

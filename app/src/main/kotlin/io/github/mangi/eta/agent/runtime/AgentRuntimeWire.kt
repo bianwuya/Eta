@@ -10,6 +10,8 @@ import android.os.Parcel
 import android.os.ParcelFileDescriptor
 import io.github.mangi.eta.agent.model.AgentConversationCodec
 import io.github.mangi.eta.agent.model.AgentModelClient
+import io.github.mangi.eta.agent.subagent.AgentSubagentToolCatalog
+import io.github.mangi.eta.agent.subagent.SubagentActivitySnapshot
 import io.github.mangi.eta.config.Prefs
 import io.github.mangi.eta.data.model.CustomBody
 import io.github.mangi.eta.data.model.CustomHeader
@@ -816,7 +818,13 @@ internal object AgentRuntimeWire {
                 putInt("image_count", event.imageCount)
                 putInt("image_bytes", event.imageBytes)
                 event.success?.let { putBoolean("success", it) }
-                event.command?.let { putString("command", it.boundedText(MAX_DRAIN_CONTENT_CHARS)) }
+                event.command?.let { command ->
+                    val snapshot = if (event.name == AgentSubagentToolCatalog.TOOL_NAME) {
+                        SubagentActivitySnapshot.decode(command)
+                    } else null
+                    putString("command", snapshot?.encodeBounded(MAX_DRAIN_CONTENT_CHARS)
+                        ?: command.boundedText(MAX_DRAIN_CONTENT_CHARS))
+                }
             }
 
             is AgentEvent.SubagentProgress -> {
@@ -825,7 +833,9 @@ internal object AgentRuntimeWire {
                 putString("tool_call_id", event.toolCallId)
                 putString("subagent_id", event.subagentId)
                 putString("subagent_type", event.subagentType)
-                putString("snapshot_json", event.snapshotJson.boundedText(MAX_DRAIN_CONTENT_CHARS))
+                putString("snapshot_json", SubagentActivitySnapshot.decode(event.snapshotJson)
+                    ?.encodeBounded(MAX_DRAIN_CONTENT_CHARS)
+                    ?: event.snapshotJson.boundedText(MAX_DRAIN_CONTENT_CHARS))
             }
 
             is AgentEvent.HostedToolStarted -> {
