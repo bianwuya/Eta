@@ -23,6 +23,8 @@ import io.github.mangi.eta.data.provider.ProviderSourceRegistry
 import io.github.mangi.eta.data.provider.ProviderConnectionProfile
 import io.github.mangi.eta.data.provider.ReasoningCapabilityResolver
 import io.github.libxposed.service.XposedService
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
@@ -153,10 +155,16 @@ internal object RuntimeConfigRepository {
         return buildRuntimeConfig(provider, model)
     }
 
-    suspend fun syncToRemotePreferences(service: XposedService?): Boolean {
-        val prefs = Prefs.remotePreferencesForUi(service) ?: return false
-        val config = currentRuntimeConfig() ?: return clearRuntimeConfig(prefs)
-        return writeRuntimeConfig(prefs, config)
+    /**
+     * 把运行时配置同步到 RemotePreferences。
+     *
+     * [Prefs.remotePreferencesForUi] 首次取用时是跨进程 binder 请求，写入侧 [SharedPreferences.Editor.commit]
+     * 也是同步 binder 提交；统一在 IO 上执行，避免调用方（含设置页转场帧）在主线程等待。
+     */
+    suspend fun syncToRemotePreferences(service: XposedService?): Boolean = withContext(Dispatchers.IO) {
+        val prefs = Prefs.remotePreferencesForUi(service) ?: return@withContext false
+        val config = currentRuntimeConfig() ?: return@withContext clearRuntimeConfig(prefs)
+        writeRuntimeConfig(prefs, config)
     }
 
     suspend fun ensureDefaults(service: XposedService?) {
