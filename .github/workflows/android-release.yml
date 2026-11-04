@@ -154,6 +154,17 @@ jobs:
           fi
 
           "$apksigner_path" verify "${release_apks[0]}"
+          "$apksigner_path" verify "${debug_apks[0]}"
+          expected_cert='a7a92cca03f7d7390ab74001c97efbfe4ff4289b0dc4ffa21d6ebc3cee1c81a8'
+          for apk in "${debug_apks[0]}" "${release_apks[0]}"; do
+            cert="$("$apksigner_path" verify --print-certs "$apk" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p')"
+            if [[ "$cert" != "$expected_cert" ]]; then
+              echo "::error::APK 签名与现有个人版证书不一致。"
+              exit 1
+            fi
+            sha256sum "$apk"
+          done
+          printf 'Source: %s\nBoth standard variants verified with the existing signing certificate.\n' "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
 
           # 发版标签必须与 versionName 一致，避免标签与安装包版本错位
           if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then

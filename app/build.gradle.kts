@@ -65,6 +65,9 @@ android {
             versionNameSuffix = "-debug" + buildMetadataSuffix
             isMinifyEnabled = false
             isPseudoLocalesEnabled = true
+            // Personal cloud builds use the existing release identity for both standard variants.
+            // PR verification has no signing Secrets and keeps the normal development certificate.
+            if (hasReleaseSigning) signingConfig = signingConfigs.getByName("release")
         }
         release {
             versionNameSuffix = buildMetadataSuffix
