@@ -76,7 +76,7 @@ fun MiuixScaffoldPage(
                 state = listState,
                 modifier = Modifier
                     .fillMaxSize()
-                    .colorOsLongshotTarget(listState)
+                    .colorOsLongshotTarget(listState, topInset = innerPadding.calculateTopPadding())
                     .horizontalCutoutPadding()
                     .captureForTopBar(backdrop)
                     .scrollEndHaptic()

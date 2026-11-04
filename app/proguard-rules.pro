@@ -32,6 +32,9 @@
 # -dontwarn 仅抑制 KMP 依赖在 Android 侧可能出现的可选平台 warning，不阻止裁剪。
 -dontwarn top.yukonga.miuix.**
 
+# ColorOS scroll-capture scene rules match the containing View's runtime class name.
+-keep,allowoptimization,allowshrinking class androidx.compose.ui.platform.AndroidComposeView
+
 # libxposed service 通过静态调用和 manifest provider 接入，交给 R8/Android 默认规则保留可达代码。
 -dontwarn io.github.libxposed.service.**
 

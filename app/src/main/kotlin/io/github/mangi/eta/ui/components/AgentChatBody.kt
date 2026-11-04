@@ -356,6 +356,7 @@ private fun AgentChatScaffold(
     modifier: Modifier = Modifier,
 ) {
     val surfaceColor = MiuixTheme.colorScheme.surface
+    val captureInProgress = LocalScrollCaptureInProgress.current
     val frostEnabled = hasMessages && LocalBlurEnabled.current && isRuntimeShaderSupported()
     val messageBackdrop = rememberLayerBackdrop {
         // Backdrop 必须包含不透明底色，否则文字边缘模糊到透明区域时会出现黑边。
@@ -373,39 +374,41 @@ private fun AgentChatScaffold(
             bottom = 0.dp,
         ),
         bottomBar = {
-            AgentChatBottomBar(
-                messageBackdrop = messageBackdrop.takeIf { frostEnabled },
-                input = input,
-                modelPickerState = modelPickerState,
-                isCompacting = isCompacting,
-                contextUsage = contextUsage,
-                showContextUsage = hasMessages,
-                isStreaming = isStreaming,
-                reasoningEffort = reasoningEffort,
-                availableReasoningEfforts = availableReasoningEfforts,
-                pendingImages = pendingImages,
-                pendingFileReferences = pendingFileReferences,
-                queuedMessages = queuedMessages,
-                inputSyncVersion = inputSyncVersion,
-                messageEdit = messageEdit,
-                onSubmit = onSubmit,
-                onInterruptAndSubmit = onInterruptAndSubmit,
-                onSteerQueuedMessage = onSteerQueuedMessage,
-                onRecallQueuedMessage = onRecallQueuedMessage,
-                onRemoveQueuedMessage = onRemoveQueuedMessage,
-                onReasoningEffortChange = onReasoningEffortChange,
-                onCompactContext = onCompactContext,
-                canCompactContext = canCompactContext,
-                onModelSelected = onModelSelected,
-                onStop = onStop,
-                onAttachImage = onAttachImage,
-                onRemoveImage = onRemoveImage,
-                onAttachFiles = onAttachFiles,
-                onAttachFolder = onAttachFolder,
-                onAttachFilePath = onAttachFilePath,
-                onRemoveFileReference = onRemoveFileReference,
-                onCancelMessageEdit = onCancelMessageEdit,
-            )
+            Box(Modifier.graphicsLayer { alpha = if (captureInProgress) 0f else 1f }) {
+                AgentChatBottomBar(
+                    messageBackdrop = messageBackdrop.takeIf { frostEnabled },
+                    input = input,
+                    modelPickerState = modelPickerState,
+                    isCompacting = isCompacting,
+                    contextUsage = contextUsage,
+                    showContextUsage = hasMessages,
+                    isStreaming = isStreaming,
+                    reasoningEffort = reasoningEffort,
+                    availableReasoningEfforts = availableReasoningEfforts,
+                    pendingImages = pendingImages,
+                    pendingFileReferences = pendingFileReferences,
+                    queuedMessages = queuedMessages,
+                    inputSyncVersion = inputSyncVersion,
+                    messageEdit = messageEdit,
+                    onSubmit = onSubmit,
+                    onInterruptAndSubmit = onInterruptAndSubmit,
+                    onSteerQueuedMessage = onSteerQueuedMessage,
+                    onRecallQueuedMessage = onRecallQueuedMessage,
+                    onRemoveQueuedMessage = onRemoveQueuedMessage,
+                    onReasoningEffortChange = onReasoningEffortChange,
+                    onCompactContext = onCompactContext,
+                    canCompactContext = canCompactContext,
+                    onModelSelected = onModelSelected,
+                    onStop = onStop,
+                    onAttachImage = onAttachImage,
+                    onRemoveImage = onRemoveImage,
+                    onAttachFiles = onAttachFiles,
+                    onAttachFolder = onAttachFolder,
+                    onAttachFilePath = onAttachFilePath,
+                    onRemoveFileReference = onRemoveFileReference,
+                    onCancelMessageEdit = onCancelMessageEdit,
+                )
+            }
         },
     ) { innerPadding ->
         val bottomPadding = innerPadding.calculateBottomPadding()
@@ -727,7 +730,7 @@ internal fun AgentConversationMessages(
             verticalArrangement = Arrangement.Top,
             modifier = Modifier
                 .fillMaxSize()
-                .colorOsLongshotTarget(scrollState)
+                .colorOsLongshotTarget(scrollState, bottomInset = bottomInset)
                 .scrollEndHaptic()
                 .nestedScroll(historyPaging.scrollConnection)
                 .overScrollVertical(),
@@ -820,7 +823,7 @@ internal fun AgentConversationMessages(
         }
 
         AnimatedVisibility(
-            visible = !keepBottomAnchored && !isAtBottom,
+            visible = !scrollCaptureInProgress && !keepBottomAnchored && !isAtBottom,
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .padding(bottom = bottomInset + 12.dp),
