@@ -261,6 +261,7 @@ internal class AgentRuntimeRunExecutor(
             val subagentExecutor = SubagentExecutor(
                 conversationKey = browserKey,
                 parentRunId = request.runId,
+                compactionTarget = { primary -> runBlocking { RuntimeConfigRepository.compactionTarget(primary) } },
                 requestStatsEpoch = {
                     // Read in the actual runtime process at each attempt boundary, not a UI-only flag.
                     val settings = runBlocking { io.github.mangi.eta.data.datastore.SettingsDataStore.subagentSettings() }
@@ -326,6 +327,7 @@ internal class AgentRuntimeRunExecutor(
             }
             val completedResponse = AgentModelClient.complete(
                 config = request.config,
+                compactionTarget = { runBlocking { RuntimeConfigRepository.compactionTarget(request.config) } },
                 sessionId = request.effectiveModelSessionId,
                 operationId = request.runId,
                 initialUserMessageId = uiPayload?.promptMessageId(request.runId) ?: "user-${request.runId}",

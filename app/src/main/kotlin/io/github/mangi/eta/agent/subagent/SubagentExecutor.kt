@@ -31,6 +31,7 @@ internal class SubagentExecutor(
     private val onRequestStat: (io.github.mangi.eta.local.subagentstats.SubagentRequestStat) -> Unit = {},
     private val parentRunId: String = "",
     private val requestStatsEpoch: () -> String? = { null },
+    private val compactionTarget: ((AgentModelClient.ModelConfig) -> io.github.mangi.eta.agent.model.AgentCompactionTarget)? = null,
     private val nanoTime: () -> Long = System::nanoTime,
 ) {
     private val latestSnapshots = ConcurrentHashMap<String, String>()
@@ -177,6 +178,16 @@ internal class SubagentExecutor(
                     collectionEpoch = requestStatsEpoch,
                     save = onRequestStat,
                 ),
+                compactionTarget = compactionTarget?.let { resolve -> {
+                    val target = resolve(subagentConfig)
+                    target.copy(provider = io.github.mangi.eta.local.subagentstats.SubagentRequestStats.provider(
+                        target.provider, io.github.mangi.eta.local.subagentstats.SubagentRequestStat(
+                            conversationId = conversationKey, subagentId = subagentId, invocationId = toolCall.id,
+                            parentRunId = parentRunId, profile = profile.name, providerId = target.config.providerId,
+                            model = target.config.model, purpose = "COMPACTION", ordinal = 0, resumed = isResume,
+                        ), entry.requestStatsBaseline, collectionEpoch = requestStatsEpoch, save = onRequestStat,
+                    ))
+                } },
                 prompt = prompt,
                 toolExecutor = childToolExecutor,
                 history = priorHistory,
@@ -194,9 +205,7 @@ internal class SubagentExecutor(
                     publishSnapshot(force = force)
                 },
             )
-            val updatedHistory = priorHistory +
-                AgentModelClient.buildUserHistoryMessage(prompt, emptyList()) +
-                response.transcript
+            val updatedHistory = SubagentContinuation.history(priorHistory, prompt, response.transcript, response.contextSnapshot)
             SubagentSessionStore.complete(conversationKey, subagentId, updatedHistory)
             tracker.markCompleted(response.content)
             publishSnapshot(force = true)
@@ -220,9 +229,7 @@ internal class SubagentExecutor(
             )
         } catch (throwable: Throwable) {
             val partial = (throwable as? AgentModelExecutionException)?.let { ex ->
-                val partialHistory = priorHistory +
-                    AgentModelClient.buildUserHistoryMessage(prompt, emptyList()) +
-                    ex.transcript
+                val partialHistory = SubagentContinuation.history(priorHistory, prompt, ex.transcript, ex.contextSnapshot)
                 SubagentSessionStore.complete(conversationKey, subagentId, partialHistory)
                 tracker.partialOutput()
             } ?: run {

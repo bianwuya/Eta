@@ -39,6 +39,7 @@ internal class AgentLoop(
     private val purpose: ProviderRequestPurpose = ProviderRequestPurpose.CHAT,
     private val roleplayContext: RoleplayRunContext? = null,
     initialSupplementIndex: Int = 0,
+    private val compactionTarget: (() -> AgentCompactionTarget)? = null,
 ) {
     data class Result(
         val content: String,
@@ -60,6 +61,7 @@ internal class AgentLoop(
         config, messages, systemCount, operationId, provider, runController,
         { sensitiveToolCallIds }, onEvent, onContextSnapshot, { transcript.length() },
         roleplay = roleplayContext != null,
+        compactionTarget = compactionTarget,
     )
     private var supplementIndex = initialSupplementIndex
 

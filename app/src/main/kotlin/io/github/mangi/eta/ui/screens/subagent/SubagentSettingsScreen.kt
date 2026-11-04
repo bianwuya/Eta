@@ -93,6 +93,11 @@ private data class CustomSubagentDraft(
 internal fun SubagentSettingsScreen(
     onBack: () -> Unit,
 ) {
+    var showCompactionSettings by rememberSaveable { mutableStateOf(false) }
+    if (showCompactionSettings) {
+        io.github.mangi.eta.local.compaction.CompactionSettingsScreen(onBack = { showCompactionSettings = false })
+        return
+    }
     var showRequestStats by rememberSaveable { mutableStateOf(false) }
     if (showRequestStats) {
         io.github.mangi.eta.local.subagentstats.SubagentStatsScreen(onBack = { showRequestStats = false })
@@ -359,14 +364,22 @@ internal fun SubagentSettingsScreen(
                     enabled = agentPrefs != null,
                     onCheckedChange = { checked ->
                         val targetPrefs = agentPrefs ?: return@SwitchPreference
-                        if (targetPrefs.edit().putBoolean(Prefs.Keys.AGENT_SUBAGENT_ENABLED, checked).commit()) {
-                            subagentEnabled = checked
-                            Prefs.reconcileAgentPreferences(EtaApp.serviceInstance)
-                            scope.launch {
+                        scope.launch {
+                            val committed = withContext(Dispatchers.IO) {
+                                targetPrefs.edit().putBoolean(Prefs.Keys.AGENT_SUBAGENT_ENABLED, checked).commit()
+                            }
+                            if (committed) {
+                                subagentEnabled = checked
+                                withContext(Dispatchers.IO) { Prefs.reconcileAgentPreferences(EtaApp.serviceInstance) }
                                 RuntimeConfigRepository.syncToRemotePreferences(EtaApp.serviceInstance)
                             }
                         }
                     },
+                )
+                ArrowPreference(
+                    title = "上下文压缩",
+                    summary = "主/子代理统一的压缩模型、思考强度和摘要提示词",
+                    onClick = { showCompactionSettings = true },
                 )
                 ArrowPreference(
                     title = "子代理请求统计",
@@ -452,7 +465,7 @@ internal fun SubagentSettingsScreen(
 }
 
 @Composable
-private fun SubagentModelPickerContent(
+internal fun SubagentModelPickerContent(
     pickerState: io.github.mangi.eta.ui.model.AgentModelPickerUiState,
     selectedSecondaryModelId: String?,
     primaryModelName: String?,

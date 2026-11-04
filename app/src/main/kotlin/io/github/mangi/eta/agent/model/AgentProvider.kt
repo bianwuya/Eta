@@ -75,7 +75,18 @@ internal data class ProviderRequest(
             )
         } ?: config
         return if (!purpose.allowsTools) {
-            connected.copy(hostedWebSearchEnabled = false, extraBodyJson = "", customBody = emptyList())
+            val allowed = if (purpose == ProviderRequestPurpose.COMPACTION) setOf(
+                "temperature", "top_p", "top_k", "min_p", "max_tokens", "max_completion_tokens", "max_output_tokens",
+                "thinking", "reasoning", "reasoning_effort", "verbosity", "service_tier", "provider", "transforms",
+                "route", "routing", "enable_thinking", "chat_template_kwargs",
+            ) else emptySet()
+            val extra = if (allowed.isEmpty() || connected.extraBodyJson.isBlank()) "" else JSONObject(connected.extraBodyJson).let { body ->
+                JSONObject().also { safe -> body.keys().forEach { key ->
+                    if (key in allowed) safe.put(key, body.get(key))
+                } }.toString()
+            }
+            connected.copy(hostedWebSearchEnabled = false, supportsSearchSuggestions = false,
+                extraBodyJson = extra, customBody = connected.customBody.filter { it.key in allowed })
         } else connected
     }
     val effectiveTools: JSONArray get() = if (purpose.allowsTools) tools else JSONArray()

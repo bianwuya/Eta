@@ -91,6 +91,26 @@ internal object RuntimeConfigRepository {
         )
     }
 
+    suspend fun compactionTarget(primary: AgentModelClient.ModelConfig): io.github.mangi.eta.agent.model.AgentCompactionTarget {
+        val settings = SettingsDataStore.compactionSettings()
+        val selected = settings.modelId?.let { id ->
+            ProviderRepository.allProviders().enabledModel(id)
+                ?: throw io.github.mangi.eta.agent.model.AgentModelFailure(
+                    "COMPACTION_MODEL_UNAVAILABLE", false, "所选压缩模型已停用或删除，请在上下文压缩设置中重新选择。",
+                )
+        }
+        var config = selected?.let { (provider, model) -> buildRuntimeConfig(provider, model) } ?: primary
+        ReasoningEffort.fromWireValue(settings.reasoningEffort)?.let { effort ->
+            val normalized = config.reasoningCapabilities?.normalize(effort)
+                ?: if (effort == ReasoningEffort.OFF) effort else config.effectiveReasoningEffort
+            config = config.copy(reasoningEffort = normalized, thinkingEnabled = normalized.enablesReasoning)
+        }
+        return io.github.mangi.eta.agent.model.AgentCompactionTarget(
+            config, io.github.mangi.eta.agent.model.ProviderClientFactory.getClient(config),
+            settings.prompt.ifBlank { io.github.mangi.eta.agent.model.AgentCompactionTarget.DEFAULT_PROMPT },
+        )
+    }
+
     suspend fun selectedProvider(): ProviderSetting? {
         val settings = ProviderRepository.repairSelection()
         return settings.selectedProviderId?.let { ProviderRepository.providerById(it) }

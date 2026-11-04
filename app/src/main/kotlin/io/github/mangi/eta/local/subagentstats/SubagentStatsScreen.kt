@@ -52,7 +52,8 @@ internal fun SubagentStatsScreen(onBack: () -> Unit) {
     var selected by rememberSaveable { mutableStateOf<String?>(null) }
     var loadError by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
-    val settings by SettingsDataStore.subagentSettingsFlow().collectAsState(initial = SubagentSettings())
+    val settingsFlow = remember { SettingsDataStore.subagentSettingsFlow() }
+    val settings by settingsFlow.collectAsState(initial = SubagentSettings())
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     LaunchedEffect(lifecycle) {
         lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
