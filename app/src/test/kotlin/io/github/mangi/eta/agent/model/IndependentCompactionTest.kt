@@ -33,6 +33,18 @@ class IndependentCompactionTest {
         assertEquals(1, count)
         assertTrue(result.contextSnapshot!!.messages.first().contextSummary)
     }
+    @Test fun summariesAboveFormerCharacterLimitsAreAccepted() {
+        listOf(128_000, 1_000_000).forEach { window ->
+            val text = "evidence ".repeat(2_000)
+            val summarizer = AgentContextSummarizer(config.copy(contextWindow = window), provider { request ->
+                assertFalse(request.messages.getJSONObject(0).getString("content").contains("输出上限"))
+                response(text)
+            }, AgentRunController(), false)
+            assertEquals(text.trim(), summarizer.summarize(listOf(
+                AgentModelClient.ConversationMessage("assistant", "facts".repeat(5_000)),
+            )))
+        }
+    }
     @Test fun smallModelChunksCompleteMessagesThenMergesWithoutTruncating() {
         val seen = mutableListOf<String>()
         val summarizer = AgentContextSummarizer(config.copy(model = "small", contextWindow = 6000), provider {
