@@ -77,7 +77,7 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
         // 请求开始时固定账号绑定，同一次请求的重试与 401 刷新不会改用其他账号。
         val accountBinding = request.accountBinding
         return AuthorizedProviderHttp.execute(
-            client = AgentHttpClient.modelClient(request.purpose),
+            client = AgentHttpClient.modelClient(request.purpose, request.forceHttp1),
             providerId = config.providerId,
             authMode = config.authMode,
             request = httpRequest,

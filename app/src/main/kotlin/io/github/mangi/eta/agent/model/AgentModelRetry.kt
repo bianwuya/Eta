@@ -22,13 +22,14 @@ internal class AgentModelRetry(
     ): Result {
         var round = initialRound
         var retries = 0
+        var attemptRequest = request
         while (true) {
             controller.throwIfCancelled()
             onEvent(AgentEvent.RoundStarted(round, request.messages.length()))
             var hostedToolStarted = false
             var callbackFailed = false
             try {
-                val response = provider.complete(request, controller) { event ->
+                val response = provider.complete(attemptRequest, controller) { event ->
                     if (event is ProviderEvent.HostedToolStarted) hostedToolStarted = true
                     try {
                         onProviderEvent(round, event)
@@ -52,6 +53,10 @@ internal class AgentModelRetry(
                         "${classified.message} 已重试 $MAX_RETRIES 次仍未恢复，已保留此前完成的工具结果。",
                         classified,
                     )
+                }
+                if (classified.code == "MODEL_HTTP2_DISCONNECTED" && !attemptRequest.forceHttp1) {
+                    // Keep account, request body and session fixed; do not change other runs or future requests.
+                    attemptRequest = attemptRequest.copy(forceHttp1 = true, credentialBinding = attemptRequest.accountBinding)
                 }
                 retries += 1
                 val delayMs = BASE_DELAY_MS shl (retries - 1)

@@ -122,7 +122,7 @@ class AgentModelRetryTest {
 
     @Test
     @Suppress("INVISIBLE_MEMBER", "INVISIBLE_REFERENCE")
-    fun actualOkHttpHttp2DisconnectsRetryWithoutChangingProtocol() {
+    fun actualOkHttpHttp2DisconnectsUseRequestScopedFallback() {
         for (failure in listOf(
             okhttp3.internal.http2.StreamResetException(okhttp3.internal.http2.ErrorCode.CANCEL),
             okhttp3.internal.http2.StreamResetException(okhttp3.internal.http2.ErrorCode.REFUSED_STREAM),
@@ -130,15 +130,51 @@ class AgentModelRetryTest {
         )) {
             var calls = 0
             val events = mutableListOf<AgentEvent>()
-            complete(AgentModelRetry { _, _ -> }, provider { _, _ ->
+            val attempts = mutableListOf<ProviderRequest>()
+            complete(AgentModelRetry { _, _ -> }, provider { request, _ ->
+                attempts += request
                 if (calls++ == 0) throw failure
                 response()
             }, onEvent = events::add)
             assertEquals(2, calls)
-            assertEquals("MODEL_CONNECTION_FAILED", events.filterIsInstance<AgentEvent.ModelRetryScheduled>().single().reasonCode)
+            assertEquals(listOf(false, true), attempts.map { it.forceHttp1 })
+            assertSame(attempts.first().messages, attempts.last().messages)
+            assertEquals(attempts.first().sessionId, attempts.last().sessionId)
+            assertEquals("MODEL_HTTP2_DISCONNECTED", events.filterIsInstance<AgentEvent.ModelRetryScheduled>().single().reasonCode)
         }
         // 协议配置和证书问题不因“HTTP/2 断流”一起放宽。
         assertNull(AgentModelFailure.transport(java.net.ProtocolException("unexpected protocol")))
+    }
+
+    @Test
+    fun truncatedResponseIsRetryableButInvalidProtocolAndCertificatesAreNot() {
+        assertEquals("MODEL_STREAM_TRUNCATED", AgentModelFailure.transport(java.net.ProtocolException("unexpected end of stream"))!!.code)
+        assertNull(AgentModelFailure.transport(java.net.ProtocolException("invalid status line")))
+        assertNull(AgentModelFailure.transport(SSLHandshakeException("certificate")))
+    }
+
+    @Test
+    fun downgradeNeverChangesDefaultClientsOrTimeouts() {
+        assertTrue(AgentHttpClient.modelClient.protocols.contains(okhttp3.Protocol.HTTP_2))
+        assertEquals(listOf(okhttp3.Protocol.HTTP_1_1), AgentHttpClient.modelClient(ProviderRequestPurpose.CHAT, true).protocols)
+        assertEquals(300_000, AgentHttpClient.modelClient(ProviderRequestPurpose.COMPACTION, true).callTimeoutMillis)
+        assertEquals(0, AgentHttpClient.modelClient(ProviderRequestPurpose.CHAT, true).callTimeoutMillis)
+        assertTrue(AgentHttpClient.modelClient.protocols.contains(okhttp3.Protocol.HTTP_2))
+    }
+
+    @Test
+    fun http2FailureAfterHostedToolIsNotReplayedOrDowngraded() {
+        var calls = 0
+        val failure = assertThrows(AgentModelFailure::class.java) {
+            complete(AgentModelRetry { _, _ -> fail("hosted tool must not replay") }, provider { _, emit ->
+                calls++
+                emit(ProviderEvent.HostedToolStarted("search", "web_search"))
+                throw IOException("stream was reset: CANCEL")
+            })
+        }
+        assertEquals(1, calls)
+        assertFalse(failure.retryable)
+        assertEquals("MODEL_HTTP2_DISCONNECTED", failure.code)
     }
 
     private fun complete(

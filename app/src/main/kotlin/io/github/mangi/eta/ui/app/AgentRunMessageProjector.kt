@@ -162,7 +162,9 @@ internal class AgentRunMessageProjector(
         val notice = SystemNoticeMessageUi(
             id = "assistant-$runId-retry-${event.round}",
             code = SystemNoticeCode.ModelRetry,
-            detail = event.displayMessage,
+            detail = event.displayMessage + if (event.reasonCode in setOf("MODEL_HTTP2_DISCONNECTED", "MODEL_STREAM_TRUNCATED", "STREAM_INCOMPLETE", "MODEL_CONNECTION_FAILED")) {
+                "\n上一段可能因连接中断而不完整；当前是重新请求，并未重复执行此前工具。"
+            } else "",
         )
         return finalized.filterNot { it.id == notice.id } + notice
     }

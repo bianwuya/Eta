@@ -51,6 +51,8 @@ internal data class ProviderRequest(
     val purpose: ProviderRequestPurpose = ProviderRequestPurpose.CHAT,
     /** 调用方已解析的账号绑定；为空时在首次使用处解析一次。 */
     val credentialBinding: ProviderCredentialBinding? = null,
+    /** Reactive transport fallback for this request only; never persisted as a provider setting. */
+    val forceHttp1: Boolean = false,
 ) {
     /**
      * 本次模型请求开始时固定的认证绑定：同一次请求的重试与 401 刷新都沿用它，

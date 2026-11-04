@@ -73,3 +73,7 @@
 -keep class io.github.mangi.eta.agent.virtualdisplay.VirtualDisplayCommandMain {
     public static void main(java.lang.String[]);
 }
+
+# Transport classification uses the concrete OkHttp exception name without linking its internal API.
+-keepnames class okhttp3.internal.http2.StreamResetException
+-keepnames class okhttp3.internal.http2.ConnectionShutdownException

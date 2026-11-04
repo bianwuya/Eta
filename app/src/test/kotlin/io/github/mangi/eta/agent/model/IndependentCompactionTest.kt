@@ -57,13 +57,13 @@ class IndependentCompactionTest {
         assertTrue(seen.last().contains("part evidence 1"))
         assertTrue(seen.last().contains("part evidence 3"))
     }
-    @Test fun oversizedSingleExchangeFailsBeforeSendingAndPreservesHistory() {
+    @Test fun exchangeBeyondBoundedExcerptCapacityFailsBeforeSendingAndPreservesHistory() {
         var calls = 0
         val summarizer = AgentContextSummarizer(config.copy(contextWindow = 4000), provider {
             calls++; response("not used")
         }, AgentRunController(), false)
         val failure = assertThrows(AgentModelFailure::class.java) {
-            summarizer.summarize(listOf(AgentModelClient.ConversationMessage("assistant", "x".repeat(10_000))))
+            summarizer.summarize(listOf(AgentModelClient.ConversationMessage("assistant", "x".repeat(100_000))))
         }
         assertEquals("COMPACTION_MODEL_CAPACITY", failure.code)
         assertEquals(0, calls)

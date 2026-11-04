@@ -60,7 +60,7 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
         runController.throwIfCancelled()
         onEvent(ProviderEvent.RequestStarted)
         return AuthorizedProviderHttp.execute(
-            client = AgentHttpClient.modelClient(request.purpose),
+            client = AgentHttpClient.modelClient(request.purpose, request.forceHttp1),
             providerId = config.providerId,
             authMode = config.authMode,
             request = httpRequest,
