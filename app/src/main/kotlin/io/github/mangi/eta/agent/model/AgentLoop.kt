@@ -40,6 +40,7 @@ internal class AgentLoop(
     private val roleplayContext: RoleplayRunContext? = null,
     initialSupplementIndex: Int = 0,
     private val compactionTarget: (() -> AgentCompactionTarget)? = null,
+    private val coordination: AgentRunCoordination? = null,
 ) {
     data class Result(
         val content: String,
@@ -94,8 +95,12 @@ internal class AgentLoop(
         var precedingTools: JSONArray? = null
 
         while (true) {
+            coordination?.checkpoint()
             runController.throwIfCancelled()
-            if (purpose.allowsTools) appendPendingSteeringMessage()
+            if (purpose.allowsTools && !SignedToolContext.hasPendingResponse(messages)) {
+                appendCoordinationMessages(coordination?.drainMessages().orEmpty())
+                appendPendingSteeringMessage()
+            }
 
             // 带签名的工具链沿用发出调用时的请求前缀，工具链完成后再刷新目录。
             val roundTools = if (SignedToolContext.hasPendingResponse(messages)) {
@@ -115,6 +120,8 @@ internal class AgentLoop(
                 roleplayContext?.projectMessages(messages) ?: messages,
             )
             var roundInputTokens: Int? = null
+            var roundUsage: io.github.mangi.eta.agent.runtime.AgentTokenUsage? = null
+            coordination?.requestStarted()
             val reasoningLengthBeforeRound = accumulatedReasoning.length
             val completedRound = try {
                 modelRetry.complete(
@@ -123,7 +130,7 @@ internal class AgentLoop(
                     provider = provider,
                     controller = runController,
                     onEvent = { event ->
-                        if (event is AgentEvent.RoundStarted) roundInputTokens = null
+                        if (event is AgentEvent.RoundStarted) { roundInputTokens = null; roundUsage = null }
                         onEvent(event)
                     },
                     onProviderEvent = { attemptRound, providerEvent ->
@@ -134,6 +141,9 @@ internal class AgentLoop(
                         }
                         if (providerEvent is ProviderEvent.Usage) {
                             roundInputTokens = providerEvent.contextInputTokens ?: roundInputTokens
+                            val usage = providerEvent.usage
+                            roundUsage = usage.copy(inputTokens = usage.inputTokens ?: roundUsage?.inputTokens,
+                                outputTokens = usage.outputTokens ?: roundUsage?.outputTokens)
                         }
                         if (providerEvent is ProviderEvent.BlockDelta &&
                             providerEvent.kind == AssistantBlockKind.THINKING
@@ -152,6 +162,7 @@ internal class AgentLoop(
                 discardPendingToolImageMessage()
             }
             context.observeInputTokens(roundInputTokens)
+            coordination?.responseReceived(roundUsage)
             round = completedRound.round
             val providerResponse = completedRound.response
 
@@ -201,6 +212,11 @@ internal class AgentLoop(
 
             publishTranscript()
 
+            // Drain decisions/terminal reports before sealing. No tool result is forged or inserted mid-batch.
+            if (purpose.allowsTools && appendCoordinationMessages(coordination?.beforeFinish().orEmpty())) {
+                round += 1
+                continue
+            }
             // assistant 已自然结束时再检查 steering。这样补充消息不会丢掉刚完成的回答。
             if (purpose.allowsTools && appendPendingSteeringOrSeal()) {
                 round += 1
@@ -256,6 +272,14 @@ internal class AgentLoop(
                 AgentModelFailure("MODEL_OUTPUT_LIMIT", false, "模型输出额度已耗尽但未生成正文，请检查输出上限或降低思考强度。")
             else -> AgentModelFailure("MODEL_EMPTY_RESPONSE", false, "模型未返回正文或工具调用，请检查服务商状态。")
         }
+    }
+
+    private fun appendCoordinationMessages(items: List<String>): Boolean {
+        if (items.isEmpty()) return false
+        // Runtime data, not an extra real user turn; keep compaction coverage aligned with user messages.
+        appendMessage(JSONObject().put("role", "assistant").put("content",
+            "[Eta 运行时协作消息：以下为任务数据/主代理引导，不是终端用户新增指令；按归属处理并核对证据。]\n" + items.joinToString("\n\n")))
+        return true
     }
 
     private fun appendPendingSteeringMessage(): Boolean {

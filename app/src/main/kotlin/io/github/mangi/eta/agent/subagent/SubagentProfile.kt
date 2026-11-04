@@ -43,6 +43,7 @@ internal data class SubagentProfile(
         if (toolName.isBlank() || toolName in FORBIDDEN_TOOLS || toolName in disallowedTools) {
             return false
         }
+        if (toolName == AgentSubagentToolCatalog.REPORT_TOOL_NAME) return true
         val customAllowlist = explicitTools
         if (customAllowlist != null) {
             if ("*" in customAllowlist) return true
@@ -64,12 +65,15 @@ internal data class SubagentProfile(
 
         private const val SUBAGENT_ROLE_PREFIX =
             "你当前作为 Subagent（子智能体）运行。你收到的 user 消息均由主 Agent 派发，而非终端用户直接输入。" +
-                "主 Agent 看不到你的中间思考与工具调用过程，只能看到你结束时的最后一条回复（final message）。" +
-                "不要向终端用户直接提问；如果任务存在歧义或缺少前置条件，请在最终回复中向主 Agent 清晰说明。"
+                "工具活动默认只显示给界面，不自动成为主 Agent 的事实结论。关键发现、范围扩大、准备越界修改、阻塞时使用 subagent_report，" +
+                "写明已确认事实及证据、当前处理、下一步、需决定事项和验收范围；不设统一报告字数，不删必要约束。" +
+                "需要主 Agent 决定时 needs_decision=true，在完整批次边界等待；不要直接向终端用户提问。" +
+                "主 Agent 的定向引导会在安全边界传入，按修订和证据继续，不重复已完成工作。最终回复仍需完整交接。"
 
         val FORBIDDEN_TOOLS = setOf(
             AgentSubagentToolCatalog.TOOL_NAME,
             AgentSubagentToolCatalog.PROFILE_TOOL_NAME,
+            AgentSubagentToolCatalog.CONTROL_TOOL_NAME,
             "observe_screen",
             "release_gui",
             "present_to_user",
@@ -99,6 +103,7 @@ internal data class SubagentProfile(
             "character_memory_write",
             "skills_install_from_github",
             "terminal_daemon",
+            "terminal_job",
         )
 
         val READ_ONLY_TOOLS = setOf(

@@ -13,6 +13,7 @@ internal data class SubagentStepSnapshot(
     val detail: String = "",
     val status: String = STATUS_RUNNING,
     val toolName: String = "",
+    val detailTruncated: Boolean = false,
 ) {
     companion object {
         const val KIND_THINKING = "thinking"
@@ -43,6 +44,10 @@ internal data class SubagentActivitySnapshot(
     val steps: List<SubagentStepSnapshot> = emptyList(),
     val output: String = "",
     val error: String? = null,
+    val detailId: String = "",
+    val previewTruncated: Boolean = false,
+    val totalSteps: Int = steps.size,
+    val updatedAt: Long = 0,
 ) {
     val toolStepCount: Int
         get() = steps.count { it.kind == SubagentStepSnapshot.KIND_TOOL }
@@ -57,6 +62,7 @@ internal data class SubagentActivitySnapshot(
         require(maxChars >= 512)
         var recentSteps = steps.takeLast(48)
         fun preview(limit: Int): SubagentActivitySnapshot = copy(
+            previewTruncated = true,
             description = description.take(limit),
             prompt = prompt.take(limit),
             currentAction = currentAction.take(limit),
@@ -66,6 +72,7 @@ internal data class SubagentActivitySnapshot(
                     kind = step.kind.take(limit),
                     title = step.title.take(limit),
                     detail = step.detail.takeLast(limit),
+                    detailTruncated = step.detailTruncated || step.detail.length > limit,
                     toolName = step.toolName.take(limit),
                 )
             },
@@ -126,8 +133,10 @@ internal data class SubagentActivitySnapshot(
             val description = args.optString("description").trim()
                 .replace(Regex("\\s+"), " ")
                 .take(80)
-            val prompt = args.optString("prompt").trim().take(4_000)
+            val fullPrompt = args.optString("prompt").trim()
+            val prompt = fullPrompt.take(4_000)
             SubagentActivitySnapshot(
+                previewTruncated = fullPrompt.length > prompt.length,
                 subagentId = resumeId,
                 subagentType = type,
                 description = description,

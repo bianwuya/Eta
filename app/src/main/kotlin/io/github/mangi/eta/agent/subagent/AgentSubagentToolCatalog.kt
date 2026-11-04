@@ -10,8 +10,10 @@ import org.json.JSONObject
 internal object AgentSubagentToolCatalog {
     const val TOOL_NAME = "subagent"
     const val PROFILE_TOOL_NAME = "subagent_profile"
+    const val CONTROL_TOOL_NAME = "subagent_control"
+    const val REPORT_TOOL_NAME = "subagent_report"
 
-    val names = setOf(TOOL_NAME, PROFILE_TOOL_NAME)
+    val names = setOf(TOOL_NAME, PROFILE_TOOL_NAME, CONTROL_TOOL_NAME)
 
     fun appendSchemas(
         tools: JSONArray,
@@ -19,6 +21,7 @@ internal object AgentSubagentToolCatalog {
     ) {
         tools.put(schema(profiles))
         tools.put(profileToolSchema())
+        tools.put(controlSchema())
     }
 
     fun schema(
@@ -29,9 +32,10 @@ internal object AgentSubagentToolCatalog {
             "- ${profile.name}$tag: ${profile.whenToUse} (Tools: ${profile.toolHighlights.joinToString(", ")})"
         }
         val description = buildString {
-            append("Launch a subagent in an isolated context to handle an autonomous subtask and return a concise summary. ")
-            append("You can freely spawn as many specialized ephemeral subagents as needed for the conversation without saving them to disk, ")
+            append("Start an asynchronous isolated subtask. Returns a task ID and actual state immediately, NOT a completed summary. ")
+            append("Up to 16 invocations per parent run (4 executing concurrently; others queue). Create specialized ephemeral subagents without saving templates, ")
             append("or use one of the preset types below. When multiple independent subtasks can run in parallel, issue multiple `subagent` tool calls in the same turn — the runtime executes them concurrently.\n\n")
+            append("Use subagent_control to wait (wakes on user input, decisions or termination), query, guide, pause, continue or cancel a specific task. Do independent work while it runs. Ordinary user progress questions do not cancel tasks or broadcast steering. Keep full required constraints and corrections; no fixed report length. Acknowledge/resolve paused tasks and collect results before ending the parent run.\n\n")
             append("Writing the prompt:\n")
             append("- A fresh subagent starts with zero conversation history. State the goal clearly and include any known file paths, time ranges, package names, or constraints.\n")
             append("- Prefer resuming an existing subagent (pass its `resume` id) when continuing earlier work so it retains its prior context.\n")
@@ -98,6 +102,12 @@ internal object AgentSubagentToolCatalog {
                         "Optional subagent_id from a previous `subagent` result in this conversation to continue its existing context.",
                     ),
             )
+        properties.put("max_time_seconds", JSONObject().put("type", "integer").put("minimum", 1).put("maximum", 7200)
+            .put("description", "Wall-time soft budget per explicit grant, default 900s; pause at the next complete-turn boundary."))
+        properties.put("max_rounds", JSONObject().put("type", "integer").put("minimum", 1).put("maximum", 1000)
+            .put("description", "Successful model-round soft budget, default 100."))
+        properties.put("max_tokens", JSONObject().put("type", "integer").put("minimum", 1).put("maximum", 10000000)
+            .put("description", "Observed input+output token soft budget, default 300000; missing usage remains unknown, not estimated billing."))
         val parameters = JSONObject()
             .put("type", "object")
             .put("properties", properties)
@@ -109,6 +119,27 @@ internal object AgentSubagentToolCatalog {
             parameters = parameters,
         )
     }
+
+    fun controlSchema(): JSONObject = AgentToolSchema.function(
+        name = CONTROL_TOOL_NAME,
+        description = "Control only children owned by this parent run. status lists state; result reads the actual result; wait blocks up to 60s without repeated model calls and wakes on user steering, decision or terminal event. guide queues complete text for the target's next safe boundary, not immediate understanding; revise=true advances the goal revision and old-revision results cannot count as its completion. pause is requested until acknowledged at a safe boundary, continue grants another explicit budget window, cancel affects only this task and does not roll back executed commands. Running tasks use guide, not concurrent resume. Handle every active task before ending the parent run.",
+        parameters = JSONObject().put("type", "object").put("additionalProperties", false)
+            .put("required", JSONArray(listOf("action"))).put("properties", JSONObject()
+                .put("action", JSONObject().put("type", "string").put("enum", JSONArray(listOf("status", "result", "wait", "guide", "pause", "continue", "cancel"))))
+                .put("task_id", JSONObject().put("type", "string").put("description", "Exact task_id or subagent_id returned by launch. Required for guide/pause/continue/cancel."))
+                .put("text", JSONObject().put("type", "string").put("maxLength", 32000).put("description", "Complete guidance, constraints, corrections and necessary evidence; do not mechanically shorten."))
+                .put("revise", JSONObject().put("type", "boolean").put("description", "Advance goal revision only for a material change in objective, not normal progress questions."))
+                .put("timeout_ms", JSONObject().put("type", "integer").put("minimum", 1).put("maximum", 60000))),
+    )
+
+    fun reportSchema(): JSONObject = AgentToolSchema.function(
+        name = REPORT_TOOL_NAME,
+        description = "Send a stage report to your parent, not the end user. Include confirmed facts with evidence, current work, next steps, blockers/decision and validation scope. Required at key findings, scope expansion, before out-of-scope edits and blockers. No fixed word count; do not drop necessary instructions/evidence. Ordinary reports queue for the next parent request without triggering a model call. needs_decision=true wakes the parent and pauses you at a safe complete-turn boundary. No hidden chain-of-thought or fabricated progress.",
+        parameters = JSONObject().put("type", "object").put("additionalProperties", false)
+            .put("required", JSONArray(listOf("text"))).put("properties", JSONObject()
+                .put("text", JSONObject().put("type", "string").put("minLength", 1).put("maxLength", 32000))
+                .put("needs_decision", JSONObject().put("type", "boolean"))),
+    )
 
     fun profileToolSchema(): JSONObject {
         val properties = JSONObject()

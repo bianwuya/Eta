@@ -440,8 +440,19 @@ internal class AgentRunMessageProjector(
         return messages.mapIndexed { index, message ->
             if (index == targetIndex && message is ToolActivityMessageUi) {
                 message.copy(
-                    status = status,
-                    command = event.command ?: message.command,
+                    status = if (event.name == "subagent") {
+                        val latest = listOfNotNull(message.command, event.command).mapNotNull {
+                            io.github.mangi.eta.agent.subagent.SubagentActivitySnapshot.decode(it)
+                        }.maxByOrNull { it.updatedAt }
+                        when (latest?.status) {
+                            "running", "queued", "pausing", "paused", "waiting_decision", "cancelling" -> ToolActivityStatusUi.Running
+                            "failed", "cancelled", "interrupted", "completed_previous_revision", "completed_with_unconsumed_guidance" -> ToolActivityStatusUi.Failed
+                            else -> status
+                        }
+                    } else status,
+                    command = if (event.name == "subagent") listOfNotNull(message.command, event.command).maxByOrNull {
+                        io.github.mangi.eta.agent.subagent.SubagentActivitySnapshot.decode(it)?.updatedAt ?: 0
+                    } else event.command ?: message.command,
                     resultSummary = event.resultSummary,
                     imageCount = event.imageCount,
                 )
@@ -461,7 +472,16 @@ internal class AgentRunMessageProjector(
         if (targetIndex < 0) return messages
         return messages.mapIndexed { index, message ->
             if (index == targetIndex && message is ToolActivityMessageUi) {
-                message.copy(command = event.snapshotJson)
+                val previous = io.github.mangi.eta.agent.subagent.SubagentActivitySnapshot.decode(message.command)
+                val incoming = io.github.mangi.eta.agent.subagent.SubagentActivitySnapshot.decode(event.snapshotJson)
+                if (incoming != null && previous != null && incoming.updatedAt < previous.updatedAt) message else message.copy(
+                    command = event.snapshotJson,
+                    status = when (incoming?.status) {
+                        "completed" -> ToolActivityStatusUi.Success
+                        "failed", "cancelled", "interrupted", "completed_previous_revision", "completed_with_unconsumed_guidance" -> ToolActivityStatusUi.Failed
+                        else -> ToolActivityStatusUi.Running
+                    },
+                )
             } else {
                 message
             }

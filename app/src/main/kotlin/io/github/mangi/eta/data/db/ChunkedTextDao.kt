@@ -19,6 +19,10 @@ internal data class AgentTextChunkEntity(
 
 /** 由业务 DAO 在同一 Room 事务内写入主记录与分块，不暴露存储引用给领域层。 */
 internal interface ChunkedTextDao {
+    @Query("SELECT owner_id AS ownerId, SUM(LENGTH(content)) AS chars FROM agent_text_chunks WHERE owner_table = :table GROUP BY owner_id ORDER BY MAX(CASE WHEN field = '_updated' THEN CAST(content AS INTEGER) ELSE 0 END) ASC")
+    suspend fun localTextUsage(table: String): List<LocalTextUsage>
+    @Query("DELETE FROM agent_text_chunks WHERE owner_table = :table AND owner_id = :owner")
+    suspend fun deleteLocalTextOwner(table: String, owner: String)
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertTextChunk(chunk: AgentTextChunkEntity)
 
@@ -72,3 +76,5 @@ internal interface ChunkedTextDao {
         const val REFERENCE_PREFIX = "@eta:chunks:v1:"
     }
 }
+
+internal data class LocalTextUsage(val ownerId: String, val chars: Long)

@@ -261,15 +261,12 @@ class AgentTraceFormatterTest {
                 AgentModelClient.ToolCall("observe", "observe_screen", "{}")
             )
         )
-        assertNull(
-            formatter.displayCommand(
-                AgentModelClient.ToolCall(
-                    "oversized",
-                    "run_command",
-                    """{"command":"${"x".repeat(4_001)}"}""",
-                )
-            )
-        )
+        val preview = requireNotNull(formatter.displayCommand(AgentModelClient.ToolCall(
+            "oversized", "run_command", """{"command":"${"x".repeat(4_001)}"}""",
+        )))
+        assertTrue(preview.startsWith("x".repeat(4_000)))
+        assertTrue(preview.contains("预览已截短"))
+        assertTrue(preview.length < 4_100)
     }
 
     @Test

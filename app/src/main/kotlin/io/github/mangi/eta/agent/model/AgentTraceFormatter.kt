@@ -86,11 +86,17 @@ internal class AgentTraceFormatter {
                 JSONObject(toolCall.argumentsJson)
                     .optString("command")
                     .trim()
-                    .takeIf { it.isNotBlank() && it.length <= MAX_DISPLAY_COMMAND_CHARS }
+                    .takeIf { it.isNotBlank() }
                     ?.redactDisplaySecrets()
+                    ?.let { if (it.length > MAX_DISPLAY_COMMAND_CHARS) it.take(MAX_DISPLAY_COMMAND_CHARS) + "\n[命令预览已截短，全文按需读取]" else it }
             }.getOrNull()
         } else {
             null
+        }
+
+    fun redactForDisplay(text: String): String = text.redactDisplaySecrets()
+        .replace(Regex("https?://[^\\s\"'<>]+")) { match ->
+            if (match.value.contains('?')) match.value.substringBefore('?') + "?[查询参数已隐藏]" else match.value
         }
 
     private fun String.redactDisplaySecrets(): String =
@@ -368,6 +374,7 @@ internal class AgentTraceFormatter {
     }.getOrDefault("Subagent")
 
     private fun summarizeSubagentResult(json: JSONObject): String {
+        if (json.optBoolean("started")) return "已启动 · ${json.optString("status", "queued")}，尚无最终摘要"
         val toolCalls = json.optInt("tool_calls", 0)
         return if (toolCalls > 0) "完成 · $toolCalls 次工具调用" else "完成"
     }

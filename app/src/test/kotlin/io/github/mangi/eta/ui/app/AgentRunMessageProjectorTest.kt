@@ -17,6 +17,21 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AgentRunMessageProjectorTest {
+    @Test fun asynchronousProgressCannotRegressToLaunchOrPreviousSnapshot() {
+        val projector = AgentRunMessageProjector { 1000L }
+        val snapshot = io.github.mangi.eta.agent.subagent.SubagentActivitySnapshot(
+            subagentId = "child", updatedAt = 20, status = "completed", output = "verified")
+        val started = projector.startTool("run", AgentEvent.ToolStarted(1, "call", "subagent", "work"), emptyList())
+        val progressed = projector.updateSubagentProgress("run", AgentEvent.SubagentProgress(1, "call", "child", "coder", snapshot.encode()), started)
+        val finishedLaunch = projector.finishTool("run", AgentEvent.ToolFinished(1, "call", "subagent", "started", 0, 0, true,
+            snapshot.copy(updatedAt = 0, status = "running").encode()), progressed)
+        assertEquals("completed", io.github.mangi.eta.agent.subagent.SubagentActivitySnapshot.decode(
+            (finishedLaunch.single() as ToolActivityMessageUi).command)!!.status)
+        val stale = projector.updateSubagentProgress("run", AgentEvent.SubagentProgress(1, "call", "child", "coder",
+            snapshot.copy(updatedAt = 10, status = "running").encode()), finishedLaunch)
+        assertEquals(ToolActivityStatusUi.Success, (stale.single() as ToolActivityMessageUi).status)
+    }
+
     @Test
     fun searchSuggestionsBindToExactTextBlockAndDoNotPersistIntoAnotherRun() {
         val projector = AgentRunMessageProjector { 1_000L }

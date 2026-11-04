@@ -49,6 +49,7 @@ internal class AgentRunController {
         lock.withLock {
             if (cancelled || !acceptingSteering) return false
             steeringMessages.addLast(prompt)
+            pauseCondition.signalAll()
         }
         return true
     }
@@ -120,6 +121,30 @@ internal class AgentRunController {
             binding.close()
         }
         throwIfCancelled()
+    }
+
+    private var activityVersion = 0L
+    fun signalActivity() { lock.withLock { activityVersion++; pauseCondition.signalAll() } }
+
+    /** The external predicate is evaluated outside our lock to avoid manager/controller inversion. */
+    fun awaitActivity(timeoutMs: Long, ready: () -> Boolean) {
+        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs)
+        while (true) {
+            val version = lock.withLock { activityVersion }
+            throwIfCancelled()
+            if (hasPendingSteering || ready()) return
+            lock.withLock {
+                val remaining = deadline - System.nanoTime()
+                if (remaining <= 0) return
+                if (version == activityVersion && steeringMessages.isEmpty() && !cancelled) {
+                    try { pauseCondition.awaitNanos(remaining) }
+                    catch (_: InterruptedException) {
+                        Thread.currentThread().interrupt()
+                        throw AgentRunCancelledException()
+                    }
+                }
+            }
+        }
     }
 
     fun register(cancel: () -> Unit): ResourceBinding {

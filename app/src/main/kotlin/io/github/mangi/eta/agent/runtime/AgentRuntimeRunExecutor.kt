@@ -81,6 +81,7 @@ internal class AgentRuntimeRunExecutor(
         var guiRun: GuiControlCoordinator.RunControl? = null
         var browserBinding: AutoCloseable? = null
         var response: AgentModelClient.ModelResponse.Text? = null
+        var childTasks: SubagentExecutor? = null
         var cancelled = false
         var checkpointRecorder: AgentRunCheckpointRecorder? = null
         val timing = AgentRunTiming(AndroidAgentLogger)
@@ -172,12 +173,12 @@ internal class AgentRuntimeRunExecutor(
                     entrySurfaceGuard, checkpointRecorder,
                 )
             }
-            val executor = AgentLocalTools(
+            fun localTools(gui: GuiControlCoordinator.RunControl?) = AgentLocalTools(
                 context = appContext,
                 logger = AndroidAgentLogger,
                 browserRunId = request.runId,
                 browserSession = BrowserSessionRegistry.get(browserKey),
-                guiControl = guiRun,
+                guiControl = gui,
                 browserToolsEnabled = {
                     request.config.browserTools && currentPermissions().browserTools
                 },
@@ -234,12 +235,13 @@ internal class AgentRuntimeRunExecutor(
                 skillIndexService = skillIndexService,
                 skillLoader = skillLoader,
                 skillResourceReader = skillResourceReader,
-                githubSkillSource = githubSkillSource,
+                githubSkillSource = if (gui != null) githubSkillSource else null,
                 skillPackageInstaller = skillPackageInstaller,
                 runAvailableSkillIds = skillContext.installedSkills.mapTo(mutableSetOf()) { it.id },
                 pendingSkillConflict = pendingSkillConflict,
                 virtualDisplayEnabled = { currentPermissions().virtualDisplay },
             )
+            val executor = localTools(guiRun)
             val routingExecutor = RoutingToolExecutor(
                 local = executor,
                 mcp = McpToolExecutor(mcpSnapshot),
@@ -279,6 +281,8 @@ internal class AgentRuntimeRunExecutor(
                 },
                 capabilitiesProvider = { AgentToolCapabilities.capture(appContext) },
                 baseToolExecutor = routingExecutor,
+                childToolFactory = { RoutingToolExecutor(localTools(null), McpToolExecutor(mcpSnapshot)) },
+                detailStoreFactory = { io.github.mangi.eta.agent.subagent.SubagentDetailStore(appContext) },
                 skillContext = skillContext,
                 memoryContext = memoryContext,
                 mcpTools = mcpTools,
@@ -293,6 +297,7 @@ internal class AgentRuntimeRunExecutor(
                     )
                 },
             )
+            childTasks = subagentExecutor
             val runTools = JSONArray(mcpTools.toString()).also { tools ->
                 if (subagentAllowed()) AgentSubagentToolCatalog.appendSchemas(tools)
                 if (historyTool != null) tools.put(AgentConversationToolCatalog.schema())
@@ -300,7 +305,7 @@ internal class AgentRuntimeRunExecutor(
             }
             val runToolExecutor = AgentModelClient.ToolExecutor { call ->
                 if (call.name in AgentSubagentToolCatalog.names) {
-                    if (!subagentAllowed()) {
+                    if (!subagentAllowed() && call.name != AgentSubagentToolCatalog.CONTROL_TOOL_NAME) {
                         AgentModelClient.ToolResult(
                             JSONObject()
                                 .put("ok", false)
@@ -308,6 +313,8 @@ internal class AgentRuntimeRunExecutor(
                                 .put("message", "Subagent 权限已关闭")
                                 .toString(),
                         )
+                    } else if (call.name == AgentSubagentToolCatalog.CONTROL_TOOL_NAME) {
+                        subagentExecutor.control(call)
                     } else if (call.name == AgentSubagentToolCatalog.PROFILE_TOOL_NAME) {
                         subagentExecutor.executeProfileManagement(call)
                     } else {
@@ -328,6 +335,7 @@ internal class AgentRuntimeRunExecutor(
             val completedResponse = AgentModelClient.complete(
                 config = request.config,
                 compactionTarget = { runBlocking { RuntimeConfigRepository.compactionTarget(request.config) } },
+                coordination = subagentExecutor.coordination,
                 sessionId = request.effectiveModelSessionId,
                 operationId = request.runId,
                 initialUserMessageId = uiPayload?.promptMessageId(request.runId) ?: "user-${request.runId}",
@@ -426,6 +434,7 @@ internal class AgentRuntimeRunExecutor(
                 rewriteTargetMessageId = request.rewriteTargetMessageId,
             )
         } finally {
+            runCatching { childTasks?.close() }
             runCatching { toolsBinding?.close() }
             runCatching { toolExecutor?.close() }
             runCatching { guiRun?.close() }

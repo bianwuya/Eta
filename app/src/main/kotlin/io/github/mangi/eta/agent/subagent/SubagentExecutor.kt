@@ -33,7 +33,14 @@ internal class SubagentExecutor(
     private val requestStatsEpoch: () -> String? = { null },
     private val compactionTarget: ((AgentModelClient.ModelConfig) -> io.github.mangi.eta.agent.model.AgentCompactionTarget)? = null,
     private val nanoTime: () -> Long = System::nanoTime,
-) {
+    private val childToolFactory: (() -> AgentModelClient.ToolExecutor)? = null,
+    private val detailStoreFactory: (() -> SubagentDetailStore)? = null,
+) : AutoCloseable {
+    private val tasks = SubagentTaskManager(parentController)
+    val coordination get() = tasks.coordination
+    override fun close() = tasks.close()
+    fun control(call: AgentModelClient.ToolCall): AgentModelClient.ToolResult =
+        tasks.control(JSONObject(call.argumentsJson))
     private val latestSnapshots = ConcurrentHashMap<String, String>()
 
     fun latestSnapshotJson(toolCallId: String): String? = latestSnapshots[toolCallId]
@@ -98,14 +105,41 @@ internal class SubagentExecutor(
             priorHistory = emptyList()
         }
 
+        return try {
+            val task = tasks.start(entry.subagentId, toolCall.id, description, SubagentTaskManager.Budget.from(args),
+                onFinish = { SubagentSessionStore.releaseRunning(conversationKey, entry.subagentId) },
+                onState = { task, state, reason ->
+                    val snapshot = SubagentActivitySnapshot(subagentId = entry.subagentId,
+                        subagentType = entry.profile.name, description = description, prompt = SubagentDisplayText.redact(prompt).take(512),
+                        status = state, currentAction = reason.ifBlank { state }, previewTruncated = prompt.length > 512,
+                        updatedAt = System.currentTimeMillis())
+                    latestSnapshots[toolCall.id] = snapshot.encode()
+                    onProgress(AgentEvent.SubagentProgress(parentRound, toolCall.id, entry.subagentId, entry.profile.name, snapshot.encode()))
+                },
+            ) { task ->
+                runChild(parentRound, toolCall, entry, priorHistory, prompt, description, isResume, task)
+            }
+            AgentModelClient.ToolResult(task.snapshot().put("ok", true)
+                .put("started", true).put("completion_is_not_implied", true)
+                .put("hint", "可继续独立工作；使用 subagent_control 查询、等待、引导或停止。启动不是最终摘要。")
+                .toString(), command = latestSnapshots[toolCall.id]
+                    ?: SubagentActivitySnapshot.initialFromArguments(toolCall.argumentsJson)?.copy(subagentId = entry.subagentId)?.encode())
+        } catch (failure: Exception) {
+            SubagentSessionStore.releaseRunning(conversationKey, entry.subagentId)
+            errorResult("SUBAGENT_START_FAILED", failure.message ?: "启动失败")
+        }
+    }
+
+    private fun runChild(parentRound: Int, toolCall: AgentModelClient.ToolCall,
+        entry: SubagentSessionStore.Entry, priorHistory: List<AgentModelClient.ConversationMessage>,
+        prompt: String, description: String, isResume: Boolean, task: SubagentTaskManager.Task,
+    ): AgentModelClient.ToolResult {
         val profile = entry.profile
         val subagentId = entry.subagentId
-        val childController = AgentRunController()
-        val controllerBinding = parentController.register(childController::cancel)
+        val childController = task.controller
 
         val resolvedConfig = runCatching { configProvider() }.getOrElse { throwable ->
             SubagentSessionStore.releaseRunning(conversationKey, subagentId)
-            controllerBinding.close()
             return errorResult("SUBAGENT_CONFIG_ERROR", throwable.message ?: "无法加载 Subagent 模型配置")
         }
         val modelLabel = resolvedConfig.modelDisplayName.ifBlank { resolvedConfig.model }
@@ -118,12 +152,28 @@ internal class SubagentExecutor(
             resumed = isResume,
         )
 
+        val detailStore = detailStoreFactory?.invoke()
+        val detailId = task.id
         var lastEmitNanos = 0L
-        fun publishSnapshot(force: Boolean) {
+        var snapshotSequence = 0L
+        val publicationLock = Any()
+        fun publishSnapshot(force: Boolean): Unit = synchronized(publicationLock) {
             val now = nanoTime()
             if (!force && now - lastEmitNanos < PROGRESS_THROTTLE_NANOS) return
             lastEmitNanos = now
-            val encoded = tracker.snapshot().encode()
+            val source = tracker.snapshot()
+            snapshotSequence = maxOf(snapshotSequence + 1, System.currentTimeMillis())
+            val full = source.copy(detailId = detailId, updatedAt = snapshotSequence,
+                prompt = SubagentDisplayText.redact(source.prompt), output = SubagentDisplayText.redact(source.output),
+                error = source.error?.let(SubagentDisplayText::redact))
+            if (force) runCatching { detailStore?.save(detailId, full) }
+                .onFailure { io.github.mangi.eta.core.AndroidAgentLogger.warnThrottled("subagent_detail_write_failed") {
+                    "Subagent detail storage failed: type=${it.javaClass.simpleName}"
+                } }
+            val encoded = full.copy(prompt = full.prompt.take(512), output = full.output.takeLast(512),
+                steps = full.steps.takeLast(12).map { it.copy(detail = it.detail.takeLast(200),
+                    detailTruncated = it.detailTruncated || it.detail.length > 200) },
+                previewTruncated = true).encodeBounded(12_000)
             latestSnapshots[toolCall.id] = encoded
             onProgress(
                 AgentEvent.SubagentProgress(
@@ -136,11 +186,22 @@ internal class SubagentExecutor(
             )
         }
 
+        task.onState = { state, reason ->
+            tracker.controlState(state, reason)
+            publishSnapshot(force = true)
+        }
+        tracker.controlState(task.snapshot().optString("status"), "")
         publishSnapshot(force = true)
+
+        val ownedTools = childToolFactory?.invoke()
+        val tools = ownedTools ?: baseToolExecutor
+        val toolBinding = (ownedTools as? AutoCloseable)?.let { childController.register { it.close() } }
 
         val childToolExecutor = AgentModelClient.ToolExecutor { subCall ->
             childController.throwIfCancelled()
-            if (!profile.isToolAllowed(subCall.name)) {
+            if (subCall.name == AgentSubagentToolCatalog.REPORT_TOOL_NAME) {
+                tasks.report(task, JSONObject(subCall.argumentsJson))
+            } else if (!profile.isToolAllowed(subCall.name)) {
                 AgentModelClient.ToolResult(
                     content = JSONObject()
                         .put("ok", false)
@@ -152,7 +213,17 @@ internal class SubagentExecutor(
                         .toString(),
                 )
             } else {
-                baseToolExecutor.execute(subCall)
+                val stepId = "tool-${subCall.round}-${subCall.id}"
+                val safeArguments = if (io.github.mangi.eta.agent.model.AgentSensitiveToolPolicy.isSensitive(subCall.name)) {
+                    "[敏感工具参数不保存]"
+                } else SubagentDisplayText.redact(subCall.argumentsJson)
+                runCatching { detailStore?.capture(detailId, stepId, "${subCall.name}\n$safeArguments\n[执行中]") }
+                tools.execute(subCall).also { result ->
+                    val safeResult = if (result.sensitive || io.github.mangi.eta.agent.model.AgentSensitiveToolPolicy.isSensitive(subCall.name)) {
+                        "[敏感工具结果不保存]"
+                    } else SubagentDisplayText.redact(result.content)
+                    runCatching { detailStore?.capture(detailId, stepId, "${subCall.name}\n$safeArguments\n$safeResult") }
+                }
             }
         }
 
@@ -192,9 +263,10 @@ internal class SubagentExecutor(
                 toolExecutor = childToolExecutor,
                 history = priorHistory,
                 runController = childController,
+                coordination = task.coordination,
                 skillContext = skillContext,
                 memoryContext = memoryContext,
-                additionalTools = profile.filterTools(mcpTools),
+                additionalTools = profile.filterTools(JSONArray(mcpTools.toString()).put(AgentSubagentToolCatalog.reportSchema())),
                 executionContext = executionContext,
                 capabilitiesProvider = capabilitiesProvider,
                 sessionId = "$conversationKey-$subagentId",
@@ -286,7 +358,9 @@ internal class SubagentExecutor(
                 command = latestSnapshots[toolCall.id],
             )
         } finally {
-            controllerBinding.close()
+            toolBinding?.close()
+            (ownedTools as? AutoCloseable)?.let { runCatching { it.close() } }
+            runCatching { kotlinx.coroutines.runBlocking { detailStore?.prune() } }
         }
     }
 
@@ -424,16 +498,19 @@ internal class SubagentExecutor(
     ) {
         private val lock = Any()
         private val steps = mutableListOf<SubagentStepSnapshot>()
+        private var totalStepCount = 0
+        private var totalTools = 0
         private var status = SubagentActivitySnapshot.STATUS_RUNNING
-        private var currentAction = "正在思考…"
+        private var currentAction = "等待模型响应"
         private val roundTexts = linkedMapOf<Int, StringBuilder>()
         private var finalOutput = ""
+        private var retainedTruncated = false
         private var errorText: String? = null
 
         fun onChildEvent(event: AgentEvent): Boolean = synchronized(lock) {
             when (event) {
                 is AgentEvent.RoundStarted -> {
-                    currentAction = if (event.round <= 1) "正在思考…" else "第 ${event.round} 轮思考…"
+                    currentAction = "等待模型响应（第 ${event.round} 轮）"
                     true
                 }
 
@@ -456,6 +533,8 @@ internal class SubagentExecutor(
                                 status = SubagentStepSnapshot.STATUS_RUNNING,
                             )
                         } else {
+                            totalStepCount++
+                            if (steps.size >= MAX_STEPS) steps.removeAt(0)
                             steps += SubagentStepSnapshot(
                                 id = stepId,
                                 kind = SubagentStepSnapshot.KIND_THINKING,
@@ -469,8 +548,14 @@ internal class SubagentExecutor(
                     }
 
                     AgentEvent.AssistantBlockKind.TEXT -> {
-                        roundTexts.getOrPut(event.round) { StringBuilder() }.append(event.delta)
-                        currentAction = "正在整理汇报…"
+                        val text = roundTexts.getOrPut(event.round) { StringBuilder() }
+                        text.append(event.delta)
+                        if (text.length > MAX_OUTPUT_CHARS) {
+                            retainedTruncated = true
+                            text.delete(0, text.length - MAX_OUTPUT_CHARS)
+                        }
+                        while (roundTexts.size > 4) roundTexts.remove(roundTexts.keys.first())
+                        currentAction = "正在接收模型正文；尚未作为阶段结论汇报"
                         false
                     }
 
@@ -509,6 +594,9 @@ internal class SubagentExecutor(
                     val title = event.argsPreview.ifBlank { event.name }
                     val detail = event.command?.trim().orEmpty().take(MAX_STEP_DETAIL_CHARS)
                     if (steps.none { it.id == stepId }) {
+                        totalTools++
+                        totalStepCount++
+                        if (steps.size >= MAX_STEPS) steps.removeAt(0)
                         steps += SubagentStepSnapshot(
                             id = stepId,
                             kind = SubagentStepSnapshot.KIND_TOOL,
@@ -549,9 +637,22 @@ internal class SubagentExecutor(
             }
         }
 
+        fun controlState(value: String, reason: String) = synchronized(lock) {
+            status = value
+            if (value !in setOf("running", "completed", "failed", "cancelled")) currentAction = when (value) {
+                "paused" -> "已在安全边界暂停：$reason"
+                "waiting_decision" -> "等待主代理决定"
+                "pausing" -> "等待当前请求/完整工具批次结束后暂停"
+                "cancelling" -> "正在取消；已执行操作不会撤销"
+                "interrupted" -> "任务已中断"
+                else -> value
+            }
+        }
+
         fun markCompleted(content: String) = synchronized(lock) {
             finishRunningThinkingSteps()
             status = SubagentActivitySnapshot.STATUS_COMPLETED
+            retainedTruncated = retainedTruncated || content.trim().length > MAX_OUTPUT_CHARS
             finalOutput = content.trim().take(MAX_OUTPUT_CHARS)
             val tools = toolCount()
             currentAction = if (tools > 0) "完成 · $tools 次工具调用" else "完成"
@@ -582,9 +683,7 @@ internal class SubagentExecutor(
                 .takeLast(MAX_OUTPUT_CHARS)
         }
 
-        fun toolCount(): Int = synchronized(lock) {
-            steps.count { it.kind == SubagentStepSnapshot.KIND_TOOL }
-        }
+        fun toolCount(): Int = synchronized(lock) { totalTools }
 
         fun snapshot(): SubagentActivitySnapshot = synchronized(lock) {
             val liveOutput = if (finalOutput.isNotBlank()) {
@@ -602,6 +701,8 @@ internal class SubagentExecutor(
                 status = status,
                 currentAction = currentAction,
                 steps = steps.takeLast(MAX_STEPS),
+                totalSteps = totalStepCount,
+                previewTruncated = retainedTruncated || totalStepCount > MAX_STEPS,
                 output = liveOutput,
                 error = errorText,
             )
@@ -629,9 +730,9 @@ internal class SubagentExecutor(
     }
 
     companion object {
-        private const val PROGRESS_THROTTLE_NANOS = 80_000_000L
+        private const val PROGRESS_THROTTLE_NANOS = 500_000_000L
         private const val MAX_STEP_DETAIL_CHARS = 2_000
-        private const val MAX_OUTPUT_CHARS = 12_000
-        private const val MAX_STEPS = 48
+        private const val MAX_OUTPUT_CHARS = 128_000
+        private const val MAX_STEPS = 256
     }
 }
