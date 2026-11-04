@@ -31,6 +31,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -92,6 +93,11 @@ private data class CustomSubagentDraft(
 internal fun SubagentSettingsScreen(
     onBack: () -> Unit,
 ) {
+    var showRequestStats by rememberSaveable { mutableStateOf(false) }
+    if (showRequestStats) {
+        io.github.mangi.eta.local.subagentstats.SubagentStatsScreen(onBack = { showRequestStats = false })
+        return
+    }
     val scope = rememberCoroutineScope()
     val agentPrefs = remember { Prefs.localAgentPreferences() }
     val defaultEnabled = Prefs.Keys.BOOLEAN_DEFAULTS.getValue(Prefs.Keys.AGENT_SUBAGENT_ENABLED)
@@ -361,6 +367,11 @@ internal fun SubagentSettingsScreen(
                             }
                         }
                     },
+                )
+                ArrowPreference(
+                    title = "子代理请求统计",
+                    summary = "按会话查看输入、缓存命中与历史前缀变化",
+                    onClick = { showRequestStats = true },
                 )
                 ArrowPreference(
                     title = "Subagent 模型",

@@ -18,6 +18,7 @@ internal object AgentHttpClient {
 
     val modelClient: OkHttpClient by lazy {
         client.newBuilder()
+            .addInterceptor(io.github.mangi.eta.local.subagentstats.SubagentRequestStats.interceptor)
             .readTimeout(MODEL_READ_TIMEOUT_MS, TimeUnit.MILLISECONDS)
             .retryOnConnectionFailure(false)
             .build()

@@ -260,6 +260,10 @@ internal class AgentRuntimeRunExecutor(
             }
             val subagentExecutor = SubagentExecutor(
                 conversationKey = browserKey,
+                parentRunId = request.runId,
+                onRequestStat = { record ->
+                    io.github.mangi.eta.local.subagentstats.SubagentStatsStore.get(appContext).save(record)
+                },
                 parentController = runController,
                 configProvider = {
                     val rawSubagentConfig = runBlocking {

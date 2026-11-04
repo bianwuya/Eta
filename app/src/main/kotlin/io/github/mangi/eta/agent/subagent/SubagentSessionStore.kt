@@ -16,6 +16,8 @@ internal object SubagentSessionStore {
         val profile: SubagentProfile,
         @Volatile var history: List<AgentModelClient.ConversationMessage> = emptyList(),
         val running: AtomicBoolean = AtomicBoolean(false),
+        val requestStatsBaseline: io.github.mangi.eta.local.subagentstats.SubagentRequestBaseline =
+            io.github.mangi.eta.local.subagentstats.SubagentRequestBaseline(),
     )
 
     private class ConversationBucket {

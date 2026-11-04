@@ -28,6 +28,8 @@ internal class SubagentExecutor(
     private val mcpTools: JSONArray,
     private val executionContext: TerminalExecutionContext?,
     private val onProgress: (AgentEvent.SubagentProgress) -> Unit,
+    private val onRequestStat: (io.github.mangi.eta.local.subagentstats.SubagentRequestStat) -> Unit = {},
+    private val parentRunId: String = "",
     private val nanoTime: () -> Long = System::nanoTime,
 ) {
     private val latestSnapshots = ConcurrentHashMap<String, String>()
@@ -161,6 +163,18 @@ internal class SubagentExecutor(
         return try {
             val response = AgentModelClient.complete(
                 config = subagentConfig,
+                provider = io.github.mangi.eta.local.subagentstats.SubagentRequestStats.provider(
+                    delegate = io.github.mangi.eta.agent.model.ProviderClientFactory.getClient(subagentConfig),
+                    template = io.github.mangi.eta.local.subagentstats.SubagentRequestStat(
+                        conversationId = conversationKey, subagentId = subagentId,
+                        invocationId = toolCall.id, parentRunId = parentRunId,
+                        profile = profile.name,
+                        providerId = subagentConfig.providerId, model = subagentConfig.model,
+                        purpose = "CHAT", ordinal = 0, resumed = isResume,
+                    ),
+                    baseline = entry.requestStatsBaseline,
+                    save = onRequestStat,
+                ),
                 prompt = prompt,
                 toolExecutor = childToolExecutor,
                 history = priorHistory,
