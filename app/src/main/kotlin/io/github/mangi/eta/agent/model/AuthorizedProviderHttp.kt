@@ -40,7 +40,9 @@ internal object AuthorizedProviderHttp {
                     }
                 }
                 .build()
-            val call = httpClient.newCall(authorized)
+            val trace = ModelDebugTrace.begin(authorized)
+            val tracedClient = if (trace == null) httpClient else httpClient.newBuilder().eventListener(trace).build()
+            val call = tracedClient.newCall(authorized)
             val binding = controller.register(call::cancel)
             try {
                 controller.throwIfCancelled()
@@ -57,10 +59,11 @@ internal object AuthorizedProviderHttp {
                                 "OAUTH_UNAUTHORIZED", false, "订阅登录已失效，请重新登录服务商账户。",
                             )
                         }
-                        return consume(response)
+                        return ModelDebugTrace.consume(trace) { consume(response) }
                     }
                 }
             } catch (failure: Throwable) {
+                trace?.failure("request_failed", failure)
                 controller.throwIfCancelled()
                 throw failure
             } finally {

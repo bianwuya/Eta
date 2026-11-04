@@ -72,6 +72,7 @@ internal class AgentRuntimeRunExecutor(
         session: AgentRuntimeSession,
         request: AgentRuntimeWire.RunRequest,
     ): Outcome {
+        io.github.mangi.eta.agent.model.ModelDebugTrace.initialize(appContext)
         val runController = session.controller
         val archivedEvents = AgentRunArchiveStore.createEventBuffer(request.handoff)
         var entrySurfaceGuard: EntrySurfaceGuard? = null
