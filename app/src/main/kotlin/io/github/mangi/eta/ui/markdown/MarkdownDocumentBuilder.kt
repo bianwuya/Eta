@@ -70,6 +70,7 @@ private class BlockConverter(
         MarkdownElementTypes.SETEXT_2 -> heading(node, 2, MarkdownTokenTypes.SETEXT_CONTENT)
         MarkdownElementTypes.CODE_FENCE -> codeFence(node)
         MarkdownElementTypes.CODE_BLOCK -> indentedCode(node)
+        MarkdownElementTypes.HTML_BLOCK -> MarkdownCode(node.startOffset, "html", AnnotatedString(node.text()))
         MarkdownElementTypes.BLOCK_QUOTE -> MarkdownQuote(node.startOffset, children(node))
         GFMElementTypes.ALERT -> alert(node)
         MarkdownElementTypes.UNORDERED_LIST -> list(node, ordered = false)

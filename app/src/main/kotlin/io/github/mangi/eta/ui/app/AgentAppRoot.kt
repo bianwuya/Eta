@@ -374,6 +374,11 @@ fun AgentAppRoot(
             navigator.popToHome()
         },
     ) {
+    androidx.compose.runtime.CompositionLocalProvider(
+        io.github.mangi.eta.local.richcontent.LocalRichPreview provides { reference ->
+            pushRoute(AppRoute.RichPreview(reference))
+        },
+    ) {
     key(navigationResetKey) {
         NavDisplay(
             backStack = backStack,
@@ -449,6 +454,9 @@ fun AgentAppRoot(
                     backStack.remove(route)
                     if (backStack.isEmpty()) backStack.add(AppRoute.Home)
                 }
+            }
+            entry<AppRoute.RichPreview>(swipeDismiss = swipeDismiss) { route ->
+                io.github.mangi.eta.local.richcontent.RichPreviewScreen(reference = route.reference, onBack = ::popRoute)
             }
             entry<AppRoute.Terminal>(swipeDismiss = swipeDismiss) {
                 LaunchedEffect(Unit) { requestExecutionNotifications() }
@@ -806,6 +814,7 @@ fun AgentAppRoot(
         }
     }
 
+    } // LocalRichPreview: presentation only, no Agent actions.
     } // IncomingContentHost: keep local ingress isolated from upstream navigation.
 
     characterStore.notice?.let { notice ->

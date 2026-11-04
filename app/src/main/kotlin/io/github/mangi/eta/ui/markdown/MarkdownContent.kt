@@ -63,6 +63,8 @@ import io.github.mangi.eta.R
 import io.github.mangi.eta.ui.components.StatusSuccess
 import io.github.mangi.eta.ui.components.StatusWarning
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.Text
@@ -83,8 +85,9 @@ internal fun MarkdownContent(
     style: MarkdownStyle,
     modifier: Modifier = Modifier,
     reveal: SmoothTextRevealCoordinator? = null,
+    richContentEnabled: Boolean = true,
 ) {
-    val scope = remember(style, reveal) { MarkdownRenderScope(style, reveal) }
+    val scope = remember(style, reveal, richContentEnabled) { MarkdownRenderScope(style, reveal, richContentEnabled) }
     MarkdownBlockColumn(blocks = document.blocks, scope = scope, compact = false, modifier = modifier)
 }
 
@@ -92,8 +95,9 @@ internal fun MarkdownContent(
 private class MarkdownRenderScope(
     val style: MarkdownStyle,
     val reveal: SmoothTextRevealCoordinator?,
+    val richContentEnabled: Boolean,
 ) {
-    fun muted() = MarkdownRenderScope(style.muted(), reveal)
+    fun muted() = MarkdownRenderScope(style.muted(), reveal, richContentEnabled)
 }
 
 /** 嵌套列表的层级只影响 marker 字形，用 CompositionLocal 传递，块组件不必逐层转发。 */
@@ -133,7 +137,12 @@ private fun MarkdownBlockView(block: MarkdownBlock, scope: MarkdownRenderScope) 
             scope = scope,
             modifier = Modifier.semantics { heading() },
         )
-        is MarkdownCode -> MarkdownCodeBlock(block, scope)
+        is MarkdownCode -> if (block.isMath && scope.richContentEnabled && scope.reveal == null) {
+            Column {
+                io.github.mangi.eta.local.richcontent.MathParagraph(block.text, scope.style.body, display = true)
+                CopyButton(text = block.text.text, tint = scope.style.secondaryColor)
+            }
+        } else MarkdownCodeBlock(block, scope)
         is MarkdownQuote -> MarkdownQuoteBlock(block, scope)
         is MarkdownAlert -> MarkdownAlertBlock(block, scope)
         is MarkdownList -> MarkdownListBlock(block, scope)
@@ -158,6 +167,20 @@ private fun MarkdownText(
     softWrap: Boolean = true,
 ) {
     val reveal = scope.reveal
+    if (scope.richContentEnabled && reveal == null && block !is MarkdownCode && block.text.getStringAnnotations(0, block.text.length).any {
+            it.tag in setOf(io.github.mangi.eta.local.richcontent.MATH_ANNOTATION,
+                io.github.mangi.eta.local.richcontent.FILE_ANNOTATION, io.github.mangi.eta.local.richcontent.IMAGE_ANNOTATION)
+        }) {
+        Column(modifier) {
+            if (block.text.getStringAnnotations(io.github.mangi.eta.local.richcontent.MATH_ANNOTATION, 0, block.text.length).isNotEmpty()) {
+                io.github.mangi.eta.local.richcontent.MathParagraph(block.text, style)
+            } else {
+                Text(text = block.text, style = style, softWrap = softWrap)
+            }
+            io.github.mangi.eta.local.richcontent.LocalOutputCards(block.text)
+        }
+        return
+    }
     // 空单元格没有可显现的文字，也不占用显现协调器的 key。
     if (reveal == null || block.text.isEmpty()) {
         Text(text = block.text, style = style, softWrap = softWrap, modifier = modifier)
@@ -180,6 +203,9 @@ private fun MarkdownText(
 @Composable
 private fun MarkdownCodeBlock(block: MarkdownCode, scope: MarkdownRenderScope) {
     val style = scope.style
+    val open = io.github.mangi.eta.local.richcontent.LocalRichPreview.current
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val coroutineScope = androidx.compose.runtime.rememberCoroutineScope()
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -199,6 +225,22 @@ private fun MarkdownCodeBlock(block: MarkdownCode, scope: MarkdownRenderScope) {
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
+            if (block.language?.lowercase() in setOf("html", "htm")) {
+                top.yukonga.miuix.kmp.basic.TextButton(
+                    text = "预览", enabled = scope.richContentEnabled && scope.reveal == null,
+                    onClick = {
+                        coroutineScope.launch {
+                            try {
+                                val file = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                    io.github.mangi.eta.local.richcontent.LocalPreviewFiles.saveCode(context, block.text.text)
+                                }
+                                open(file.path)
+                            } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+                            catch (e: Exception) { android.widget.Toast.makeText(context, e.message ?: "预览失败", android.widget.Toast.LENGTH_SHORT).show() }
+                        }
+                    },
+                )
+            }
             CopyButton(text = block.text.text, tint = style.secondaryColor)
         }
         // 代码不折行，长行横向滚动，保留缩进与对齐。

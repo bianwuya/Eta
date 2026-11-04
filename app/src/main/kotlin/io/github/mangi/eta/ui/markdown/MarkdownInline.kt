@@ -86,7 +86,11 @@ internal class MarkdownInlineBuilder(
                 appendChildren(node, state)
             }
             MarkdownElementTypes.CODE_SPAN -> appendCode(codeSpanText(node))
-            GFMElementTypes.INLINE_MATH, GFMElementTypes.BLOCK_MATH -> appendCode(mathText(node))
+            GFMElementTypes.INLINE_MATH, GFMElementTypes.BLOCK_MATH -> {
+                pushStringAnnotation(io.github.mangi.eta.local.richcontent.MATH_ANNOTATION, "inline")
+                append(mathText(node))
+                pop()
+            }
             MarkdownElementTypes.INLINE_LINK -> appendInlineLink(node, state)
             MarkdownElementTypes.FULL_REFERENCE_LINK -> appendReferenceLink(
                 node = node,
@@ -308,7 +312,11 @@ internal class MarkdownInlineBuilder(
                 append(decodeMarkdownText(fallback.text()))
             }
         }
-        if (safeUrl == null) {
+        if (url != null && io.github.mangi.eta.local.richcontent.LocalPreviewFiles.isReference(url)) {
+            pushStringAnnotation(io.github.mangi.eta.local.richcontent.FILE_ANNOTATION, url)
+            label()
+            pop()
+        } else if (safeUrl == null) {
             label()
         } else {
             withLink(linkAnnotation(safeUrl)) { label() }
@@ -321,14 +329,18 @@ internal class MarkdownInlineBuilder(
         if (safeUrl == null) append(raw) else withLink(linkAnnotation(safeUrl)) { append(raw) }
     }
 
-    /** 聊天不加载远程图片：以替代文字作为可点开的链接，内容不丢失也不产生网络请求。 */
+    /** 本地输出图片由展示层加载；远程图片仍只显示链接，不自动联网。 */
     private fun AnnotatedString.Builder.appendImage(node: ASTNode, state: LineState) {
         val link = node.child(MarkdownElementTypes.INLINE_LINK)
         val alt = link?.child(MarkdownElementTypes.LINK_TEXT)?.text()?.removeSurrounding("[", "]").orEmpty()
         val destination = link?.child(MarkdownElementTypes.LINK_DESTINATION)?.text()?.removeSurrounding("<", ">")
         val label = alt.ifBlank { destination.orEmpty() }
         val safeUrl = destination?.let(::safeLinkUrl)
-        if (safeUrl == null) append(label) else withLink(linkAnnotation(safeUrl)) { append(label) }
+        if (destination != null && io.github.mangi.eta.local.richcontent.LocalPreviewFiles.isReference(destination)) {
+            pushStringAnnotation(io.github.mangi.eta.local.richcontent.IMAGE_ANNOTATION, destination)
+            append(label)
+            pop()
+        } else if (safeUrl == null) append(label) else withLink(linkAnnotation(safeUrl)) { append(label) }
         state.atLineStart = false
     }
 

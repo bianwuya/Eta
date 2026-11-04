@@ -22,6 +22,7 @@ class AppRouteSerializationTest {
             AppRoute.Browser(),
             AppRoute.Browser("conversation-a"),
             AppRoute.Browser("conversation-b"),
+            AppRoute.RichPreview("/sdcard/Download/Eta-HTML/页面.html"),
             AppRoute.Terminal,
             AppRoute.Tools,
             AppRoute.WebToolsSettings,
