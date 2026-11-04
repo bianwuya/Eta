@@ -102,6 +102,9 @@ internal class AgentAppState(
     private val runMessageProjector = AgentRunMessageProjector()
     private val runStore = AgentRunStore(scope) { runId, event -> applyRunEvent(runId, event) }
     private val pendingConversationDeletes = mutableSetOf<String>()
+    private val steeringMutex = Mutex()
+    private val steeringJobs = mutableMapOf<String, Pair<String, Job>>()
+    private val unconfirmedSteering = mutableSetOf<String>()
     private val persistenceLock = Any()
     private var persistenceJob: Job? = null
     // 导入期间暂停保存：旧状态的增量保存会删除刚导入的会话；导入成功后整体重载，失败时数据库已回滚。
@@ -439,6 +442,10 @@ internal class AgentAppState(
                         supplements = payload.supplements,
                     )
                     if (recovery.alreadyApplied) {
+                        if (recovery.state != state) {
+                            updateConversation(conversationId, recovery.state)
+                            stateChanged = true
+                        }
                         acknowledgeAfterSave += runId
                         return@forEach
                     }
@@ -1140,19 +1147,19 @@ internal class AgentAppState(
     }
 
     fun steerQueuedMessage(id: String) {
-        if (!homeState.isConversationLoaded) return
+        if (!homeState.isConversationLoaded || id in steeringJobs || id in unconfirmedSteering) return
         val (nextState, promoted) = AgentMessageQueueReducer.promoteToInterrupt(homeState, id)
         if (promoted == null) return
         updateCurrentConversation(nextState, updateTimestamp = false)
         if (nextState.isStreaming && !nextState.isCompacting) {
-            requestInterruptCurrentRun()
+            requestSteeringCurrentRun(promoted.id)
         } else if (!nextState.isStreaming) {
             dispatchQueuedMessage(selectedConversationId, promoted)
         }
     }
 
     fun recallQueuedMessage(id: String, currentDraftText: String) {
-        if (!homeState.isConversationLoaded) return
+        if (!homeState.isConversationLoaded || id in steeringJobs) return
         val nextState = AgentMessageQueueReducer.recallToDraft(
             state = homeState,
             currentInputText = currentDraftText,
@@ -1162,7 +1169,7 @@ internal class AgentAppState(
     }
 
     fun removeQueuedMessage(id: String) {
-        if (!homeState.isConversationLoaded) return
+        if (!homeState.isConversationLoaded || id in steeringJobs) return
         val nextState = AgentMessageQueueReducer.remove(homeState, id)
         if (nextState !== homeState) {
             updateCurrentConversation(nextState, updateTimestamp = false)
@@ -1223,7 +1230,7 @@ internal class AgentAppState(
                 updateTimestamp = false,
             )
             if (immediateInterrupt) {
-                requestInterruptCurrentRun()
+                requestSteeringCurrentRun(queued.id)
             }
             return
         }
@@ -1941,9 +1948,46 @@ internal class AgentAppState(
         requestCancelRun(runId, byUser = true)
     }
 
-    private fun requestInterruptCurrentRun() {
-        val runId = runStore.activeRunId(selectedConversationId) ?: return
-        requestCancelRun(runId)
+    private fun requestSteeringCurrentRun(queueMessageId: String) {
+        val conversationId = selectedConversationId ?: return
+        val runId = runStore.activeRunId(conversationId) ?: return
+        val item = conversationsById[conversationId]?.queuedMessages?.firstOrNull { it.id == queueMessageId } ?: return
+        // 图片仍走现有完整摄取通道；不能为“引导”丢附件或取消在途请求。
+        if (item.pendingImages.isNotEmpty() || runStore.isStopRequested(runId) ||
+            queueMessageId in steeringJobs || queueMessageId in unconfirmedSteering) return
+        val job = scope.launch(start = CoroutineStart.LAZY) {
+            try {
+                steeringMutex.withLock {
+                    val current = conversationsById[conversationId] ?: return@withLock
+                    if (current.queuedMessages.none { it.id == queueMessageId } || runStore.isStopRequested(runId)) return@withLock
+                    val text = AgentFileReferencePromptCodec.format(item.content, item.pendingFileReferences.map { it.reference })
+                    val outcome = withContext(Dispatchers.IO) {
+                        AgentRuntimeClient(appContext, AndroidAgentLogger).steerRun(runId, queueMessageId, text)
+                    }
+                    when (outcome) {
+                        AgentRuntimeClient.SteeringOutcome.Accepted -> {
+                            unconfirmedSteering.remove(queueMessageId)
+                            conversationsById[conversationId]?.let {
+                                updateConversation(conversationId, AgentMessageQueueReducer.remove(it, queueMessageId), updateTimestamp = false)
+                            }
+                            persistConversations()
+                        }
+                        AgentRuntimeClient.SteeringOutcome.NotAccepted -> Unit // 已收尾/准备中：原队列自然续发。
+                        AgentRuntimeClient.SteeringOutcome.Unavailable -> {
+                            // 超时不等于未接收；保留待核对标记，避免结果收尾时重复自动发送。
+                            if (conversationsById[conversationId]?.queuedMessages?.any { it.id == queueMessageId } == true) {
+                                unconfirmedSteering += queueMessageId
+                                Toast.makeText(appContext, "引导接收状态未确认，已保留队列，请恢复会话后核对。", Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    }
+                }
+            } finally {
+                steeringJobs.remove(queueMessageId)
+            }
+        }
+        steeringJobs[queueMessageId] = runId to job
+        job.start()
     }
 
     private fun requestCancelRun(runId: String, byUser: Boolean = false) {
@@ -1998,8 +2042,13 @@ internal class AgentAppState(
                 runStore.updateGuiStatus(runId, event.status)
                 refreshConversationSummaries()
             }
-            is AgentEvent.UserSupplementReceived ->
+            is AgentEvent.UserSupplementReceived -> {
+                unconfirmedSteering.remove(event.queueMessageId)
+                conversationIdForRun(runId)?.let { id -> conversationsById[id]?.let { state ->
+                    updateConversation(id, AgentMessageQueueReducer.remove(state, event.queueMessageId), updateTimestamp = false)
+                } }
                 insertSupplementMessage(runId, event.index, event.text, persist = persistSupplement)
+            }
             is AgentEvent.RunStarted -> if (runStore.isStopRequested(runId)) scope.launch(Dispatchers.IO) {
                 AgentRuntimeClient(appContext, AndroidAgentLogger).cancelRun(runId)
             }
@@ -2098,6 +2147,8 @@ internal class AgentAppState(
         )
         scope.launch {
             val resultSaved = saved.await() && result.contextSnapshotRef.isBlank()
+            // 接收事件与终态可先于 Binder 回执到达；先等引导请求裁决，再弹出队列。
+            steeringJobs.values.filter { it.first == runId }.map { it.second }.forEach { it.join() }
             val stoppedDuringSettlement = runStore.wasStoppedByUser(runId)
             setConversationStreaming(runId, false)
             runStore.remove(runId)
@@ -2113,6 +2164,7 @@ internal class AgentAppState(
             if (!resultSaved || !resumeQueue || runStore.activeRunId(conversationId) != null) return@launch
             val finishedState = conversationsById[conversationId]
             if (finishedState != null && finishedState.queuedMessages.isNotEmpty()) {
+                if (finishedState.queuedMessages.any { it.id in unconfirmedSteering }) return@launch
                 val stoppedByUser = explicitlyStoppedByUser || stoppedDuringSettlement ||
                     (!result.ok && (result.error == LEGACY_STOPPED_ERROR || result.error == SYNTHETIC_STATUS_STOPPED))
                 val (afterPopState, nextQueued) = AgentMessageQueueReducer.pollNextToSendAfterRun(

@@ -81,15 +81,22 @@ internal class RuntimeRunRegistry(private val capacity: Int = MAX_ACTIVE_RUNS) {
             onRequestIngested()
         }
 
-        fun supplement(text: String): AgentEvent.UserSupplementReceived? = session.steer(text) {
-            synchronized(supplementsLock) {
-                val supplement = AgentUiHandoffPayload.Supplement(
-                    index = nextSupplementIndex++,
-                    text = text,
-                    createdAt = System.currentTimeMillis(),
-                )
-                supplements += supplement
-                AgentEvent.UserSupplementReceived(supplement.index, supplement.text)
+        fun supplement(text: String, queueMessageId: String = ""): AgentEvent.UserSupplementReceived? {
+            if (queueMessageId.isNotBlank()) {
+                synchronized(supplementsLock) { supplements.firstOrNull { it.queueMessageId == queueMessageId } }
+                    ?.let { return AgentEvent.UserSupplementReceived(it.index, it.text, it.queueMessageId) }
+            }
+            return session.steer(text) {
+                synchronized(supplementsLock) {
+                    val supplement = AgentUiHandoffPayload.Supplement(
+                        index = nextSupplementIndex++,
+                        text = text,
+                        createdAt = System.currentTimeMillis(),
+                        queueMessageId = queueMessageId,
+                    )
+                    supplements += supplement
+                    AgentEvent.UserSupplementReceived(supplement.index, supplement.text, queueMessageId)
+                }
             }
         }
 

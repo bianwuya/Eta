@@ -217,6 +217,8 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
             if (!isMessageSenderAllowed(msg)) {
                 if (msg.what == AgentRuntimeWire.MSG_START_RUN) {
                     AgentRuntimeWire.closeImageDescriptors(msg.data)
+                } else if (msg.what == AgentRuntimeWire.MSG_STEER_RUN) {
+                    AgentWireText.close(msg.data)
                 }
                 return
             }
@@ -243,6 +245,34 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                         return
                     }
                     ingestRunRequest(incoming, msg.replyTo, msg.sendingUid == android.os.Process.myUid())
+                }
+
+                AgentRuntimeWire.MSG_STEER_RUN -> {
+                    val data = msg.data ?: return
+                    val runId = AgentRuntimeWire.runIdFromBundle(data)
+                    val queueMessageId = data.getString("queue_message_id").orEmpty()
+                    val text = try {
+                        runCatching { AgentWireText.read(data, "steering_text").orEmpty().trim() }.getOrDefault("")
+                    } finally {
+                        AgentWireText.close(data)
+                    }
+                    val active = runs.get(runId)
+                    val event = if (msg.sendingUid == Process.myUid() && queueMessageId.isNotBlank() && text.isNotBlank() &&
+                        active?.request?.handoff?.source == AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE) {
+                        active.supplement(text, queueMessageId)
+                    } else null
+                    if (event != null && active != null) {
+                        active.overlayState = active.overlayState.applyEvent(event)
+                        if (displayedRun?.runId == runId) state.value = active.overlayState
+                    }
+                    runCatching {
+                        msg.replyTo?.send(Message.obtain(null, AgentRuntimeWire.MSG_STEER_RUN_RESPONSE).apply {
+                            this.data = AgentRuntimeWire.ackBundle(runId).apply {
+                                putString("queue_message_id", queueMessageId)
+                                putBoolean("accepted", event != null)
+                            }
+                        })
+                    }
                 }
 
                 AgentRuntimeWire.MSG_CANCEL -> {

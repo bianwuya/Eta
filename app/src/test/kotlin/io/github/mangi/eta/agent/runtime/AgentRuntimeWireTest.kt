@@ -29,6 +29,19 @@ import org.robolectric.annotation.Config
 @Config(sdk = [33, 36])
 class AgentRuntimeWireTest {
     @Test
+    fun queuedSteeringIdentitySurvivesIpcAndDurableRecovery() {
+        val event = AgentEvent.UserSupplementReceived(3, "调整方向", "queue-3")
+        assertEquals(event, AgentRuntimeWire.eventFromBundle(AgentRuntimeWire.eventToBundle(event)))
+        assertEquals(event, AgentEventJsonCodec.decode(AgentEventJsonCodec.encode(event)))
+        val legacy = AgentRuntimeWire.eventToBundle(event).apply { remove("queue_message_id") }
+        assertEquals("", (AgentRuntimeWire.eventFromBundle(legacy) as AgentEvent.UserSupplementReceived).queueMessageId)
+        val payload = AgentUiHandoffPayload("conversation", supplements = listOf(
+            AgentUiHandoffPayload.Supplement(3, "调整方向", 1L, "queue-3"),
+        ))
+        assertEquals(payload, AgentUiHandoffPayload.from(payload.toJson()))
+    }
+
+    @Test
     fun searchSuggestionsCapabilityIsOptionalAndHtmlIsNeverDurable() {
         val request = AgentRuntimeWire.RunRequest(
             runId = "search", prompt = "测试", images = emptyList(),

@@ -118,6 +118,37 @@ internal class AgentRuntimeClient(
         }
     }
 
+    enum class SteeringOutcome { Accepted, NotAccepted, Unavailable }
+
+    /** 接收确认与在途模型流分离；超时不表示拒绝，调用方不得据此重复发送。 */
+    fun steerRun(runId: String, queueMessageId: String, text: String): SteeringOutcome {
+        if (runId.isBlank() || queueMessageId.isBlank() || text.isBlank()) return SteeringOutcome.NotAccepted
+        val received = CountDownLatch(1)
+        val outcome = AtomicReference(SteeringOutcome.Unavailable)
+        val receiver = Messenger(object : Handler(Looper.getMainLooper()) {
+            override fun handleMessage(msg: Message) {
+                if (msg.what != AgentRuntimeWire.MSG_STEER_RUN_RESPONSE) return
+                val data = msg.data ?: return
+                if (AgentRuntimeWire.runIdFromBundle(data) != runId ||
+                    data.getString("queue_message_id") != queueMessageId) return
+                outcome.set(if (data.getBoolean("accepted")) SteeringOutcome.Accepted else SteeringOutcome.NotAccepted)
+                received.countDown()
+            }
+        })
+        return withRuntimeMessenger(SteeringOutcome.Unavailable) { service ->
+            val data = AgentRuntimeWire.ackBundle(runId).apply {
+                putString("queue_message_id", queueMessageId)
+                AgentWireText.put(this, "steering_text", text, context.cacheDir)
+            }
+            AgentWireText.send(service, Message.obtain(null, AgentRuntimeWire.MSG_STEER_RUN).apply {
+                replyTo = receiver
+                this.data = data
+            })
+            if (received.await(RESPONSE_TIMEOUT_SECONDS, TimeUnit.SECONDS)) outcome.get()
+            else SteeringOutcome.Unavailable
+        }
+    }
+
     fun cancelRun(runId: String) {
         if (runId.isBlank()) return
         withRuntimeMessenger(Unit) { serviceMessenger ->

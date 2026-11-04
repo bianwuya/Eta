@@ -90,6 +90,10 @@ internal object AgentRuntimeWire {
     /** service -> client：返回各运行的会话归属与当前阶段。 */
     const val MSG_QUERY_ACTIVE_RUNS_RESPONSE = 17
 
+    /** 主聊天队列引导：只向现有 run 追加输入，不取消在途请求。 */
+    const val MSG_STEER_RUN = 18
+    const val MSG_STEER_RUN_RESPONSE = 19
+
     private const val MODULE_PACKAGE = "io.github.mangi.eta"
     private const val SERVICE_CLASS = "io.github.mangi.eta.agent.runtime.AgentRuntimeService"
 
@@ -791,6 +795,7 @@ internal object AgentRuntimeWire {
                 putString(KEY_TYPE, "user_supplement_received")
                 putInt("index", event.index)
                 putString("text", event.text)
+                putString("queue_message_id", event.queueMessageId)
             }
 
             is AgentEvent.ToolStarted -> {
@@ -953,6 +958,7 @@ internal object AgentRuntimeWire {
         "user_supplement_received" -> AgentEvent.UserSupplementReceived(
             index = bundle.getInt("index"),
             text = bundle.getString("text").orEmpty(),
+            queueMessageId = bundle.getString("queue_message_id").orEmpty(),
         )
 
         "tool_started" -> AgentEvent.ToolStarted(

@@ -153,7 +153,8 @@ internal sealed interface AgentEvent {
 
     data class UserSupplementReceived(
         val index: Int,
-        val text: String
+        val text: String,
+        val queueMessageId: String = "",
     ) : AgentEvent {
         override fun toLogLine(): String =
             "user_supplement_received index=$index, chars=${text.length}"
