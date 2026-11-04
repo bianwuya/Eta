@@ -11,6 +11,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
+import io.github.mangi.eta.local.longshot.colorOsLongshotTarget
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
@@ -75,6 +76,7 @@ fun MiuixScaffoldPage(
                 state = listState,
                 modifier = Modifier
                     .fillMaxSize()
+                    .colorOsLongshotTarget(listState)
                     .horizontalCutoutPadding()
                     .captureForTopBar(backdrop)
                     .scrollEndHaptic()

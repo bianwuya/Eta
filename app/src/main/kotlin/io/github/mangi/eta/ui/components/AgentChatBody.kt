@@ -31,6 +31,8 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.ui.platform.LocalScrollCaptureInProgress
+import io.github.mangi.eta.local.longshot.colorOsLongshotTarget
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -473,6 +475,7 @@ internal fun AgentConversationMessages(
     onHistoryViewportChanged: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
+    val scrollCaptureInProgress = LocalScrollCaptureInProgress.current
     // 上一版条目只作复用比对，不参与组合观察。
     val previousTimelineEntries = remember { arrayOf(emptyList<AgentTimelineEntry>()) }
     val timelineEntries = remember(visibleMessages) {
@@ -574,8 +577,8 @@ internal fun AgentConversationMessages(
         messageCount = visibleMessages.size,
         hasEarlier = hasEarlierMessages,
         loadState = historyLoadState,
-        enabled = !isStreaming && editTargetMessageId == null,
-        canReleasePages = !isTailRendering && !isBottomSettling,
+        enabled = !scrollCaptureInProgress && !isStreaming && editTargetMessageId == null,
+        canReleasePages = !scrollCaptureInProgress && !isTailRendering && !isBottomSettling,
         keepBottomAnchored = keepBottomAnchored,
         onBottomAnchorChanged = onBottomAnchorChanged,
         onLoadEarlier = onLoadEarlierMessages,
@@ -583,7 +586,7 @@ internal fun AgentConversationMessages(
     )
 
     val shouldFollowBottom by rememberUpdatedState(
-        resolveBottomFollowEnabled(
+        !scrollCaptureInProgress && resolveBottomFollowEnabled(
             isStreaming = isStreaming,
             keepBottomAnchored = keepBottomAnchored,
             isUserDragging = isUserDragging,
@@ -600,8 +603,9 @@ internal fun AgentConversationMessages(
         keepBottomAnchored,
         isUserDragging,
         isStreaming,
+        scrollCaptureInProgress,
     ) {
-        if (shouldRequestInitialBottom(
+        if (!scrollCaptureInProgress && shouldRequestInitialBottom(
                 isStreaming = isStreaming,
                 keepBottomAnchored = keepBottomAnchored,
                 isUserDragging = isUserDragging,
@@ -723,6 +727,7 @@ internal fun AgentConversationMessages(
             verticalArrangement = Arrangement.Top,
             modifier = Modifier
                 .fillMaxSize()
+                .colorOsLongshotTarget(scrollState)
                 .scrollEndHaptic()
                 .nestedScroll(historyPaging.scrollConnection)
                 .overScrollVertical(),
