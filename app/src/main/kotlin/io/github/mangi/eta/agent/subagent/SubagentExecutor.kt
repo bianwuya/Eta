@@ -30,6 +30,7 @@ internal class SubagentExecutor(
     private val onProgress: (AgentEvent.SubagentProgress) -> Unit,
     private val onRequestStat: (io.github.mangi.eta.local.subagentstats.SubagentRequestStat) -> Unit = {},
     private val parentRunId: String = "",
+    private val requestStatsEpoch: () -> String? = { null },
     private val nanoTime: () -> Long = System::nanoTime,
 ) {
     private val latestSnapshots = ConcurrentHashMap<String, String>()
@@ -173,6 +174,7 @@ internal class SubagentExecutor(
                         purpose = "CHAT", ordinal = 0, resumed = isResume,
                     ),
                     baseline = entry.requestStatsBaseline,
+                    collectionEpoch = requestStatsEpoch,
                     save = onRequestStat,
                 ),
                 prompt = prompt,

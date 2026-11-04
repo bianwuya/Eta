@@ -167,7 +167,7 @@ internal object RuntimeConfigRepository {
         writeRuntimeConfig(prefs, config)
     }
 
-    suspend fun ensureDefaults(service: XposedService?) {
+    suspend fun ensureDefaults(service: XposedService?) = withContext(Dispatchers.IO) {
         ProviderRepository.ensureBuiltInsMerged()
         ProviderRepository.repairSelection()
         syncToRemotePreferences(service)

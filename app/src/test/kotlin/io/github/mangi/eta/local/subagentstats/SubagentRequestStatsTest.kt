@@ -182,6 +182,58 @@ class SubagentRequestStatsTest {
         }
     }
 
+    @Test
+    fun disabledCollectionSkipsWritesAndReenabledCollectionStartsNewBaseline() {
+        withServer { server, url ->
+            server.createContext("/v1/chat/completions") { exchange ->
+                exchange.requestBody.close()
+                exchange.responseHeaders.set("Content-Type", "text/event-stream")
+                exchange.sendResponseHeaders(200, 0)
+                exchange.responseBody.use { it.write(completeSse(12, 8).toByteArray()) }
+            }
+            var epoch: String? = null
+            val records = linkedMapOf<String, SubagentRequestStat>()
+            val client = SubagentRequestStats.provider(OpenAiChatCompletionsProvider, record(),
+                SubagentRequestBaseline(), collectionEpoch = { epoch }) { records[it.id] = it }
+            client.complete(providerRequest(url), AgentRunController()) {}
+            assertTrue(records.isEmpty())
+            epoch = "first-session"
+            client.complete(providerRequest(url), AgentRunController()) {}
+            client.complete(providerRequest(url), AgentRunController()) {}
+            assertEquals(listOf("first", "identical"), records.values.map { it.historyChange })
+            epoch = null
+            client.complete(providerRequest(url), AgentRunController()) {}
+            assertEquals(2, records.size)
+            epoch = "second-session"
+            client.complete(providerRequest(url), AgentRunController()) {}
+            assertEquals("first", records.values.last().historyChange)
+            assertNull(records.values.last().baselineId)
+        }
+    }
+
+    @Test
+    fun disablingDuringAttemptStillSavesItsTerminalUsage() {
+        var epoch: String? = "enabled"
+        withServer { server, url ->
+            server.createContext("/v1/chat/completions") { exchange ->
+                epoch = null
+                exchange.requestBody.close()
+                exchange.responseHeaders.set("Content-Type", "text/event-stream")
+                exchange.sendResponseHeaders(200, 0)
+                exchange.responseBody.use { it.write(completeSse(12, 8).toByteArray()) }
+            }
+            val records = linkedMapOf<String, SubagentRequestStat>()
+            val client = SubagentRequestStats.provider(OpenAiChatCompletionsProvider, record(),
+                SubagentRequestBaseline(), collectionEpoch = { epoch }) { records[it.id] = it }
+            client.complete(providerRequest(url), AgentRunController()) {}
+            assertEquals(1, records.size)
+            assertEquals("completed", records.values.single().status)
+            assertEquals(8, records.values.single().cachedTokens)
+            client.complete(providerRequest(url), AgentRunController()) {}
+            assertEquals(1, records.size)
+        }
+    }
+
     private fun providerRequest(url: String) = ProviderRequest(
         AgentModelClient.ModelConfig(providerId = "fixture-relay", baseUrl = url, apiKey = "PRIVATE_CREDENTIAL",
             model = "gpt-fixture", systemPrompt = ""),

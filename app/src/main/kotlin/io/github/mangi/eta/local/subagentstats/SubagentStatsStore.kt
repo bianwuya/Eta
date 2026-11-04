@@ -18,19 +18,42 @@ internal class SubagentStatsStore private constructor(context: Context) :
     }
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
 
+    @Volatile var revision: Long = 0
+        private set
+    private var retainedCount: Int? = null
+
+    @Synchronized
+    fun clear() {
+        writableDatabase.delete("requests", null, null)
+        revision++
+        retainedCount = 0
+    }
+
+    @Synchronized
     fun save(record: SubagentRequestStat) {
         val db = writableDatabase
         db.beginTransaction()
         try {
-            db.insertWithOnConflict("requests", null, ContentValues().apply {
+            var count = retainedCount ?: android.database.DatabaseUtils.queryNumEntries(db, "requests").toInt()
+            val values = ContentValues().apply {
                 put("id", record.id)
                 put("conversation_id", record.conversationId)
                 put("started_at", record.startedAt)
                 put("record_json", json.encodeToString(record))
-            }, SQLiteDatabase.CONFLICT_REPLACE)
-            db.execSQL("DELETE FROM requests WHERE id NOT IN " +
-                "(SELECT id FROM requests ORDER BY started_at DESC, id DESC LIMIT 5000)")
+            }
+            if (db.insertWithOnConflict("requests", null, values, SQLiteDatabase.CONFLICT_IGNORE) >= 0) {
+                count++
+            } else {
+                check(db.update("requests", values, "id = ?", arrayOf(record.id)) == 1)
+            }
+            if (count > 5000) {
+                db.execSQL("DELETE FROM requests WHERE id IN " +
+                    "(SELECT id FROM requests ORDER BY started_at ASC, id ASC LIMIT ?)", arrayOf(count - 5000))
+                count = 5000
+            }
             db.setTransactionSuccessful()
+            retainedCount = count
+            revision++
         } finally { db.endTransaction() }
     }
 

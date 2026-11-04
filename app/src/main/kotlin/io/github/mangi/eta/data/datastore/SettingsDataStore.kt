@@ -92,6 +92,18 @@ internal object SettingsDataStore {
         dataStore.edit { it[SUBAGENT_SETTINGS] = speechJson.encodeToString(settings) }
     }
 
+    suspend fun setRequestStatsEnabled(enabled: Boolean) {
+        ensureInitialized()
+        dataStore.edit { prefs ->
+            val current = prefs[SUBAGENT_SETTINGS]?.let {
+                speechJson.decodeFromString<SubagentSettings>(it)
+            } ?: SubagentSettings()
+            prefs[SUBAGENT_SETTINGS] = speechJson.encodeToString(current.copy(
+                collectRequestStats = enabled, statsEpoch = java.util.UUID.randomUUID().toString(),
+            ))
+        }
+    }
+
     private const val STORE_NAME = "eta_settings"
 
     private val SELECTED_PROVIDER_ID = stringPreferencesKey("selected_provider_id")

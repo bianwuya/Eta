@@ -127,6 +127,16 @@ internal data class SubagentWireFingerprint(
 internal class SubagentRequestBaseline {
     private val previous = mutableMapOf<String, Pair<SubagentRequestStat, SubagentWireFingerprint>>()
 
+    private var epoch: String? = null
+
+    @Synchronized
+    fun collectionEpoch(value: String?) {
+        if (epoch != value) {
+            previous.clear()
+            epoch = value
+        }
+    }
+
     @Synchronized
     fun compare(record: SubagentRequestStat, wire: SubagentWireFingerprint): SubagentRequestStat {
         val prior = previous[record.purpose]
@@ -173,15 +183,21 @@ internal object SubagentRequestStats {
         val baseline: SubagentRequestBaseline,
         private val save: (SubagentRequestStat) -> Unit,
     ) {
-        fun persist() { runCatching { save(record) } }
+        fun persist() {
+            runCatching { save(record) }.onFailure {
+                io.github.mangi.eta.core.AndroidAgentLogger.warnThrottled("subagent_stats_write_failed") {
+                    "Subagent statistics write failed: type=${it.javaClass.simpleName}"
+                }
+            }
+        }
         fun request(request: Request) {
             record = record.copy(httpAttempts = record.httpAttempts + 1)
             // A subscription 401 refresh may send the same body twice. Preserve the prior
             // model-attempt comparison rather than comparing this attempt to itself.
-            SubagentWireFingerprint.read(request)?.let { wire ->
-                if (record.httpAttempts == 1) record = baseline.compare(record, wire)
+            if (record.httpAttempts == 1) {
+                SubagentWireFingerprint.read(request)?.let { wire -> record = baseline.compare(record, wire) }
+                persist()
             }
-            persist()
         }
     }
     private val active = ThreadLocal<Attempt>()
@@ -204,6 +220,7 @@ internal object SubagentRequestStats {
         delegate: AgentProviderClient,
         template: SubagentRequestStat,
         baseline: SubagentRequestBaseline,
+        collectionEpoch: () -> String? = { "enabled" },
         save: (SubagentRequestStat) -> Unit,
     ): AgentProviderClient = object : AgentProviderClient {
         override val id = delegate.id
@@ -214,6 +231,10 @@ internal object SubagentRequestStats {
             runController: AgentRunController,
             onEvent: (ProviderEvent) -> Unit,
         ): ProviderResponse {
+            val epoch = collectionEpoch()
+            baseline.collectionEpoch(epoch)
+            // Pin the decision for this attempt. In-flight records always receive their terminal update.
+            if (epoch == null) return delegate.complete(request, runController, onEvent)
             val attempt = Attempt(template.copy(
                 id = UUID.randomUUID().toString(), model = request.effectiveConfig.model,
                 providerId = request.effectiveConfig.providerId, purpose = request.purpose.name,
@@ -225,7 +246,6 @@ internal object SubagentRequestStats {
             val previous = active.get()
             active.set(attempt)
             val started = System.nanoTime()
-            attempt.persist()
             try {
                 val response = delegate.complete(request, runController) { event ->
                     if (event is ProviderEvent.Usage) {

@@ -9,6 +9,13 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.items
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
+import io.github.mangi.eta.data.model.SubagentSettings
+import io.github.mangi.eta.data.datastore.SettingsDataStore
+import top.yukonga.miuix.kmp.preference.SwitchPreference
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -44,21 +51,42 @@ internal fun SubagentStatsScreen(onBack: () -> Unit) {
     var titles by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     var selected by rememberSaveable { mutableStateOf<String?>(null) }
     var loadError by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) {
-        while (true) {
-            val loaded = withContext(Dispatchers.IO) { runCatching {
-                SubagentStatsStore.get(context).records() to
-                    EtaDatabase.get(context).conversationDao().conversationIdentities().associate { it.id to it.title }
-            } }
-            loaded.onSuccess { (rows, names) -> records = rows; titles = names; loadError = false }
-                .onFailure { loadError = true }
-            delay(3_000)
+    val scope = rememberCoroutineScope()
+    val settings by SettingsDataStore.subagentSettingsFlow().collectAsState(initial = SubagentSettings())
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    LaunchedEffect(lifecycle) {
+        lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            val store = withContext(Dispatchers.IO) { SubagentStatsStore.get(context) }
+            var loadedRevision = -1L
+            while (true) {
+                if (loadedRevision != store.revision) {
+                    val targetRevision = store.revision
+                    val loaded = withContext(Dispatchers.IO) { runCatching {
+                        store.records() to EtaDatabase.get(context).conversationDao()
+                            .conversationIdentities().associate { it.id to it.title }
+                    } }
+                    loaded.onSuccess { (rows, names) ->
+                        records = rows; titles = names; loadError = false; loadedRevision = targetRevision
+                    }.onFailure { loadError = true }
+                }
+                delay(3_000)
+            }
         }
     }
     BackHandler { if (selected != null) selected = null else onBack() }
-    val visible = records.filter { selected == null || it.conversationId == selected }
+    val visible = remember(records, selected) { records.filter { selected == null || it.conversationId == selected } }
+    var groups by remember { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
+    var modelTotals by remember { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
+    var visibleTotals by remember { mutableStateOf("") }
+    LaunchedEffect(records, selected) {
+        val projected = withContext(Dispatchers.Default) {
+            Triple(records.groupBy { it.conversationId }.map { (id, rows) ->
+                id to (totalsText(rows) + "\n" + rows.map { it.model }.distinct().joinToString(" · "))
+            }, visible.groupBy { it.model }.map { (model, rows) -> model to totalsText(rows) }, totalsText(visible))
+        }
+        groups = projected.first; modelTotals = projected.second; visibleTotals = projected.third
+    }
     val exportRecords by rememberUpdatedState(visible)
-    val scope = rememberCoroutineScope()
     var exportStatus by remember { mutableStateOf<String?>(null) }
     val export = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
         if (uri != null) scope.launch {
@@ -77,6 +105,22 @@ internal fun SubagentStatsScreen(onBack: () -> Unit) {
             TextButton(text = "导出", onClick = { export.launch("eta-subagent-stats.json") })
         },
     ) {
+        item(key = "collection") {
+            Card(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
+                SwitchPreference(
+                    title = "采集请求统计",
+                    summary = "默认关闭。关闭后跳过新请求的解析、指纹和写库；在途记录正常收尾，历史仍可查看。重新开启建立新对照。",
+                    checked = settings.collectRequestStats,
+                    onCheckedChange = { enabled -> scope.launch {
+                        SettingsDataStore.setRequestStatsEnabled(enabled)
+                    } },
+                )
+                TextButton(text = "清除历史统计", onClick = { scope.launch {
+                    runCatching { withContext(Dispatchers.IO) { SubagentStatsStore.get(context).clear() } }
+                        .onSuccess { records = emptyList() }.onFailure { loadError = true }
+                } })
+            }
+        }
         item(key = "explanation") {
             Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text("按会话归类，每次模型尝试分别记录；保留最近 5000 条。仅统计安装此版本之后的请求，包含失败与重试。",
@@ -87,15 +131,15 @@ internal fun SubagentStatsScreen(onBack: () -> Unit) {
                     style = MiuixTheme.textStyles.footnote1)
                 exportStatus?.let { Text(it, style = MiuixTheme.textStyles.footnote1) }
                 if (loadError) Text("统计读取失败，请稍后重试。")
-                if (records.isEmpty()) Text("暂无子代理请求。正常使用新模型后会自动记录，无需额外测试请求。")
+                if (records.isEmpty()) Text("暂无统计。仅在开启采集后记录正常请求，无需额外测试请求。")
             }
         }
         if (selected == null) {
-            items(records.groupBy { it.conversationId }.entries.toList(), key = { it.key }) { (conversationId, rows) ->
+            items(groups, key = { it.first }) { (conversationId, summary) ->
                 Card(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
                     ArrowPreference(
                         title = titles[conversationId] ?: conversationId,
-                        summary = totalsText(rows) + "\n" + rows.map { it.model }.distinct().joinToString(" · "),
+                        summary = summary,
                         onClick = { selected = conversationId },
                     )
                 }
@@ -103,10 +147,10 @@ internal fun SubagentStatsScreen(onBack: () -> Unit) {
         } else {
             item(key = "summary") {
                 SmallTitle(titles[selected] ?: selected.orEmpty())
-                Text(totalsText(visible), modifier = Modifier.padding(horizontal = 16.dp))
+                Text(visibleTotals, modifier = Modifier.padding(horizontal = 16.dp))
             }
-            items(visible.groupBy { it.model }.entries.toList(), key = { "model-${it.key}" }) { (model, rows) ->
-                Text("$model · ${totalsText(rows)}", modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+            items(modelTotals, key = { "model-${it.first}" }) { (model, summary) ->
+                Text("$model · $summary", modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
                     style = MiuixTheme.textStyles.footnote1)
             }
             items(visible, key = { it.id }) { record ->

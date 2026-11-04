@@ -261,6 +261,11 @@ internal class AgentRuntimeRunExecutor(
             val subagentExecutor = SubagentExecutor(
                 conversationKey = browserKey,
                 parentRunId = request.runId,
+                requestStatsEpoch = {
+                    // Read in the actual runtime process at each attempt boundary, not a UI-only flag.
+                    val settings = runBlocking { io.github.mangi.eta.data.datastore.SettingsDataStore.subagentSettings() }
+                    settings.statsEpoch.takeIf { settings.collectRequestStats }
+                },
                 onRequestStat = { record ->
                     io.github.mangi.eta.local.subagentstats.SubagentStatsStore.get(appContext).save(record)
                 },
