@@ -335,6 +335,10 @@ internal class AgentRuntimeRunExecutor(
                                 "需要时请让用户在当前会话直接授权")
                             .toString(),
                     )
+                } else if (call.name == AgentSubagentToolCatalog.CONTROL_TOOL_NAME) {
+                    // Disabling future delegation must not block the parent from stopping
+                    // children that are already running in this run.
+                    controlRegistry.execute(call)
                 } else if (call.name in AgentSubagentToolCatalog.names) {
                     if (!subagentAllowed()) {
                         AgentModelClient.ToolResult(
@@ -346,8 +350,6 @@ internal class AgentRuntimeRunExecutor(
                         )
                     } else if (call.name == AgentSubagentToolCatalog.PROFILE_TOOL_NAME) {
                         subagentExecutor.executeProfileManagement(call)
-                    } else if (call.name == AgentSubagentToolCatalog.CONTROL_TOOL_NAME) {
-                        controlRegistry.execute(call)
                     } else {
                         subagentExecutor.execute(call.round, call)
                     }
