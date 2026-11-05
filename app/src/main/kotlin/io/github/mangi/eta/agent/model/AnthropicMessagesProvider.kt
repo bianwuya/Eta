@@ -109,7 +109,10 @@ internal object AnthropicMessagesProvider : AgentProviderClient {
                         }
                     },
                 )
-                "assistant" -> appendTurn(
+                "assistant" -> if (AssistantScreenContextProjection.isRuntimeConversation(message)) {
+                    // Runtime-origin data, not a user instruction; transport as an input block.
+                    appendTurn(anthropicMessages, "user", convertUserContent(message.opt("content")))
+                } else appendTurn(
                     anthropicMessages,
                     "assistant",
                     convertAssistantContent(message, index > currentTurnStart),
@@ -631,7 +634,7 @@ internal object AnthropicEphemeralState {
         for (index in messages.length() - 1 downTo 0) {
             val message = messages.optJSONObject(index) ?: continue
             if (message.optString("role") == "assistant") {
-                if (AssistantScreenContextProjection.isRuntimeReport(message)) continue
+                if (AssistantScreenContextProjection.isRuntimeInput(message)) continue
                 return contentBlocks(message) != null &&
                     AgentConversationCodec.parseToolCalls(message).isNotEmpty()
             }

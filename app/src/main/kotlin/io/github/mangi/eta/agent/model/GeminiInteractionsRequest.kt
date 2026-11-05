@@ -90,6 +90,11 @@ internal object GeminiInteractionHistory {
             val message = messages.optJSONObject(index) ?: continue
             val role = message.optString("role")
             if (role == "system") continue
+            if (index >= start && AssistantScreenContextProjection.isRuntimeConversation(message)) {
+                flushHistory()
+                input.put(userInput(content(message.opt("content"))))
+                continue
+            }
             val nativeSteps = GeminiEphemeralState.steps(message)
             if (index < start || role == "assistant" && nativeSteps == null ||
                 role == "tool" && message.optString("tool_call_id") !in liveCalls

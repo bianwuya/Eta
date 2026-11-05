@@ -66,6 +66,7 @@ class AgentModelClientConversationMessageTest {
 
         val appended = requests[1].getJSONObject(requests[1].length() - 1)
         assertEquals("assistant", appended.getString("role"))
+        assertTrue(appended.getString("_eta_message_id").startsWith("conversation-input-"))
         assertTrue(appended.getString("content").contains("不是终端用户发言"))
         assertTrue(appended.getString("content").contains("构建已完成"))
         assertFalse(appended.getString("content").contains("用户补充指令"))

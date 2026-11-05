@@ -14,7 +14,7 @@ internal class YieldableSubagents(
     private val execute: (AgentModelClient.ToolCall, (String, String) -> Unit) -> AgentModelClient.ToolResult,
 ) : AutoCloseable {
     interface Persistence {
-        fun started(taskId: String, subagentId: String, prompt: String)
+        fun started(taskId: String, toolCallId: String, round: Int, subagentId: String, prompt: String, accepted: String)
         fun finished(taskId: String, report: String)
         fun interrupted()
     }
@@ -45,13 +45,11 @@ internal class YieldableSubagents(
                 try {
                     val result = execute(call) { subagentId, command ->
                         // The running identity is durable before telling the parent that launch succeeded.
-                        persistence.started(taskId, subagentId, prompt)
-                        acknowledgement = AgentModelClient.ToolResult(
-                            JSONObject().put("ok", true).put("status", "accepted")
-                                .put("task_id", taskId).put("subagent_id", subagentId)
-                                .put("message", "已启动；这不是最终结果，完成报告将另行追加。").toString(),
-                            command = command,
-                        )
+                        val content = JSONObject().put("ok", true).put("status", "accepted")
+                            .put("task_id", taskId).put("subagent_id", subagentId)
+                            .put("message", "已启动；这不是最终结果，完成报告将另行追加。").toString()
+                        persistence.started(taskId, call.id, call.round, subagentId, prompt, content)
+                        acknowledgement = AgentModelClient.ToolResult(content, command = command)
                         accepted = true
                         started.countDown()
                     }

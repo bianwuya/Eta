@@ -37,7 +37,7 @@ internal object GeminiEphemeralState {
         for (index in messages.length() - 1 downTo 0) {
             val message = messages.optJSONObject(index) ?: continue
             if (message.optString("role") == "assistant") {
-                if (AssistantScreenContextProjection.isRuntimeReport(message)) continue
+                if (AssistantScreenContextProjection.isRuntimeInput(message)) continue
                 val steps = steps(message) ?: return false
                 return (0 until steps.length()).any {
                     steps.optJSONObject(it)?.optString("type") == "function_call"

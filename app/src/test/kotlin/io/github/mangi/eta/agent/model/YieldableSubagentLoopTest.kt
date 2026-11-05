@@ -17,7 +17,7 @@ class YieldableSubagentLoopTest {
     private class MemoryPersistence : YieldableSubagents.Persistence {
         val started = Collections.synchronizedList(mutableListOf<String>())
         val finished = Collections.synchronizedList(mutableListOf<String>())
-        override fun started(taskId: String, subagentId: String, prompt: String) { started += taskId }
+        override fun started(taskId: String, toolCallId: String, round: Int, subagentId: String, prompt: String, accepted: String) { started += taskId }
         override fun finished(taskId: String, report: String) { finished += taskId }
         override fun interrupted() = Unit
     }
@@ -257,6 +257,43 @@ class YieldableSubagentLoopTest {
             parent.cancel(); assertTrue(childStopped.await(5, TimeUnit.SECONDS)); thread.join(5000)
             assertFalse(thread.isAlive); assertTrue(child.isCancelled)
         } finally { parent.cancel(); owner.close(); binding.close(); thread.join(5000) }
+    }
+
+    @Test fun ordinaryResultsAreCheckpointedIndividuallyWithoutSendingAnIncompleteBatch() {
+        val controller = AgentRunController()
+        val owner = YieldableSubagents(controller, MemoryPersistence()) { _, _ -> error("no child expected") }
+        val firstSaved = CountDownLatch(1); val release = CountDownLatch(1); val rounds = AtomicInteger()
+        val provider = object : AgentProviderClient {
+            override val id = "fake"
+            override val capabilities = ProviderCapabilities(EndpointKind.CHAT_COMPLETIONS, true, true, true, true, false, false)
+            override fun complete(request: ProviderRequest, runController: AgentRunController, onEvent: (ProviderEvent) -> Unit): ProviderResponse =
+                when (rounds.incrementAndGet()) {
+                    1 -> response(call("one", "get_current_context"), call("two", "get_current_context"))
+                    2 -> {
+                        val tools = (0 until request.messages.length()).map { request.messages.getJSONObject(it) }
+                            .filter { it.optString("role") == "tool" }
+                        assertEquals(listOf("one", "two"), tools.map { it.getString("tool_call_id") })
+                        answer("done")
+                    }
+                    else -> error("unexpected request")
+                }
+        }
+        var failure: Throwable? = null
+        val thread = Thread {
+            try {
+                AgentModelClient.complete(AgentModelClient.ModelConfig(baseUrl = "https://example.invalid", apiKey = "fixture", model = "fixture", systemPrompt = ""),
+                    "开始", AgentModelClient.ToolExecutor { call ->
+                        if (call.id == "two") check(release.await(5, TimeUnit.SECONDS))
+                        AgentModelClient.ToolResult("result-${call.id}")
+                    }, provider = provider, runController = controller, yieldableSubagents = owner,
+                    onTranscript = { transcript -> if (transcript.any { it.role == "tool" && it.toolCallId == "one" && it.content == "result-one" }) firstSaved.countDown() })
+            } catch (t: Throwable) { failure = t }
+        }
+        try {
+            thread.start(); assertTrue(firstSaved.await(5, TimeUnit.SECONDS)); assertEquals(1, rounds.get())
+            release.countDown(); thread.join(5000); assertFalse(thread.isAlive)
+            failure?.let { throw AssertionError(it) }; assertEquals(2, rounds.get())
+        } finally { release.countDown(); controller.cancel(); owner.close(); thread.join(5000) }
     }
 
 }

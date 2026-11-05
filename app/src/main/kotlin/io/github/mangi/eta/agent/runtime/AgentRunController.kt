@@ -10,6 +10,7 @@ import kotlin.concurrent.withLock
 
 internal class AgentRunController {
     private val resources = CopyOnWriteArraySet<CancellableResource>()
+    private val children = mutableSetOf<AgentRunController>()
 
     @Volatile
     private var cancelled = false
@@ -45,7 +46,7 @@ internal class AgentRunController {
         get() = paused
 
     fun cancel() {
-        lock.withLock {
+        val childSnapshot = lock.withLock {
             cancelled = true
             acceptingSteering = false
             acceptingConversationMessages = false
@@ -53,7 +54,9 @@ internal class AgentRunController {
             conversationMessages.clear()
             paused = false
             pauseCondition.signalAll()
+            children.toList()
         }
+        childSnapshot.forEach { it.cancel() }
         resources.forEach { resource ->
             runCatching { resource.cancel() }
         }
@@ -151,7 +154,11 @@ internal class AgentRunController {
      * 在工作线程的检查点调用，不会阻塞调用方线程。
      */
     fun pause() {
-        lock.withLock { paused = true }
+        lock.withLock {
+            if (cancelled) return
+            paused = true
+            children.forEach { it.pause() }
+        }
     }
 
     /**
@@ -160,8 +167,22 @@ internal class AgentRunController {
     fun resume() {
         lock.withLock {
             paused = false
+            children.forEach { it.resume() }
             pauseCondition.signalAll()
         }
+    }
+
+    /** Child checkpoints follow parent pause/resume; already-running I/O is not cancelled. */
+    fun registerChild(child: AgentRunController): ResourceBinding {
+        val alreadyCancelled = lock.withLock {
+            if (cancelled) true else {
+                children.add(child)
+                if (paused) child.pause()
+                false
+            }
+        }
+        if (alreadyCancelled) child.cancel()
+        return ResourceBinding { lock.withLock { children.remove(child) } }
     }
 
     /**

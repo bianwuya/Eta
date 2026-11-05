@@ -20,6 +20,11 @@ internal object AssistantScreenContextProjection {
     fun isRuntimeReport(message: JSONObject): Boolean =
         message.optString("role") == "assistant" && message.optString("_eta_message_id").startsWith("subagent-report-")
 
+    fun isRuntimeConversation(message: JSONObject): Boolean =
+        message.optString("role") == "assistant" && message.optString("_eta_message_id").startsWith("conversation-input-")
+
+    fun isRuntimeInput(message: JSONObject): Boolean = isRuntimeReport(message) || isRuntimeConversation(message)
+
     fun project(messages: JSONArray): JSONArray {
         if ((0 until messages.length()).none { index ->
                 messages.optJSONObject(index)?.let { it.has(KEY) || isRuntimeReport(it) } == true

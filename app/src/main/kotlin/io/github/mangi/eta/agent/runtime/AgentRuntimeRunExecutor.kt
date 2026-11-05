@@ -90,7 +90,7 @@ internal class AgentRuntimeRunExecutor(
         var childOwner: io.github.mangi.eta.agent.subagent.YieldableSubagents? = null
         var childCheckpoint: AgentSubagentCheckpoint? = null
         val childController = AgentRunController()
-        val childCancellation = runController.register(childController::cancel)
+        val childCancellation = runController.registerChild(childController)
         val timing = AgentRunTiming(AndroidAgentLogger)
 
         val result = try {
@@ -391,12 +391,10 @@ internal class AgentRuntimeRunExecutor(
                     // 压缩会把历史里的记忆写入摘要掉，下一轮需要重新注入最新记忆。
                     ConversationMemoryPins.forget(conversationId)
                     val committed = snapshot.copy(operationId = request.runId)
-                    AgentRunCheckpointStore.saveContext(appContext, request.runId, committed)
-                    session.updateContext(committed)
+                    session.commitContext(committed) { AgentRunCheckpointStore.saveContext(appContext, request.runId, committed) }
                 },
                 onTranscript = { transcript ->
-                    AgentRunCheckpointStore.saveTranscript(appContext, request.runId, transcript)
-                    session.updateTranscript(transcript)
+                    session.commitTranscript(transcript) { AgentRunCheckpointStore.saveTranscript(appContext, request.runId, transcript) }
                 },
                 capabilitiesProvider = { AgentToolCapabilities.capture(appContext) },
                 prompt = request.prompt,
@@ -473,10 +471,10 @@ internal class AgentRuntimeRunExecutor(
                     session.emit(event)
                 }
             }
-            val partialTranscript = modelFailure?.transcript ?: AgentToolBatchRecovery.completeInterrupted(session.transcript)
+            val partialTranscript = modelFailure?.transcript ?: session.transcript
             val childRecovery = runCatching {
                 if (childCheckpoint != null) AgentSubagentCheckpoint.recover(appContext, request.runId, partialTranscript)
-                else partialTranscript
+                else AgentToolBatchRecovery.completeInterrupted(partialTranscript)
             }
             AgentRuntimeWire.RunResult(
                 runId = request.runId,
@@ -484,7 +482,7 @@ internal class AgentRuntimeRunExecutor(
                 content = "",
                 error = if (abortFailure != null || childRecovery.isFailure) "$message；子代理恢复记录读写失败，结果可能不完整。" else message,
                 reasoningContent = modelFailure?.reasoningContent.orEmpty(),
-                transcript = childRecovery.getOrDefault(partialTranscript),
+                transcript = childRecovery.getOrDefault(AgentToolBatchRecovery.completeInterrupted(partialTranscript)),
                 contextSnapshot = modelFailure?.contextSnapshot?.copy(operationId = request.runId) ?: session.contextSnapshot,
                 operation = request.operation,
                 rewriteTargetMessageId = request.rewriteTargetMessageId,

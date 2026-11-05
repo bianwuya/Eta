@@ -63,7 +63,6 @@ internal object AgentRuntimeResultStore {
         if (runId.isBlank()) return
         val appContext = context.applicationContext
         synchronized(deliveryLock) {
-            AgentSubagentCheckpoint.remove(appContext, runId)
             runBlocking(Dispatchers.IO) {
                 EtaDatabase.get(appContext)
                     .runtimeRunDao()

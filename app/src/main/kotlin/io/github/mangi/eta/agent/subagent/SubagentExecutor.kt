@@ -136,8 +136,11 @@ internal class SubagentExecutor(
         val profile = entry.profile
         val subagentId = entry.subagentId
         val childController = AgentRunController()
-        val controllerBinding = parentController.register(childController::cancel)
-
+        val controllerBinding = parentController.registerChild(childController)
+        var ownedTools: AgentModelClient.ToolExecutor? = null
+        var toolBinding: AgentRunController.ResourceBinding? = null
+        var detailStoreForCleanup: SubagentDetailStore? = null
+        try {
         val resolvedConfig = runCatching { configProvider() }.getOrElse { throwable ->
             SubagentSessionStore.releaseRunning(conversationKey, subagentId)
             val message = throwable.message ?: "无法加载 Subagent 模型配置"
@@ -154,7 +157,6 @@ internal class SubagentExecutor(
                     snapshotJson = failed.encode(),
                 ),
             )
-            controllerBinding.close()
             return AgentModelClient.ToolResult(
                 content = JSONObject()
                     .put("ok", false)
@@ -174,7 +176,7 @@ internal class SubagentExecutor(
             resumed = isResume,
         )
 
-        val detailStore = detailStoreFactory?.invoke()
+        val detailStore = detailStoreFactory?.invoke().also { detailStoreForCleanup = it }
         val detailId = toolCall.id
         var lastEmitNanos = 0L
         var snapshotSequence = 0L
@@ -225,9 +227,9 @@ internal class SubagentExecutor(
 
         publishSnapshot(force = true)
 
-        val ownedTools = childToolFactory?.invoke()
+        ownedTools = childToolFactory?.invoke()
         val tools = ownedTools ?: baseToolExecutor
-        val toolBinding = (ownedTools as? AutoCloseable)?.let { childController.register { it.close() } }
+        toolBinding = (ownedTools as? AutoCloseable)?.let { childController.register { it.close() } }
 
         val childToolExecutor = AgentModelClient.ToolExecutor { subCall ->
             childController.throwIfCancelled()
@@ -423,11 +425,12 @@ internal class SubagentExecutor(
                     .toString(),
                 command = latestSnapshots[toolCall.id],
             )
+        }
         } finally {
-            toolBinding?.close()
+            runCatching { toolBinding?.close() }
             (ownedTools as? AutoCloseable)?.let { runCatching { it.close() } }
-            runCatching { kotlinx.coroutines.runBlocking { detailStore?.prune() } }
-            controllerBinding.close()
+            runCatching { kotlinx.coroutines.runBlocking { detailStoreForCleanup?.prune() } }
+            runCatching { controllerBinding.close() }
         }
     }
 

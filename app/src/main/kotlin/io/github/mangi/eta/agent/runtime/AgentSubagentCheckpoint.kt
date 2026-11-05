@@ -16,9 +16,10 @@ internal class AgentSubagentCheckpoint(context: Context, private val runId: Stri
     private var stopped = false
 
     @Synchronized
-    override fun started(taskId: String, subagentId: String, prompt: String) {
+    override fun started(taskId: String, toolCallId: String, round: Int, subagentId: String, prompt: String, accepted: String) {
         check(!stopped) { "运行已停止" }
         update { tasks -> tasks.put(JSONObject().put("task_id", taskId).put("subagent_id", subagentId)
+            .put("tool_call_id", toolCallId).put("round", round).put("accepted", accepted)
             .put("prompt", prompt).put("state", "running")) }
     }
 
@@ -71,10 +72,21 @@ internal class AgentSubagentCheckpoint(context: Context, private val runId: Stri
             runBlocking(Dispatchers.IO) {
                 val dao = EtaDatabase.get(context.applicationContext).runtimeRunDao()
                 val raw = dao.textChunks(TABLE, runId, FIELD, Int.MAX_VALUE, 0).joinToString("") { it.content }
-                if (raw.isEmpty()) return@runBlocking transcript
-                val tasks = JSONArray(raw)
-                val known = transcript.mapTo(mutableSetOf()) { it.messageId }
-                transcript + buildList {
+                val tasks = if (raw.isEmpty()) JSONArray() else JSONArray(raw)
+                val accepted = buildMap {
+                    for (index in 0 until tasks.length()) {
+                        val task = tasks.getJSONObject(index)
+                        val callId = task.optString("tool_call_id")
+                        val content = task.optString("accepted")
+                        val round = task.optInt("round")
+                        if (callId.isNotBlank() && content.isNotBlank() && round > 0) {
+                            put("assistant-$runId-$round" to callId, content)
+                        }
+                    }
+                }
+                val completed = io.github.mangi.eta.agent.model.AgentToolBatchRecovery.completeInterrupted(transcript, accepted)
+                val known = completed.mapTo(mutableSetOf()) { it.messageId }
+                completed + buildList {
                     for (index in 0 until tasks.length()) {
                         val task = tasks.getJSONObject(index)
                         val id = task.getString("task_id")

@@ -66,7 +66,7 @@ internal data class RoleplayRunContext(
 
     private fun isDialogue(message: JSONObject): Boolean =
         message.optString("role") in setOf("user", "assistant") &&
-            !message.optString("_eta_message_id").startsWith("subagent-report-") &&
+            !io.github.mangi.eta.agent.model.AssistantScreenContextProjection.isRuntimeInput(message) &&
             !message.optBoolean("_eta_observation") && !message.optBoolean("_eta_context_summary") &&
             message.optJSONArray("tool_calls").let { it == null || it.length() == 0 } &&
             dialogueText(message).isNotBlank()

@@ -246,11 +246,13 @@ internal object AgentModelClient {
                 cause = throwable,
                 contextSnapshot = if (rewriteReply) null else loop.contextSnapshot(),
                 reasoningContent = loop.reasoningSnapshot(),
-                transcript = AgentToolBatchRecovery.completeInterrupted(AgentConversationCodec.transcript(
+                transcript = AgentConversationCodec.transcript(
                     transcript,
                     0,
                     loop.sensitiveToolCallIdsSnapshot(),
-                )),
+                ).let { partial ->
+                    if (yieldableSubagents != null) partial else AgentToolBatchRecovery.completeInterrupted(partial)
+                },
             )
         }
         return ModelResponse.Text(

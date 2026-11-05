@@ -79,6 +79,9 @@ internal interface RuntimeRunDao : ChunkedTextDao {
         ))
     }
 
+    @Query("SELECT EXISTS(SELECT 1 FROM runtime_results WHERE run_id = :runId)")
+    suspend fun hasRuntimeResult(runId: String): Boolean
+
     @Query("DELETE FROM runtime_results WHERE run_id = :runId")
     suspend fun deleteRuntimeResult(runId: String)
 
@@ -100,7 +103,7 @@ internal interface RuntimeRunDao : ChunkedTextDao {
         if (results.isNotEmpty()) {
             insertRuntimeResults(results)
         }
-        removedRunIds.forEach { runId -> deleteInFlightRun(runId) }
+        removedRunIds.forEach { runId -> removeInFlightRun(runId) }
     }
 
     @Transaction
@@ -210,9 +213,15 @@ internal interface RuntimeRunDao : ChunkedTextDao {
     suspend fun deleteInFlightRun(runId: String)
 
     @Transaction
+    suspend fun removeInFlightRun(runId: String) {
+        deleteLocalTextOwner("runtime_subagent_tasks_v1", runId)
+        deleteInFlightRun(runId)
+    }
+
+    @Transaction
     suspend fun acknowledgeRuntimeResult(runId: String) {
         deleteRuntimeResult(runId)
-        deleteInFlightRun(runId)
+        removeInFlightRun(runId)
     }
 
     @Transaction

@@ -4,7 +4,6 @@ import android.content.Context
 import io.github.mangi.eta.agent.model.AgentContextSnapshot
 import io.github.mangi.eta.agent.model.AgentConversationCodec
 import io.github.mangi.eta.agent.model.AgentModelClient
-import io.github.mangi.eta.agent.model.AgentToolBatchRecovery
 import io.github.mangi.eta.data.db.EtaDatabase
 import io.github.mangi.eta.data.db.RuntimeInFlightEventEntity
 import io.github.mangi.eta.data.db.RuntimeInFlightRunEntity
@@ -93,7 +92,7 @@ internal object AgentRunCheckpointStore {
                         operation = stored.run.operation,
                         rewriteTargetMessageId = stored.run.rewriteTargetMessageId,
                         transcript = AgentSubagentCheckpoint.recover(context, stored.run.runId,
-                            AgentToolBatchRecovery.completeInterrupted(AgentConversationCodec.decodeTranscript(stored.run.transcriptJson))),
+                            AgentConversationCodec.decodeTranscript(stored.run.transcriptJson)),
                         handoff = AgentRuntimeWire.EntryHandoff(
                             id = stored.run.handoffId,
                             source = stored.run.handoffSource,
@@ -124,6 +123,11 @@ internal object AgentRunCheckpointStore {
                 AgentExternalArchivePayload.from(checkpoint.handoff.payload) != null &&
                 checkpoint.runId !in activeRunIds && checkpoint.runId !in completedRunIds
         }.forEach { checkpoint ->
+            // The completed-runs IPC is only a page (currently 8); check this run exactly.
+            val hasOutbox = runBlocking(Dispatchers.IO) {
+                EtaDatabase.get(context.applicationContext).runtimeRunDao().hasRuntimeResult(checkpoint.runId)
+            }
+            if (hasOutbox) return@forEach
             if (checkpoint.runId !in archived) {
                 AgentRunArchiveStore.add(context, AgentRunArchiveStore.ArchivedRun(
                     handoff = checkpoint.handoff,
@@ -154,11 +158,10 @@ internal object AgentRunCheckpointStore {
 
     fun remove(context: Context, runId: String) {
         if (runId.isBlank()) return
-        AgentSubagentCheckpoint.remove(context, runId)
         runBlocking(Dispatchers.IO) {
             EtaDatabase.get(context.applicationContext)
                 .runtimeRunDao()
-                .deleteInFlightRun(runId)
+                .removeInFlightRun(runId)
         }
     }
 }
