@@ -39,7 +39,8 @@ internal class SubagentControlRegistry {
                     .put("tool_call_id", child.toolCallId)
                     .put("status", when {
                         child.controller.isCancelled -> "cancelling"
-                        child.controller.isPaused -> "paused"
+                        child.controller.isPaused -> "pause_requested"
+                        child.controller.hasPendingParentDirective -> "revision_pending"
                         else -> "running"
                     }))
             }
