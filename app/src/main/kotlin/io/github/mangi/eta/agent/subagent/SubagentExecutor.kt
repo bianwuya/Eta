@@ -37,6 +37,7 @@ internal class SubagentExecutor(
     private val nanoTime: () -> Long = System::nanoTime,
     private val childToolFactory: ((AgentRunController) -> AgentModelClient.ToolExecutor)? = null,
     private val detailStoreFactory: (() -> SubagentDetailStore)? = null,
+    private val controlRegistry: SubagentControlRegistry? = null,
 ) {
     private val latestSnapshots = ConcurrentHashMap<String, String>()
 
@@ -139,6 +140,7 @@ internal class SubagentExecutor(
         val subagentId = entry.subagentId
         val childController = AgentRunController()
         val controllerBinding = parentController.registerChild(childController)
+        val controlBinding = controlRegistry?.register(subagentId, description, toolCall.id, childController)
         var ownedTools: AgentModelClient.ToolExecutor? = null
         var toolBinding: AgentRunController.ResourceBinding? = null
         var detailStoreForCleanup: SubagentDetailStore? = null
@@ -439,6 +441,7 @@ internal class SubagentExecutor(
             runCatching { toolBinding?.close() }
             (ownedTools as? AutoCloseable)?.let { runCatching { it.close() } }
             runCatching { kotlinx.coroutines.runBlocking { detailStoreForCleanup?.prune() } }
+            runCatching { controlBinding?.close() }
             runCatching { controllerBinding.close() }
         }
     }
