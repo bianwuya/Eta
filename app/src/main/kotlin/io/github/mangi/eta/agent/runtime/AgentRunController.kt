@@ -100,6 +100,7 @@ internal class AgentRunController {
     fun enqueueConversationMessage(input: ConversationInput): Boolean = lock.withLock {
         if (cancelled || !acceptingConversationMessages) return false
         conversationMessages.addLast(input)
+        pauseCondition.signalAll()
         true
     }
 
@@ -120,6 +121,30 @@ internal class AgentRunController {
         acceptingConversationMessages = false
         emptyList()
     }
+
+    data class BoundaryInputs<T>(val steering: List<SteeringInput>, val conversations: List<ConversationInput>, val reports: List<T>)
+
+    fun <T> collectBoundaryInputs(reports: () -> List<T>): BoundaryInputs<T> = lock.withLock {
+        val readyReports = reports()
+        val steering = steeringMessages.toList().also { steeringMessages.clear() }
+        val conversations = conversationMessages.toList().also { conversationMessages.clear() }
+        BoundaryInputs(steering, conversations, readyReports)
+    }
+
+    /** Wait under the same lock as steering and wake notifications; never poll the model. */
+    fun awaitWorkAvailable(isReady: () -> Boolean) = lock.withLock {
+        while (!cancelled && (paused || (steeringMessages.isEmpty() && conversationMessages.isEmpty() && !isReady()))) {
+            try {
+                pauseCondition.await()
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                throw AgentRunCancelledException()
+            }
+        }
+        if (cancelled) throw AgentRunCancelledException()
+    }
+
+    fun signalWorkAvailable() = lock.withLock { pauseCondition.signalAll() }
 
     /**
      * 暂停执行：后续 [throwIfCancelled] 调用会阻塞挂起，直到 [resume] 或 [cancel]。

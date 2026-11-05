@@ -36,7 +36,8 @@ internal object AgentRunCheckpointStore {
         now: Long = System.currentTimeMillis(),
     ): Boolean {
         val handoff = request.handoff ?: return false
-        if (handoff.source != AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE) return false
+        if (handoff.source != AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE &&
+            AgentExternalArchivePayload.from(handoff.payload) == null) return false
         val runId = request.runId.takeIf(String::isNotBlank) ?: return false
         runBlocking(Dispatchers.IO) {
             EtaDatabase.get(context.applicationContext).runtimeRunDao().replaceInFlightRun(
@@ -91,7 +92,8 @@ internal object AgentRunCheckpointStore {
                         contextSnapshot = AgentContextSnapshot.decode(stored.run.contextSnapshotJson),
                         operation = stored.run.operation,
                         rewriteTargetMessageId = stored.run.rewriteTargetMessageId,
-                        transcript = AgentToolBatchRecovery.completeInterrupted(AgentConversationCodec.decodeTranscript(stored.run.transcriptJson)),
+                        transcript = AgentSubagentCheckpoint.recover(context, stored.run.runId,
+                            AgentToolBatchRecovery.completeInterrupted(AgentConversationCodec.decodeTranscript(stored.run.transcriptJson))),
                         handoff = AgentRuntimeWire.EntryHandoff(
                             id = stored.run.handoffId,
                             source = stored.run.handoffSource,
@@ -109,6 +111,34 @@ internal object AgentRunCheckpointStore {
                 .toList()
         }
 
+    /** External archived conversations have no UI reattachment; recover only after runtime and outbox are known. */
+    fun archiveInterruptedExternal(
+        context: Context,
+        checkpoints: List<Checkpoint>,
+        activeRunIds: Set<String>,
+        completedRunIds: Set<String>,
+    ) {
+        val archived = AgentRunArchiveStore.list(context).mapTo(mutableSetOf()) { it.result.runId.ifBlank { it.handoff.id } }
+        checkpoints.filter { checkpoint ->
+            checkpoint.handoff.source != AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE &&
+                AgentExternalArchivePayload.from(checkpoint.handoff.payload) != null &&
+                checkpoint.runId !in activeRunIds && checkpoint.runId !in completedRunIds
+        }.forEach { checkpoint ->
+            if (checkpoint.runId !in archived) {
+                AgentRunArchiveStore.add(context, AgentRunArchiveStore.ArchivedRun(
+                    handoff = checkpoint.handoff,
+                    events = checkpoint.events,
+                    result = AgentRuntimeWire.RunResult(runId = checkpoint.runId, ok = false, content = "",
+                        error = "运行已中断；子任务不会自动重跑。", transcript = checkpoint.transcript,
+                        contextSnapshot = checkpoint.contextSnapshot, operation = checkpoint.operation,
+                        rewriteTargetMessageId = checkpoint.rewriteTargetMessageId),
+                    createdAt = checkpoint.createdAt,
+                ))
+            }
+            remove(context, checkpoint.runId)
+        }
+    }
+
     fun saveTranscript(context: Context, runId: String, transcript: List<AgentModelClient.ConversationMessage>) {
         runBlocking(Dispatchers.IO) {
             EtaDatabase.get(context.applicationContext).runtimeRunDao()
@@ -124,6 +154,7 @@ internal object AgentRunCheckpointStore {
 
     fun remove(context: Context, runId: String) {
         if (runId.isBlank()) return
+        AgentSubagentCheckpoint.remove(context, runId)
         runBlocking(Dispatchers.IO) {
             EtaDatabase.get(context.applicationContext)
                 .runtimeRunDao()

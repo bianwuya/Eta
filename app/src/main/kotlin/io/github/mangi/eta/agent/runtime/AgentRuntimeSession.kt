@@ -35,6 +35,11 @@ internal class AgentRuntimeSession(
         if (state == State.RUNNING) latestTranscript = messages
     }
 
+    private var recoverChildren: (List<AgentModelClient.ConversationMessage>) -> List<AgentModelClient.ConversationMessage> = { it }
+    fun setChildRecovery(recover: (List<AgentModelClient.ConversationMessage>) -> List<AgentModelClient.ConversationMessage>) = lock.withLock {
+        if (state == State.RUNNING) recoverChildren = recover
+    }
+
     private var latestContext: AgentContextSnapshot? = null
     val contextSnapshot: AgentContextSnapshot?
         get() = lock.withLock { latestContext }
@@ -178,20 +183,20 @@ internal class AgentRuntimeSession(
     }
 
     fun cancel(reason: String): Boolean {
-        val result = lock.withLock {
+        val snapshot = lock.withLock {
             if (state != State.RUNNING) return false
-            state = State.TERMINAL
-            AgentRuntimeWire.RunResult(
-                runId = runId,
-                ok = false,
-                content = "",
-                error = reason,
-                contextSnapshot = latestContext,
-                transcript = AgentToolBatchRecovery.completeInterrupted(latestTranscript),
-                operation = operation,
-            )
+            state = State.COMMITTING
+            Triple(latestTranscript, latestContext, recoverChildren)
         }
         controller.cancel()
+        val interrupted = AgentToolBatchRecovery.completeInterrupted(snapshot.first)
+        val recovered = runCatching { snapshot.third(interrupted) }
+        val result = AgentRuntimeWire.RunResult(
+            runId = runId, ok = false, content = "",
+            error = if (recovered.isSuccess) reason else "$reason；子代理恢复记录读取失败，结果可能不完整。",
+            contextSnapshot = snapshot.second, transcript = recovered.getOrDefault(interrupted), operation = operation,
+        )
+        lock.withLock { state = State.TERMINAL }
         beforeTerminalPublish(result)
         lock.withLock {
             subscribers.forEach { it.resultSink(result) }

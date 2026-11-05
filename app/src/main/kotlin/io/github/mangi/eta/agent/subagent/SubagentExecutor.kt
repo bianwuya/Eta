@@ -17,8 +17,7 @@ import org.json.JSONObject
 /**
  * 执行单次 `subagent` 工具调用：管理独立子上下文、过滤工具目录、实时镜像内部步骤，并向父 Agent 返回结构化摘要。
  *
- * 与官方流程一致，本工具同步等待子 Agent 结束后返回最终 summary；运行过程中只通过
- * [AgentEvent.SubagentProgress] 供界面展示有界进度，不引入任务 ID、邮箱、预算或控制工具。
+ * 子任务本体仍同步执行；调用方在启动回调后持有工作线程，并在安全边界接收最终结果。
  */
 internal class SubagentExecutor(
     private val conversationKey: String,
@@ -46,6 +45,7 @@ internal class SubagentExecutor(
     fun execute(
         parentRound: Int,
         toolCall: AgentModelClient.ToolCall,
+        onStarted: (String, String) -> Unit = { _, _ -> },
     ): AgentModelClient.ToolResult {
         parentController.throwIfCancelled()
         val args = runCatching { JSONObject(toolCall.argumentsJson) }.getOrNull()
@@ -115,6 +115,7 @@ internal class SubagentExecutor(
                 prompt = prompt,
                 description = description,
                 isResume = isResume,
+                onStarted = onStarted,
             )
         } catch (failure: Exception) {
             SubagentSessionStore.releaseRunning(conversationKey, entry.subagentId)
@@ -130,6 +131,7 @@ internal class SubagentExecutor(
         prompt: String,
         description: String,
         isResume: Boolean,
+        onStarted: (String, String) -> Unit,
     ): AgentModelClient.ToolResult {
         val profile = entry.profile
         val subagentId = entry.subagentId
@@ -266,6 +268,9 @@ internal class SubagentExecutor(
         )
 
         return try {
+            childController.throwIfCancelled()
+            AgentModelClient.validateConfig(subagentConfig)
+            onStarted(subagentId, latestSnapshots[toolCall.id].orEmpty())
             val response = AgentModelClient.complete(
                 config = subagentConfig,
                 provider = io.github.mangi.eta.local.subagentstats.SubagentRequestStats.provider(

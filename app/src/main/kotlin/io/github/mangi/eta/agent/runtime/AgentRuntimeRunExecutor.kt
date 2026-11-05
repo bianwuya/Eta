@@ -7,6 +7,7 @@ import io.github.mangi.eta.agent.model.AgentConversationCodec
 import io.github.mangi.eta.agent.model.AgentConversationToolCatalog
 import io.github.mangi.eta.agent.tool.ConversationHistoryTool
 import io.github.mangi.eta.data.db.EtaDatabase
+import io.github.mangi.eta.agent.model.AgentToolBatchRecovery
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.agent.model.AgentModelExecutionException
 import io.github.mangi.eta.agent.model.AgentModelFailure
@@ -86,6 +87,10 @@ internal class AgentRuntimeRunExecutor(
         var response: AgentModelClient.ModelResponse.Text? = null
         var cancelled = false
         var checkpointRecorder: AgentRunCheckpointRecorder? = null
+        var childOwner: io.github.mangi.eta.agent.subagent.YieldableSubagents? = null
+        var childCheckpoint: AgentSubagentCheckpoint? = null
+        val childController = AgentRunController()
+        val childCancellation = runController.register(childController::cancel)
         val timing = AgentRunTiming(AndroidAgentLogger)
 
         val result = try {
@@ -285,7 +290,7 @@ internal class AgentRuntimeRunExecutor(
                 onRequestStat = { record ->
                     io.github.mangi.eta.local.subagentstats.SubagentStatsStore.get(appContext).save(record)
                 },
-                parentController = runController,
+                parentController = childController,
                 configProvider = {
                     val rawSubagentConfig = runBlocking {
                         RuntimeConfigRepository.subagentRuntimeConfig(request.config)
@@ -352,6 +357,26 @@ internal class AgentRuntimeRunExecutor(
                     }
                 }
             }
+            // UI and archive-capable external handoffs have durable in-flight recovery. A caller
+            // without a recoverable handoff retains the synchronous protocol.
+            if (checkpointRecorder != null && request.operation == AgentRuntimeWire.OP_CHAT) {
+                val store = AgentSubagentCheckpoint(appContext, request.runId)
+                childCheckpoint = store
+                session.setChildRecovery { transcript -> AgentSubagentCheckpoint.recover(appContext, request.runId, transcript) }
+                childOwner = io.github.mangi.eta.agent.subagent.YieldableSubagents(
+                    controller = runController,
+                    persistence = store,
+                    cancelChildren = childController::cancel,
+                    execute = { call, started ->
+                        if (!subagentAllowed()) {
+                            AgentModelClient.ToolResult(JSONObject().put("ok", false).put("code", "SUBAGENT_DISABLED")
+                                .put("message", "Subagent 权限已关闭").toString())
+                        } else {
+                            subagentExecutor.execute(call.round, call, started)
+                        }
+                    },
+                )
+            }
             val completedResponse = AgentModelClient.complete(
                 config = request.config,
                 compactionTarget = { runBlocking { RuntimeConfigRepository.compactionTarget(request.config) } },
@@ -380,6 +405,7 @@ internal class AgentRuntimeRunExecutor(
                 images = request.images,
                 history = request.history,
                 runController = runController,
+                yieldableSubagents = childOwner,
                 skillContext = skillContext,
                 memoryContext = memoryContext,
                 additionalTools = runTools,
@@ -411,6 +437,7 @@ internal class AgentRuntimeRunExecutor(
                 rewriteTargetMessageId = request.rewriteTargetMessageId,
             )
         } catch (throwable: Throwable) {
+            val abortFailure = runCatching { childOwner?.abort() }.exceptionOrNull()
             // 中断并不改变会话的系统前缀；保留记忆 pin，避免此前 own-write 后重新注入最新快照。
             // 外部记忆变化仍由 contextFor 检测；真正压缩历史时由 onContextSnapshot 失效。
             cancelled = runController.isCancelled || throwable is AgentRunCancelledException
@@ -446,18 +473,26 @@ internal class AgentRuntimeRunExecutor(
                     session.emit(event)
                 }
             }
+            val partialTranscript = modelFailure?.transcript ?: AgentToolBatchRecovery.completeInterrupted(session.transcript)
+            val childRecovery = runCatching {
+                if (childCheckpoint != null) AgentSubagentCheckpoint.recover(appContext, request.runId, partialTranscript)
+                else partialTranscript
+            }
             AgentRuntimeWire.RunResult(
                 runId = request.runId,
                 ok = false,
                 content = "",
-                error = message,
+                error = if (abortFailure != null || childRecovery.isFailure) "$message；子代理恢复记录读写失败，结果可能不完整。" else message,
                 reasoningContent = modelFailure?.reasoningContent.orEmpty(),
-                transcript = modelFailure?.transcript.orEmpty(),
+                transcript = childRecovery.getOrDefault(partialTranscript),
                 contextSnapshot = modelFailure?.contextSnapshot?.copy(operationId = request.runId) ?: session.contextSnapshot,
                 operation = request.operation,
                 rewriteTargetMessageId = request.rewriteTargetMessageId,
             )
         } finally {
+            runCatching { childOwner?.close() }
+            runCatching { childController.cancel() }
+            childCancellation.close()
             runCatching { toolsBinding?.close() }
             runCatching { toolExecutor?.close() }
             runCatching { guiRun?.close() }
@@ -488,7 +523,7 @@ internal class AgentRuntimeRunExecutor(
                 request
             }
         val committed = session.complete(result) {
-            runCatching { checkpointRecorder?.seal() }
+            runCatching { synchronized(this) { checkpointRecorder?.seal() } }
                 .onFailure { throwable ->
                     AndroidAgentLogger.error(
                         "Agent runtime checkpoint seal failed: type=${throwable.safeLogType()}"
@@ -510,6 +545,7 @@ internal class AgentRuntimeRunExecutor(
         )
     }
 
+    @Synchronized
     private fun acceptEvent(
         session: AgentRuntimeSession,
         event: AgentEvent,
@@ -517,6 +553,7 @@ internal class AgentRuntimeRunExecutor(
         entrySurfaceGuard: EntrySurfaceGuard?,
         checkpointRecorder: AgentRunCheckpointRecorder?,
     ) {
+        if (session.isTerminal || session.isCommitting) return
         checkpointRecorder?.accept(event)
         if (!session.emit(event)) return
         if (event !is AgentEvent.GuiControlChanged) archivedEvents?.add(event)

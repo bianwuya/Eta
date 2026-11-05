@@ -70,7 +70,7 @@ internal object GeminiInteractionHistory {
             messages.optJSONObject(it)?.let(GeminiEphemeralState::isRunStart) == true
         } ?: (messages.length() - 1 downTo 0).firstOrNull {
             messages.optJSONObject(it)?.let { message ->
-                message.optString("role") == "user" && !message.optBoolean("_eta_observation")
+                message.optString("role") == "user" && !message.optBoolean("_eta_observation") && !message.optBoolean("_eta_runtime_report")
             } == true
         } ?: messages.length()
         val input = JSONArray()
