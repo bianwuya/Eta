@@ -65,6 +65,7 @@ internal fun AgentHomeScreen(
                     pendingFileReferences = state.pendingFileReferences,
                     queuedMessages = state.queuedMessages,
                     inputSyncVersion = state.inputSyncVersion,
+                    restoredRequestMode = state.draftRequestMode,
                     messageEdit = state.messageEdit,
                     onReasoningEffortChange = { onAction(AgentHomeAction.ReasoningEffortChanged(it)) },
                     onCompactContext = { onAction(AgentHomeAction.CompactContext) },
@@ -72,8 +73,17 @@ internal fun AgentHomeScreen(
                     onModelSelected = { onAction(AgentHomeAction.ModelSelected(it)) },
                     onSubmit = { text -> onAction(AgentHomeAction.SubmitMessage(text)) },
                     onInterruptAndSubmit = { text -> onAction(AgentHomeAction.InterruptAndSubmitMessage(text)) },
+                    onSubmitWithMode = if (state.roleplay == null) {
+                        { text, mode -> onAction(AgentHomeAction.SubmitMessage(text, mode)) }
+                    } else null,
+                    onInterruptAndSubmitWithMode = if (state.roleplay == null) {
+                        { text, mode -> onAction(AgentHomeAction.InterruptAndSubmitMessage(text, mode)) }
+                    } else null,
                     onSteerQueuedMessage = { id -> onAction(AgentHomeAction.SteerQueuedMessage(id)) },
                     onRecallQueuedMessage = { id, draft -> onAction(AgentHomeAction.RecallQueuedMessage(id, draft)) },
+                    onRecallQueuedMessageWithMode = { id, draft, mode ->
+                        onAction(AgentHomeAction.RecallQueuedMessage(id, draft, mode))
+                    },
                     onRemoveQueuedMessage = { id -> onAction(AgentHomeAction.RemoveQueuedMessage(id)) },
                     onStop = { onAction(AgentHomeAction.StopRun) },
                     onAttachImage = { uri -> onAction(AgentHomeAction.ImageAttached(uri)) },

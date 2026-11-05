@@ -38,6 +38,8 @@ internal class SubagentExecutor(
     private val childToolFactory: ((AgentRunController) -> AgentModelClient.ToolExecutor)? = null,
     private val detailStoreFactory: (() -> SubagentDetailStore)? = null,
     private val controlRegistry: SubagentControlRegistry? = null,
+    private val providerFactory: (AgentModelClient.ModelConfig) -> io.github.mangi.eta.agent.model.AgentProviderClient =
+        io.github.mangi.eta.agent.model.ProviderClientFactory::getClient,
 ) {
     private val latestSnapshots = ConcurrentHashMap<String, String>()
 
@@ -303,7 +305,7 @@ internal class SubagentExecutor(
             val response = AgentModelClient.complete(
                 config = subagentConfig,
                 provider = io.github.mangi.eta.local.subagentstats.SubagentRequestStats.provider(
-                    delegate = io.github.mangi.eta.agent.model.ProviderClientFactory.getClient(subagentConfig),
+                    delegate = providerFactory(subagentConfig),
                     template = io.github.mangi.eta.local.subagentstats.SubagentRequestStat(
                         conversationId = conversationKey,
                         subagentId = subagentId,

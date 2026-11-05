@@ -108,6 +108,8 @@ internal object AgentRuntimeWire {
     private const val KEY_ASSISTANT_SCREEN_CONTEXT = "assistant_screen_context"
     private const val KEY_MODEL_SESSION_ID = "model_session_id"
     private const val KEY_ORIGIN = "run_origin"
+    private const val KEY_REQUEST_MODE = "request_mode"
+    private const val KEY_PLAN_LINEAGE_ID = "plan_lineage_id"
     private const val KEY_PROVIDER_ID = "provider_id"
     private const val KEY_PROVIDER_NAME = "provider_name"
     private const val KEY_PROVIDER_TYPE = "provider_type"
@@ -186,7 +188,13 @@ internal object AgentRuntimeWire {
         val assistantScreenContext: String = "",
         /** 空值表示用户入口；[RUN_ORIGIN_CONVERSATION_MESSAGE] 表示由跨会话消息启动。 */
         val origin: String = "",
+        val requestMode: String = "normal",
+        val planLineageId: String = "",
     ) {
+        init {
+            require(requestMode == "normal" || requestMode == "plan") { "无效请求模式" }
+            require(planLineageId.length <= 256 && (requestMode == "plan" || planLineageId.isBlank())) { "无效计划续接身份" }
+        }
         // 旧入口沿用会话 handoff；无持久会话的入口以首个 run 为会话起点。
         val effectiveModelSessionId: String
             get() = modelSessionId.ifBlank {
@@ -346,6 +354,8 @@ internal object AgentRuntimeWire {
         putString(KEY_ASSISTANT_SCREEN_CONTEXT, request.assistantScreenContext)
         putString(KEY_MODEL_SESSION_ID, request.modelSessionId)
         if (request.origin.isNotBlank()) putString(KEY_ORIGIN, request.origin)
+        putString(KEY_REQUEST_MODE, request.requestMode)
+        if (request.planLineageId.isNotBlank()) putString(KEY_PLAN_LINEAGE_ID, request.planLineageId)
         putString(KEY_PROVIDER_ID, request.config.providerId)
         putString(KEY_PROVIDER_NAME, request.config.providerName)
         putString(KEY_PROVIDER_TYPE, request.config.providerType)
@@ -482,6 +492,8 @@ internal object AgentRuntimeWire {
             },
             modelSessionId = bundle.getString(KEY_MODEL_SESSION_ID).orEmpty(),
             origin = bundle.getString(KEY_ORIGIN).orEmpty(),
+            requestMode = bundle.getString(KEY_REQUEST_MODE) ?: "normal",
+            planLineageId = bundle.getString(KEY_PLAN_LINEAGE_ID).orEmpty(),
             config = AgentModelClient.ModelConfig(
                 providerId = bundle.getString(KEY_PROVIDER_ID).orEmpty(),
                 providerName = bundle.getString(KEY_PROVIDER_NAME).orEmpty(),

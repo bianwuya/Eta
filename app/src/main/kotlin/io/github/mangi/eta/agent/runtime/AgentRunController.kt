@@ -25,6 +25,7 @@ internal class AgentRunController {
         val text: String,
         val images: List<io.github.mangi.eta.agent.model.AgentModelClient.ModelImage> = emptyList(),
         val origin: SteeringOrigin = SteeringOrigin.USER,
+        val sequence: Long = 0L,
     )
 
     /**
@@ -42,6 +43,9 @@ internal class AgentRunController {
 
     private val steeringMessages = ArrayDeque<SteeringInput>()
     private val conversationMessages = ArrayDeque<ConversationInput>()
+    @Volatile private var pendingSteering = false
+    @Volatile private var steeringCounter = 0L
+    val steeringVersion: Long get() = steeringCounter
     private var acceptingSteering = true
     private var acceptingConversationMessages = true
     @Volatile
@@ -61,6 +65,7 @@ internal class AgentRunController {
             acceptingSteering = false
             acceptingConversationMessages = false
             steeringMessages.clear()
+            pendingSteering = false
             conversationMessages.clear()
             paused = false
             pauseCheckpointReached = false
@@ -91,14 +96,16 @@ internal class AgentRunController {
         if (prompt.isBlank() && images.isEmpty()) return false
         lock.withLock {
             if (cancelled || !acceptingSteering) return false
-            steeringMessages.addLast(SteeringInput(prompt, images.toList(), origin))
+            pendingSteering = true
+            steeringCounter += 1
+            steeringMessages.addLast(SteeringInput(prompt, images.toList(), origin, steeringCounter))
             pauseCondition.signalAll()
         }
         return true
     }
 
     /** 默认逐条消费，避免后来的补充指令越过前一条的模型回合。 */
-    fun pollSteeringInput(): SteeringInput? = lock.withLock { steeringMessages.pollFirst() }
+    fun pollSteeringInput(): SteeringInput? = lock.withLock { steeringMessages.pollFirst().also { pendingSteering = steeringMessages.isNotEmpty() } }
     fun pollSteeringMessage(): String? = pollSteeringInput()?.text
 
     /**
@@ -109,13 +116,13 @@ internal class AgentRunController {
 
     fun pollSteeringInputOrSeal(): SteeringInput? =
         lock.withLock {
-            steeringMessages.pollFirst()?.let { return it }
+            steeringMessages.pollFirst()?.let { pendingSteering = steeringMessages.isNotEmpty(); return it }
             acceptingSteering = false
             null
         }
 
     val hasPendingSteering: Boolean
-        get() = lock.withLock { steeringMessages.isNotEmpty() }
+        get() = pendingSteering
 
     /** Used to defer stale child tool calls until the parent directive reaches the model. */
     val hasPendingParentDirective: Boolean
@@ -154,7 +161,7 @@ internal class AgentRunController {
 
     fun <T> collectBoundaryInputs(reports: () -> List<T>): BoundaryInputs<T> = lock.withLock {
         val readyReports = reports()
-        val steering = steeringMessages.toList().also { steeringMessages.clear() }
+        val steering = steeringMessages.toList().also { steeringMessages.clear(); pendingSteering = false }
         val conversations = conversationMessages.toList().also { conversationMessages.clear() }
         BoundaryInputs(steering, conversations, readyReports)
     }
@@ -170,6 +177,17 @@ internal class AgentRunController {
             }
         }
         if (cancelled) throw AgentRunCancelledException()
+    }
+
+    /** Wait once for an answer, plan update or steering, with a monotonic deadline. */
+    fun awaitWorkAvailableFor(timeoutMs: Long, isReady: () -> Boolean): Boolean = lock.withLock {
+        var remaining = TimeUnit.MILLISECONDS.toNanos(timeoutMs)
+        while (!cancelled && steeringMessages.isEmpty() && !isReady() && remaining > 0L) {
+            try { remaining = pauseCondition.awaitNanos(remaining) }
+            catch (_: InterruptedException) { Thread.currentThread().interrupt(); throw AgentRunCancelledException() }
+        }
+        if (cancelled) throw AgentRunCancelledException()
+        isReady()
     }
 
     fun signalWorkAvailable() = lock.withLock { pauseCondition.signalAll() }

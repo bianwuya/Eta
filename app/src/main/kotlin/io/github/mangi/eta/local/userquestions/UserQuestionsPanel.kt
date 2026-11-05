@@ -563,14 +563,14 @@ private fun HistoryHeader(
     val title = when {
         editor.action == QuestionAction.SUBMIT -> "正在提交回答…"
         editor.action == QuestionAction.DEFER -> "正在保存并结束等待…"
+        form.endReason.isNotBlank() -> "历史提问 · ${form.endReason}"
         editor.receipt != null -> editor.receipt!!
         form.status == "answered" -> "历史提问 · 已回答"
         form.status == "unanswered" -> "历史提问 · 未回答，等待已结束"
         else -> "提问已过期 · 原任务已结束"
     }
     Row(Modifier.fillMaxWidth().padding(start = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text(title, modifier = Modifier.weight(1f), style = MiuixTheme.textStyles.body2,
-            maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text(title, modifier = Modifier.weight(1f), style = MiuixTheme.textStyles.body2)
         if (pending.isNotEmpty()) {
             IconButton(onClick = onSwitch, enabled = !editor.busy, minWidth = 48.dp, minHeight = 48.dp) {
                 Icon(imageVector = Icons.Rounded.SwapHoriz, contentDescription = "切换到待回答提问，共 ${pending.size} 组",

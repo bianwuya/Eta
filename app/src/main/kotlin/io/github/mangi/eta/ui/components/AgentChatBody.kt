@@ -182,6 +182,10 @@ internal fun AgentChatBody(
     onHistoryViewportChanged: (Boolean) -> Unit = {},
     isDrawerOpen: Boolean = false,
     modifier: Modifier = Modifier,
+    onSubmitWithMode: ((String, String) -> Unit)? = null,
+    onInterruptAndSubmitWithMode: ((String, String) -> Unit)? = null,
+    restoredRequestMode: String = "normal",
+    onRecallQueuedMessageWithMode: ((String, String, String) -> Unit)? = null,
 ) {
     val scrollState = rememberLazyListState(initialFirstVisibleItemIndex = messages.size + if (hasEarlierMessages) 1 else 0)
     val keyboard = LocalSoftwareKeyboardController.current
@@ -255,6 +259,7 @@ internal fun AgentChatBody(
             pendingFileReferences = pendingFileReferences,
             queuedMessages = queuedMessages,
             inputSyncVersion = inputSyncVersion,
+            restoredRequestMode = restoredRequestMode,
             messageEdit = messageEdit,
             showEmptySuggestions = !isKeyboardVisible,
             keepBottomAnchored = keepBottomAnchored,
@@ -271,11 +276,22 @@ internal fun AgentChatBody(
                 keepBottomAnchored = true
                 onInterruptAndSubmit(text)
             },
+            onSubmitWithMode = onSubmitWithMode?.let { callback -> { text, mode ->
+                sentFromKeyboard = true
+                keepBottomAnchored = true
+                callback(text, mode)
+            } },
+            onInterruptAndSubmitWithMode = onInterruptAndSubmitWithMode?.let { callback -> { text, mode ->
+                sentFromKeyboard = true
+                keepBottomAnchored = true
+                callback(text, mode)
+            } },
             onSteerQueuedMessage = { id ->
                 keepBottomAnchored = true
                 onSteerQueuedMessage(id)
             },
             onRecallQueuedMessage = onRecallQueuedMessage,
+            onRecallQueuedMessageWithMode = onRecallQueuedMessageWithMode,
             onRemoveQueuedMessage = onRemoveQueuedMessage,
             onReasoningEffortChange = onReasoningEffortChange,
             onCompactContext = onCompactContext,
@@ -360,8 +376,13 @@ private fun AgentChatScaffold(
     onLoadEarlierMessages: () -> Unit,
     onHistoryViewportChanged: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
+    onSubmitWithMode: ((String, String) -> Unit)? = null,
+    onInterruptAndSubmitWithMode: ((String, String) -> Unit)? = null,
+    restoredRequestMode: String = "normal",
+    onRecallQueuedMessageWithMode: ((String, String, String) -> Unit)? = null,
 ) {
     val surfaceColor = MiuixTheme.colorScheme.surface
+    val planConversationId = conversationId.takeIf { LocalRoleplayChat.current == null }
     val captureInProgress = LocalScrollCaptureInProgress.current
     val frostEnabled = hasMessages && LocalBlurEnabled.current && isRuntimeShaderSupported()
     val messageBackdrop = rememberLayerBackdrop {
@@ -405,11 +426,15 @@ private fun AgentChatScaffold(
                         pendingFileReferences = pendingFileReferences,
                         queuedMessages = queuedMessages,
                         inputSyncVersion = inputSyncVersion,
+                        restoredRequestMode = restoredRequestMode,
                         messageEdit = messageEdit,
                         onSubmit = onSubmit,
                         onInterruptAndSubmit = onInterruptAndSubmit,
+                        onSubmitWithMode = onSubmitWithMode,
+                        onInterruptAndSubmitWithMode = onInterruptAndSubmitWithMode,
                         onSteerQueuedMessage = onSteerQueuedMessage,
                         onRecallQueuedMessage = onRecallQueuedMessage,
+                        onRecallQueuedMessageWithMode = onRecallQueuedMessageWithMode,
                         onRemoveQueuedMessage = onRemoveQueuedMessage,
                         onReasoningEffortChange = onReasoningEffortChange,
                         onCompactContext = onCompactContext,
@@ -438,6 +463,7 @@ private fun AgentChatScaffold(
                 )
             } else {
                 AgentConversationMessages(
+                    conversationId = planConversationId,
                     visibleMessages = visibleMessages,
                     scrollState = scrollState,
                     isStreaming = isStreaming,
@@ -503,6 +529,7 @@ internal fun AgentConversationMessages(
     onLoadEarlierMessages: () -> Unit = {},
     onHistoryViewportChanged: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier,
+    conversationId: String? = null,
 ) {
     val scrollCaptureInProgress = LocalScrollCaptureInProgress.current
     // 上一版条目只作复用比对，不参与组合观察。
@@ -541,7 +568,8 @@ internal fun AgentConversationMessages(
             }
     }
     val earlierMessagesItemCount = if (hasEarlierMessages) 1 else 0
-    val bottomItemIndex = timelineEntries.size + earlierMessagesItemCount
+    val planItemCount = if (conversationId.isNullOrBlank()) 0 else 1
+    val bottomItemIndex = timelineEntries.size + earlierMessagesItemCount + planItemCount
     val isUserDragging by scrollState.interactionSource.collectIsDraggedAsState()
     val isAtBottom by remember(scrollState) {
         derivedStateOf { !scrollState.canScrollForward }
@@ -839,6 +867,14 @@ internal fun AgentConversationMessages(
                     }
                 }
             }
+            if (!conversationId.isNullOrBlank()) {
+                item(key = "plan-panel-$conversationId", contentType = "plan-panel") {
+                    io.github.mangi.eta.local.planmode.PlanConversationPanel(
+                        conversationId = conversationId,
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                    )
+                }
+            }
             item(key = ChatBottomSentinelKey) {
                 Spacer(
                     modifier = Modifier
@@ -1057,6 +1093,10 @@ private fun AgentChatBottomBar(
     onAttachFilePath: (String) -> Unit,
     onRemoveFileReference: (String) -> Unit,
     onCancelMessageEdit: () -> Unit,
+    onSubmitWithMode: ((String, String) -> Unit)? = null,
+    onInterruptAndSubmitWithMode: ((String, String) -> Unit)? = null,
+    restoredRequestMode: String = "normal",
+    onRecallQueuedMessageWithMode: ((String, String, String) -> Unit)? = null,
 ) {
     Column(
         modifier = Modifier
@@ -1130,13 +1170,17 @@ private fun AgentChatBottomBar(
                 pendingFileReferences = pendingFileReferences,
                 queuedMessages = queuedMessages,
                 inputSyncVersion = inputSyncVersion,
+                restoredRequestMode = restoredRequestMode,
                 isEditingMessage = messageEdit != null,
                 editHasLaterTurns = messageEdit?.hasLaterTurns == true,
                 preserveFollowingMessages = messageEdit?.preserveFollowingMessages == true,
                 onSubmit = onSubmit,
                 onInterruptAndSubmit = onInterruptAndSubmit,
+                onSubmitWithMode = onSubmitWithMode,
+                onInterruptAndSubmitWithMode = onInterruptAndSubmitWithMode,
                 onSteerQueuedMessage = onSteerQueuedMessage,
                 onRecallQueuedMessage = onRecallQueuedMessage,
+                onRecallQueuedMessageWithMode = onRecallQueuedMessageWithMode,
                 onRemoveQueuedMessage = onRemoveQueuedMessage,
                 onReasoningEffortChange = onReasoningEffortChange,
                 onCompactContext = onCompactContext,

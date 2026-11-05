@@ -42,6 +42,7 @@ internal class AgentLoop(
     initialSupplementIndex: Int = 0,
     private val compactionTarget: (() -> AgentCompactionTarget)? = null,
     private val yieldableSubagents: YieldableSubagents? = null,
+    private val planGate: io.github.mangi.eta.local.planmode.PlanRunGate? = null,
 ) {
     data class Result(
         val content: String,
@@ -55,6 +56,8 @@ internal class AgentLoop(
         val acceptedSubagent: Boolean = false,
     )
 
+    private var lastQuestionRound = -1
+    private var questionFailedRound = -1
     private var availableToolNames = emptySet<String>()
     private val accumulatedReasoning = StringBuilder()
     private val sensitiveToolCallIds = linkedSetOf<String>()
@@ -113,6 +116,14 @@ internal class AgentLoop(
                     }
                     appendConversationMessages(boundary.conversations)
                     appendSubagentReports(boundary.reports)
+                }
+            }
+
+            if (purpose.allowsTools && !SignedToolContext.hasPendingResponse(messages)) {
+                planGate?.editedPlanMessage()?.let { update ->
+                    appendMessage(AgentConversationCodec.userTextMessage(update))
+                    context.userAppended()
+                    unconsumedNewInput = true
                 }
             }
 
@@ -226,6 +237,17 @@ internal class AgentLoop(
             }
 
             publishTranscript()
+            // An edit arriving while the model is thinking must reach it at a complete boundary.
+            if (purpose.allowsTools) {
+                val update = planGate?.editedPlanMessage()
+                if (update != null) {
+                    appendMessage(AgentConversationCodec.userTextMessage(update))
+                    context.userAppended()
+                    unconsumedNewInput = true
+                    round += 1
+                    continue
+                }
+            }
 
             // A natural answer is not the run's terminal state while children are still active.
             if (purpose.allowsTools && yieldableSubagents?.hasPending() == true) {
@@ -333,6 +355,7 @@ internal class AgentLoop(
         "用户补充指令：$supplement\n\n请基于当前任务上下文继续执行，不要从头重复已经完成或已经验证过的操作。"
 
     private fun steeringMessage(supplement: AgentRunController.SteeringInput): JSONObject {
+        planGate?.onSteering(supplement.sequence)
         val message = when (supplement.origin) {
             AgentRunController.SteeringOrigin.USER ->
                 AgentConversationCodec.userMessage(steeringPrompt(supplement.text), supplement.images)
@@ -369,13 +392,19 @@ internal class AgentLoop(
             }
         }
 
-        if (yieldableSubagents != null) return toolCalls.map { current ->
+        if (yieldableSubagents != null || planGate != null) return toolCalls.map { current ->
             executeTool(round, current.copy(round = round))
         }
         val outcomes = mutableListOf<ToolOutcome>()
         var index = 0
         while (index < toolCalls.size) {
             val current = toolCalls[index]
+            // Do not let the parallel-subagent fast path bypass a preceding question.
+            if (lastQuestionRound == round) {
+                outcomes += executeTool(round, current.copy(round = round))
+                index += 1
+                continue
+            }
             if (current.name == AgentSubagentToolCatalog.TOOL_NAME && current.name in availableToolNames) {
                 val parallelBatch = mutableListOf<AgentModelClient.ToolCall>()
                 while (
@@ -498,7 +527,13 @@ internal class AgentLoop(
                 toolCall = toolCall,
                 code = "TOOL_NOT_AVAILABLE",
                 message = "工具未在本轮能力目录中提供，请使用当前可用工具",
-            ).also { if (yieldableSubagents != null) recordToolOutcome(it) }
+            ).also {
+                if (toolCall.name == "ask_user_questions") {
+                    lastQuestionRound = round; questionFailedRound = round
+                    runCatching { planGate?.noteQuestion(round, it.result.content) }
+                }
+                if (yieldableSubagents != null) recordToolOutcome(it)
+            }
         }
         val roundCall = if (toolCall.round == round) toolCall else toolCall.copy(round = round)
         onEvent(
@@ -511,14 +546,26 @@ internal class AgentLoop(
             )
         )
 
-        val result = try {
-            if (roundCall.name == AgentSubagentToolCatalog.TOOL_NAME && yieldableSubagents != null) {
-                yieldableSubagents.launch(roundCall)
-            } else {
-                toolExecutor.execute(roundCall)
+        var result = try {
+            val invoke = {
+                if (roundCall.name == AgentSubagentToolCatalog.TOOL_NAME && yieldableSubagents != null) {
+                    yieldableSubagents.launch(roundCall)
+                } else {
+                    toolExecutor.execute(roundCall)
+                }
             }
+            // A model cannot see a question result until the next provider turn.
+            // In normal mode conservatively hold every later call in this batch;
+            // plan mode may use only the gate's read-only exception.
+            val result = if (lastQuestionRound == round &&
+                (planGate == null || questionFailedRound == round || runController.hasPendingSteering)) {
+                AgentModelClient.ToolResult(JSONObject().put("ok", false).put("code", "QUESTION_TURN_BOUNDARY")
+                    .put("message", "先读取提问结果及待处理引导；本批旧调用未执行").toString())
+            } else planGate?.execute(roundCall, invoke) ?: invoke()
+            result
         } catch (throwable: Exception) {
             runController.throwIfCancelled()
+            if (roundCall.name == "ask_user_questions") questionFailedRound = round
             AgentModelClient.ToolResult(
                 content = JSONObject()
                     .put("ok", false)
@@ -526,6 +573,18 @@ internal class AgentLoop(
                     .put("message", throwable.message ?: throwable.javaClass.simpleName)
                     .toString(),
             )
+        }
+        if (roundCall.name == "ask_user_questions") {
+            lastQuestionRound = round
+            // Even an exception/unavailable form is unanswered; the plan gate must
+            // retain that fact beyond this batch. Propagate persistence errors as errors.
+            try {
+                planGate?.noteQuestion(round, result.content)
+            } catch (failure: Exception) {
+                questionFailedRound = round
+                result = AgentModelClient.ToolResult(JSONObject().put("ok", false).put("code", "QUESTION_STATE_SAVE_FAILED")
+                    .put("message", "提问结果状态未能保存；旧步骤未执行，需先核实并重试保存").toString())
+            }
         }
         if (result.sensitive || AgentSensitiveToolPolicy.isSensitive(roundCall.name)) {
             sensitiveToolCallIds += roundCall.id

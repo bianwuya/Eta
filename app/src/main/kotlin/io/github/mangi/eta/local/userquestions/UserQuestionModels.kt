@@ -18,7 +18,9 @@ internal enum class UserQuestionPresentation { COLLAPSED, EXPANDED, HIDDEN }
 internal data class UserQuestionSet(val id: String, val conversationId: String, val runId: String,
     val callId: String, val intro: String, val questions: List<UserQuestion>, val drafts: List<QuestionDraft>,
     val status: String = "waiting", val active: Boolean = true, val summary: String = "",
-    val presentation: UserQuestionPresentation = UserQuestionPresentation.COLLAPSED)
+    val presentation: UserQuestionPresentation = UserQuestionPresentation.COLLAPSED,
+    val hostId: String = "main", val planId: String? = null, val planRevision: Int? = null,
+    val endReason: String = "")
 
 internal object UserQuestionParser {
     fun parse(args: JSONObject): Pair<String, List<UserQuestion>> {
