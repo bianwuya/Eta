@@ -25,6 +25,7 @@ internal data class PlanStep(
     val dependsOn: List<String> = emptyList(),
     val independentOfQuestions: Boolean = false,
     val nextAction: Int = 0,
+    val pendingChildTasks: List<String> = emptyList(),
 )
 
 @Serializable
@@ -79,7 +80,7 @@ internal object PlanModeStore {
             }
             json.decodeFromString<List<PlanRecord>>(text).takeLast(32).map { plan ->
                 // Older records predate action hashes; recover the pending/running action conservatively.
-                val recovered = plan.steps.filter { it.status == "running" || it.status == "blocked" }
+                val recovered = plan.steps.filter { it.status in setOf("running", "waiting_child") || it.status == "blocked" }
                     .mapNotNull { it.actions.getOrNull(it.nextAction)?.fingerprint() }
                 // A finished/blocked record is not an execution lease. Preserve its
                 // observed outcome; an interrupted active run cannot be declared complete.
@@ -90,7 +91,7 @@ internal object PlanModeStore {
                     status = if (plan.active || plan.status == "approved") "ended" else plan.status,
                     interruptedWork = plan.interruptedWork || recovered.isNotEmpty(),
                     uncertainActions = (plan.uncertainActions + recovered).distinct(),
-                    steps = plan.steps.map { if (it.status == "running") it.copy(status = "blocked") else it })
+                    steps = plan.steps.map { if (it.status in setOf("running", "waiting_child")) it.copy(status = "blocked") else it })
             }
         } else emptyList()
         file = storage
@@ -134,7 +135,7 @@ internal object PlanModeStore {
         val inherited = mutable.value.filter { it.conversationId == conversationId && it.planLineageId.ifBlank { it.runId } == planLineageId }
             .flatMap { it.uncertainActions }.distinct()
         val record = PlanRecord(prior?.planId ?: UUID.randomUUID().toString(), conversationId, runId,
-            (prior?.revision ?: 0) + 1, title, content, "awaiting_approval", "planning", true, steps, questionBlocked = questionBlocked, interruptedWork = prior?.interruptedWork == true || prior?.steps?.any { it.status == "running" } == true || inherited.isNotEmpty(),
+            (prior?.revision ?: 0) + 1, title, content, "awaiting_approval", "planning", true, steps, questionBlocked = questionBlocked, interruptedWork = prior?.interruptedWork == true || prior?.steps?.any { it.status in setOf("running", "waiting_child") } == true || inherited.isNotEmpty(),
             uncertainActions = inherited, planLineageId = planLineageId)
         val all = mutable.value.filterNot { it.planId == record.planId }.toMutableList()
         while (all.size >= 32) all.removeAt(all.indexOfFirst { old ->
@@ -164,7 +165,7 @@ internal object PlanModeStore {
         // Model must propose new exact actions before approval. In-flight work cannot be undone.
         replace(p.copy(revision = p.revision + 1, content = content, status = "draft", phase = "planning",
             approvedRevision = null, steps = emptyList(), questionBlocked = true, independenceApproved = false,
-            interruptedWork = p.interruptedWork || p.steps.any { it.status == "running" }, editPending = true))
+            interruptedWork = p.interruptedWork || p.steps.any { it.status in setOf("running", "waiting_child") }, editPending = true))
         approvalDeadlines.remove(p.runId)
         return true
     }
@@ -189,7 +190,7 @@ internal object PlanModeStore {
         val p = current(runId) ?: return
         replace(p.copy(revision = p.revision + 1, status = "draft", phase = "planning",
             approvedRevision = null, steps = emptyList(), questionBlocked = true, independenceApproved = false,
-            interruptedWork = p.interruptedWork || p.steps.any { it.status == "running" }, editPending = p.editPending))
+            interruptedWork = p.interruptedWork || p.steps.any { it.status in setOf("running", "waiting_child") }, editPending = p.editPending))
         approvalDeadlines.remove(runId)
     }
 
@@ -243,27 +244,52 @@ internal object PlanModeStore {
     }
 
     @Synchronized internal fun finishAction(runId: String, revision: Int, stepId: String, expectedAction: Int,
-        fingerprint: String, success: Boolean): Boolean {
+        fingerprint: String, success: Boolean, childTaskId: String? = null): Boolean {
         val p = current(runId) ?: return false
         val step = p.steps.firstOrNull { it.id == stepId } ?: return false
         if (p.revision != revision || p.approvedRevision != revision || step.status != "running" || step.nextAction != expectedAction) return false
         val next = step.nextAction + 1
-        val updated = step.copy(status = if (!success) "blocked" else if (next == step.actions.size) "completed" else "pending",
-            nextAction = if (success) next else step.nextAction)
+        val pendingChildren = if (success && childTaskId != null) step.pendingChildTasks + childTaskId else step.pendingChildTasks
+        val updated = step.copy(status = when {
+            !success -> "blocked"
+            next < step.actions.size -> "pending"
+            pendingChildren.isNotEmpty() -> "waiting_child"
+            else -> "completed"
+        }, nextAction = if (success) next else step.nextAction, pendingChildTasks = pendingChildren)
         val steps = p.steps.map { if (it.id == step.id) updated else it }
         val phase = when {
             p.questionBlocked || steps.any { it.status == "blocked" || it.status == "failed" } -> "partially_blocked"
             else -> "running"
         }
         replace(p.copy(steps = steps, phase = phase,
-            uncertainActions = if (success) p.uncertainActions - fingerprint else p.uncertainActions,
+            uncertainActions = if (success && childTaskId == null) p.uncertainActions - fingerprint else p.uncertainActions,
             interruptedWork = p.interruptedWork || !success))
         return true
     }
 
+    /** Only the owned child's typed, durably saved final result can settle its dependency. */
+    @Synchronized internal fun completeChild(runId: String, revision: Int, stepId: String,
+        taskId: String, fingerprint: String, success: Boolean) {
+        val p = current(runId) ?: return
+        val step = p.steps.firstOrNull { it.id == stepId } ?: return
+        if (p.revision != revision || p.approvedRevision != revision || taskId !in step.pendingChildTasks) return
+        val pending = step.pendingChildTasks - taskId
+        val status = when {
+            !success || step.status in setOf("blocked", "failed") -> "blocked"
+            step.nextAction < step.actions.size -> "pending"
+            pending.isNotEmpty() -> "waiting_child"
+            else -> "completed"
+        }
+        val steps = p.steps.map { if (it.id == stepId) it.copy(status = status, pendingChildTasks = pending) else it }
+        replace(p.copy(steps = steps,
+            phase = if (p.questionBlocked || steps.any { it.status in setOf("blocked", "failed") }) "partially_blocked" else "running",
+            uncertainActions = if (success) p.uncertainActions - fingerprint else p.uncertainActions,
+            interruptedWork = p.interruptedWork || !success))
+    }
+
     @Synchronized internal fun end(runId: String, completedRun: Boolean = false) {
         val p = current(runId) ?: return
-        val wasRunning = p.steps.any { it.status == "running" }
+        val wasRunning = p.steps.any { it.status in setOf("running", "waiting_child") }
         val allActionsDone = p.steps.isNotEmpty() && p.steps.all { it.status == "completed" }
         // A successful provider turn and completed exact actions do not prove
         // real-world verification; only the action plan itself is complete.
@@ -276,7 +302,7 @@ internal object PlanModeStore {
         val ended = p.copy(active = false, approvedRevision = null, phase = phase,
             status = if (p.status == "approved") "ended" else p.status,
             interruptedWork = p.interruptedWork || wasRunning || (!completedRun && p.status == "approved"),
-            steps = p.steps.map { if (it.status == "running") it.copy(status = "blocked") else it })
+            steps = p.steps.map { if (it.status in setOf("running", "waiting_child")) it.copy(status = "blocked") else it })
         try {
             replace(ended)
         } catch (failure: Exception) {

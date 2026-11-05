@@ -18,6 +18,14 @@ internal class PlanRunGate(private val conversationId: String, private val runId
     @Volatile private var active = true
     @Volatile private var acknowledgedSteeringVersion = controller.steeringVersion
     private val executedActions = mutableSetOf<String>()
+    private data class ChildAction(val revision: Int, val stepId: String, val fingerprint: String)
+    private val childActions = mutableMapOf<String, ChildAction>()
+
+    fun childReport(taskId: String, succeeded: Boolean) {
+        val action = childActions[taskId] ?: return
+        PlanModeStore.completeChild(runId, action.revision, action.stepId, taskId, action.fingerprint, succeeded)
+        childActions.remove(taskId)
+    }
 
     companion object {
         const val PROPOSE = "plan_propose"
@@ -88,7 +96,8 @@ internal class PlanRunGate(private val conversationId: String, private val runId
         }
     }
 
-    fun execute(call: AgentModelClient.ToolCall, delegate: () -> AgentModelClient.ToolResult): AgentModelClient.ToolResult {
+    fun execute(call: AgentModelClient.ToolCall, knownChildLaunch: (JSONObject) -> Boolean = { false },
+        delegate: () -> AgentModelClient.ToolResult): AgentModelClient.ToolResult {
         if (!mayAct()) return result(false, "PLAN_STEERING_PENDING", "任务已结束或用户新引导待完整边界处理；旧调用未执行")
         val current = PlanModeStore.current(runId)
         if (current?.status == "draft" && current.editPending && current.revision != deliveredEditRevision)
@@ -142,15 +151,20 @@ internal class PlanRunGate(private val conversationId: String, private val runId
             val exit = outcome.opt("exit_code")
             exit is Number && exit.toDouble() == 0.0
         } else true
-        val success = terminalExitOk && outcome?.optBoolean("ok", false) == true && outcome.optString("status").lowercase() !in setOf("accepted", "started", "queued", "running", "pending", "unknown", "timed_out", "timeout", "cancelled", "failed", "error", "interrupted") &&
+        // A persisted child launch is known dispatch, not completion of the child's work.
+        // Keep its dependency waiting until the owner's typed final report arrives.
+        val childTask = if (call.name == "subagent" && outcome != null && knownChildLaunch(outcome))
+            outcome.optString("task_id").takeIf { it.isNotBlank() } else null
+        val success = childTask != null || terminalExitOk && outcome?.optBoolean("ok", false) == true && outcome.optString("status").lowercase() !in setOf("accepted", "started", "queued", "running", "pending", "unknown", "timed_out", "timeout", "cancelled", "failed", "error", "interrupted") &&
             !outcome.optBoolean("timed_out", false) && call.name !in setOf("terminal_job", "terminal_daemon") &&
             outcome.optString("code") !in setOf("ACTION_OUTCOME_UNKNOWN", "DIRECTION_MISMATCH")
-        val recorded = try { PlanModeStore.finishAction(runId, p.revision, selected.id, selected.nextAction, fingerprint, success) }
+        val recorded = try { PlanModeStore.finishAction(runId, p.revision, selected.id, selected.nextAction, fingerprint, success, childTask) }
         catch (failure: Exception) {
             return response.copy(content = JSONObject().put("ok", false).put("code", "PLAN_RESULT_RECORD_FAILED")
                 .put("message", "操作已发出但结果持久化失败；不得自动重放。以下为实际返回，请先核实。")
                 .put("tool_result", outcome ?: response.content).toString())
         }
+        if (recorded && childTask != null) childActions[childTask] = ChildAction(p.revision, selected.id, fingerprint)
         if (!recorded) return response.copy(content = JSONObject().put("ok", false).put("code", "PLAN_CHANGED_AFTER_IO")
             .put("message", "操作在途时计划已变化，不能撤销；以下为实际返回，先核实再规划，不得自动重放。")
             .put("tool_result", outcome ?: response.content).toString())

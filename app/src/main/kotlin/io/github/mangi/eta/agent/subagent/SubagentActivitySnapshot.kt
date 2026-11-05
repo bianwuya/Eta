@@ -73,7 +73,12 @@ internal data class SubagentActivitySnapshot(
             currentAction = currentAction.take(limit),
             steps = recentSteps.map { step ->
                 step.copy(
-                    id = step.id.take(limit),
+                    // IDs are display identity, not visible text. Prefix truncation can merge
+                    // distinct provider IDs and crash the inspector's LazyColumn.
+                    id = if (step.id.length <= limit) step.id else "preview-" +
+                        java.security.MessageDigest.getInstance("SHA-256")
+                            .digest(step.id.toByteArray(Charsets.UTF_8))
+                            .joinToString("") { "%02x".format(it) },
                     kind = step.kind.take(limit),
                     title = step.title.take(limit),
                     detail = step.detail.takeLast(limit),

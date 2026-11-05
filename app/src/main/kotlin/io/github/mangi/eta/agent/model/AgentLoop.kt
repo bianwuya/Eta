@@ -497,6 +497,7 @@ internal class AgentLoop(
         val owner = yieldableSubagents ?: return false
         if (reports.isEmpty()) return false
         reports.forEach { report ->
+            planGate?.childReport(report.taskId, report.succeeded)
             appendMessage(JSONObject().put("role", "assistant").put("content", report.content)
                 .put("_eta_message_id", "subagent-report-${report.taskId}"))
         }
@@ -560,7 +561,9 @@ internal class AgentLoop(
                 (planGate == null || questionFailedRound == round || runController.hasPendingSteering)) {
                 AgentModelClient.ToolResult(JSONObject().put("ok", false).put("code", "QUESTION_TURN_BOUNDARY")
                     .put("message", "先读取提问结果及待处理引导；本批旧调用未执行").toString())
-            } else planGate?.execute(roundCall, invoke) ?: invoke()
+            } else planGate?.execute(roundCall,
+                knownChildLaunch = { receipt -> yieldableSubagents?.isKnownLaunch(roundCall.id, receipt) == true },
+                delegate = invoke) ?: invoke()
             result
         } catch (throwable: Exception) {
             runController.throwIfCancelled()

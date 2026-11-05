@@ -319,6 +319,7 @@ private fun planPhase(phase: String): String = when (phase) {
 private fun stepStatus(status: String): String = when (status) {
     "pending" -> "待执行"
     "running" -> "执行中"
+    "waiting_child" -> "等待子任务最终报告（启动已确认）"
     "completed" -> "已完成"
     "blocked" -> "阻塞"
     "failed" -> "失败"

@@ -280,7 +280,7 @@ private fun SubagentInspectorContent(
                 }
             }
             // Reuse the main chat timeline, composing only visible execution steps.
-            itemsIndexed(snapshot.steps, key = { _, step -> step.id }) { index, step ->
+            itemsIndexed(snapshot.steps, key = { index, step -> "step:$index:${step.id}" }) { index, step ->
                 val isLastStep = index == snapshot.steps.lastIndex && !running
                 WorkTimelineNode(
                     icon = if (step.kind == SubagentStepSnapshot.KIND_THINKING) {
