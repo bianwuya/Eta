@@ -121,6 +121,27 @@ internal data class SubagentActivitySnapshot(
                 ?.takeIf { it.subagentType.isNotBlank() || it.description.isNotBlank() || it.prompt.isNotBlank() }
         }
 
+        /**
+         * A launch or resume that never reached the model must not leave the initial
+         * "running / 正在启动" card behind. `updatedAt` is real time so this snapshot wins over the
+         * synthetic launch preview when the tool result is projected.
+         */
+        fun failureFromArguments(
+            argumentsJson: String,
+            message: String,
+            status: String = STATUS_FAILED,
+            now: Long = System.currentTimeMillis(),
+        ): SubagentActivitySnapshot =
+            (initialFromArguments(argumentsJson) ?: SubagentActivitySnapshot(subagentType = SUBAGENT_FALLBACK_TYPE))
+                .copy(
+                    status = status,
+                    currentAction = message.lineSequence().firstOrNull()?.take(120).orEmpty(),
+                    error = message.take(1_000),
+                    updatedAt = now,
+                )
+
+        private const val SUBAGENT_FALLBACK_TYPE = "subagent"
+
         fun initialFromArguments(argumentsJson: String): SubagentActivitySnapshot? = runCatching {
             val args = JSONObject(argumentsJson)
             val resumeId = args.optString("resume").trim()

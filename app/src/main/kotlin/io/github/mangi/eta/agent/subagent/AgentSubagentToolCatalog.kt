@@ -35,7 +35,8 @@ internal object AgentSubagentToolCatalog {
             append("Start an asynchronous isolated subtask. Returns a task ID and actual state immediately, NOT a completed summary. ")
             append("Up to 16 invocations per parent run (4 executing concurrently; others queue). Create specialized ephemeral subagents without saving templates, ")
             append("or use one of the preset types below. When multiple independent subtasks can run in parallel, issue multiple `subagent` tool calls in the same turn — the runtime executes them concurrently.\n\n")
-            append("Use subagent_control to wait (wakes on user input, decisions or termination), query, guide, pause, continue or cancel a specific task. Do independent work while it runs. Ordinary user progress questions do not cancel tasks or broadcast steering. Keep full required constraints and corrections; no fixed report length. Acknowledge/resolve paused tasks and collect results before ending the parent run.\n\n")
+            append("Use subagent_control to wait (wakes on user input, decisions, a coordination report or termination), query, guide, pause, continue or cancel a specific task. Do independent work while it runs. Ordinary user progress questions do not cancel tasks or broadcast steering. Keep full required constraints and corrections; no fixed report length. Acknowledge/resolve paused tasks and collect results before ending the parent run.\n\n")
+            append("Soft budgets: a child pauses at a safe boundary when its wall time, rounds or observed tokens reach the grant window. status reports which dimension hit plus window vs cumulative usage; continue grants one new window and can adjust max_time_seconds/max_rounds/max_tokens in the same call. Coder/engineering children default to 6000000 observed tokens, read-only profiles to 300000; the counter sums each round's input+output (including repeated history), not context size or net billing.\n\n")
             append("Writing the prompt:\n")
             append("- A fresh subagent starts with zero conversation history. State the goal clearly and include any known file paths, time ranges, package names, or constraints.\n")
             append("- Prefer resuming an existing subagent (pass its `resume` id) when continuing earlier work so it retains its prior context.\n")
@@ -103,11 +104,13 @@ internal object AgentSubagentToolCatalog {
                     ),
             )
         properties.put("max_time_seconds", JSONObject().put("type", "integer").put("minimum", 1).put("maximum", 7200)
-            .put("description", "Wall-time soft budget per explicit grant, default 900s; pause at the next complete-turn boundary."))
+            .put("description", "Wall-time soft budget per explicit grant, default 900s; a queued task starts counting when it actually runs. Pause happens at the next complete-turn boundary."))
         properties.put("max_rounds", JSONObject().put("type", "integer").put("minimum", 1).put("maximum", 1000)
-            .put("description", "Successful model-round soft budget, default 100."))
+            .put("description", "Successful model-round soft budget per grant, default 100."))
         properties.put("max_tokens", JSONObject().put("type", "integer").put("minimum", 1).put("maximum", 10000000)
-            .put("description", "Observed input+output token soft budget, default 300000; missing usage remains unknown, not estimated billing."))
+            .put("description", "Observed input+output token soft budget per grant. Default by profile: coder/engineering 6000000, read-only profiles 300000." +
+                " The counter accumulates every round's input+output, including repeated history, so it is neither the context length nor the post-cache bill." +
+                " Missing usage stays unknown, never estimated."))
         val parameters = JSONObject()
             .put("type", "object")
             .put("properties", properties)
@@ -122,23 +125,33 @@ internal object AgentSubagentToolCatalog {
 
     fun controlSchema(): JSONObject = AgentToolSchema.function(
         name = CONTROL_TOOL_NAME,
-        description = "Control only children owned by this parent run. status lists state; result reads the actual result; wait blocks up to 60s without repeated model calls and wakes on user steering, decision or terminal event. guide queues complete text for the target's next safe boundary, not immediate understanding; revise=true advances the goal revision and old-revision results cannot count as its completion. pause is requested until acknowledged at a safe boundary, continue grants another explicit budget window, cancel affects only this task and does not roll back executed commands. Running tasks use guide, not concurrent resume. Handle every active task before ending the parent run.",
+        description = "Control only children owned by this parent run. status lists state (including window vs cumulative budget usage and pause_detail); result reads the actual result; wait blocks up to 60s without repeated model calls and wakes on user steering, a decision, a coordination report or terminal event. guide queues complete text for the target's next safe boundary, not immediate understanding; it does not resume a paused task. revise=true advances the goal revision and old-revision results cannot count as its completion. pause is requested until acknowledged at a safe boundary. continue grants one new budget window and may adjust max_time_seconds/max_rounds/max_tokens in the same call (omitted fields keep the current value; invalid values change nothing); text passed to continue is delivered as guidance in that new window. cancel affects only this task and does not roll back executed commands. Running tasks use guide, not concurrent resume. Handle every active task before ending the parent run.",
         parameters = JSONObject().put("type", "object").put("additionalProperties", false)
             .put("required", JSONArray(listOf("action"))).put("properties", JSONObject()
                 .put("action", JSONObject().put("type", "string").put("enum", JSONArray(listOf("status", "result", "wait", "guide", "pause", "continue", "cancel"))))
                 .put("task_id", JSONObject().put("type", "string").put("description", "Exact task_id or subagent_id returned by launch. Required for guide/pause/continue/cancel."))
-                .put("text", JSONObject().put("type", "string").put("maxLength", 32000).put("description", "Complete guidance, constraints, corrections and necessary evidence; do not mechanically shorten."))
+                .put("text", JSONObject().put("type", "string").put("maxLength", 32000)
+                    .put("description", "Complete guidance, constraints, corrections and necessary evidence; do not mechanically shorten. For continue it is delivered in the new budget window."))
                 .put("revise", JSONObject().put("type", "boolean").put("description", "Advance goal revision only for a material change in objective, not normal progress questions."))
+                .put("max_time_seconds", JSONObject().put("type", "integer").put("minimum", 1).put("maximum", 7200)
+                    .put("description", "continue only: replace the wall-time budget of the new window; omit to keep the current value."))
+                .put("max_rounds", JSONObject().put("type", "integer").put("minimum", 1).put("maximum", 1000)
+                    .put("description", "continue only: replace the round budget of the new window; omit to keep the current value."))
+                .put("max_tokens", JSONObject().put("type", "integer").put("minimum", 1).put("maximum", 10000000)
+                    .put("description", "continue only: replace the observed input+output token budget of the new window; omit to keep the current value."))
                 .put("timeout_ms", JSONObject().put("type", "integer").put("minimum", 1).put("maximum", 60000))),
     )
 
     fun reportSchema(): JSONObject = AgentToolSchema.function(
         name = REPORT_TOOL_NAME,
-        description = "Send a stage report to your parent, not the end user. Include confirmed facts with evidence, current work, next steps, blockers/decision and validation scope. Required at key findings, scope expansion, before out-of-scope edits and blockers. No fixed word count; do not drop necessary instructions/evidence. Ordinary reports queue for the next parent request without triggering a model call. needs_decision=true wakes the parent and pauses you at a safe complete-turn boundary. No hidden chain-of-thought or fabricated progress.",
+        description = "Send a stage report to your parent, not the end user. kind=coordination (default, also for legacy calls without kind) is kept in full and wakes a waiting parent without pausing you; use it for key findings, scope expansion, before out-of-scope edits, blockers and interface decisions. kind=final marks the handoff before you finish. kind=progress only updates your task detail and never enters the parent mailbox, so ordinary progress stays quiet; choose it explicitly for routine updates. needs_decision=true always wins over kind and pauses you at a safe complete-turn boundary. Include confirmed facts with evidence, current work, next steps and validation scope; no fixed word count and do not drop necessary instructions/evidence. No hidden chain-of-thought or fabricated progress.",
         parameters = JSONObject().put("type", "object").put("additionalProperties", false)
             .put("required", JSONArray(listOf("text"))).put("properties", JSONObject()
                 .put("text", JSONObject().put("type", "string").put("minLength", 1).put("maxLength", 32000))
-                .put("needs_decision", JSONObject().put("type", "boolean"))),
+                .put("kind", JSONObject().put("type", "string").put("enum", JSONArray(listOf("coordination", "progress", "final")))
+                    .put("description", "coordination (default): key facts the parent must see, wakes it without pausing you. progress: ordinary updates, detail only. final: completed handoff."))
+                .put("needs_decision", JSONObject().put("type", "boolean")
+                    .put("description", "true when the parent must choose before you continue; overrides kind=progress."))),
     )
 
     fun profileToolSchema(): JSONObject {
