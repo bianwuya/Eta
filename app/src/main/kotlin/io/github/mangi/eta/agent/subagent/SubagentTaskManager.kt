@@ -382,7 +382,8 @@ internal class SubagentTaskManager(
         }
         override fun beforeFinish(): List<String> {
             // Do not seal the parent while a child is active. No repeated model polls on ordinary activity.
-            while (active() && !important() && !needsDecision() && !parent.hasPendingSteering) {
+            while (active() && !important() && !needsDecision() && !parent.hasPendingSteering &&
+                !parent.hasPendingConversationMessages) {
                 parent.awaitActivity(60_000) { important() || needsDecision() || !active() }
             }
             val messages = drain()

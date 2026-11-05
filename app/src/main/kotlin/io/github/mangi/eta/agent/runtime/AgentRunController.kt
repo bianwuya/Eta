@@ -122,7 +122,7 @@ internal class AgentRunController {
         emptyList()
     }
 
-    private val hasPendingConversationMessages: Boolean
+    val hasPendingConversationMessages: Boolean
         get() = lock.withLock { conversationMessages.isNotEmpty() }
 
     /**
