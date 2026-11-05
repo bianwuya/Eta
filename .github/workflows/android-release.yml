@@ -167,8 +167,9 @@ jobs:
           "$apksigner_path" verify "${debug_apks[0]}"
           expected_cert='a7a92cca03f7d7390ab74001c97efbfe4ff4289b0dc4ffa21d6ebc3cee1c81a8'
           for apk in "${debug_apks[0]}" "${release_apks[0]}"; do
-            cert_info="$("$apksigner_path" verify --print-certs "$apk")"
-            cert="$(printf '%s\n' "$cert_info" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | tr -d '\r')"
+            # Parse the actual X.509 certificate, not version-dependent apksigner labels.
+            cert_info="$("$apksigner_path" verify --print-certs-pem "$apk")"
+            cert="$(printf '%s\n' "$cert_info" | sed -n '/-----BEGIN CERTIFICATE-----/,/-----END CERTIFICATE-----/p' | openssl x509 -noout -fingerprint -sha256 | cut -d= -f2 | tr -d ':\r' | tr '[:upper:]' '[:lower:]')"
             printf 'APK: %s\nExpected certificate SHA256: %s\nActual certificate SHA256: %s\n' "$apk" "$expected_cert" "$cert"
             if [[ "$cert" != "$expected_cert" ]]; then
               echo "::error::APK 签名与现有个人版证书不一致。"
