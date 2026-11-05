@@ -44,7 +44,7 @@ internal class SubagentTaskManager(
              */
             fun overridden(base: Budget, args: JSONObject): Budget = base.copy(
                 seconds = args.longOverride("max_time_seconds", base.seconds, 1, MAX_SECONDS),
-                rounds = args.longOverride("max_rounds", base.rounds.toLong(), 1, MAX_ROUNDS).toInt(),
+                rounds = args.longOverride("max_rounds", base.rounds.toLong(), 1, MAX_ROUNDS.toLong()).toInt(),
                 tokens = args.longOverride("max_tokens", base.tokens, 1, MAX_TOKENS),
             )
 
