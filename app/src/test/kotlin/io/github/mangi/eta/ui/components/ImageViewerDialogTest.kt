@@ -30,6 +30,7 @@ import androidx.compose.ui.semantics.getOrNull
 import io.github.mangi.eta.R
 import io.github.mangi.eta.local.richcontent.LocalPreviewFiles
 import io.github.mangi.eta.local.richcontent.RichPreviewScreen
+import io.github.mangi.eta.local.richcontent.decodePreviewImage
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.time.Duration
@@ -159,6 +160,10 @@ class ImageViewerDialogTest {
         val bitmap = Bitmap.createBitmap(64, 32, Bitmap.Config.ARGB_8888)
         try {
             file.outputStream().use { assertTrue(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
+            // Report a decode failure directly instead of mistaking it for a missing Dialog.
+            val decoded = decodePreviewImage(activity, file.path)
+            assertEquals(64, decoded.width)
+            assertEquals(32, decoded.height)
             val routeOpen = mutableStateOf(true)
             var backs = 0
             var routeDisposals = 0
