@@ -2,7 +2,7 @@ package io.github.mangi.eta.agent.model
 
 import io.github.mangi.eta.agent.runtime.AgentRunController
 import io.github.mangi.eta.agent.tool.AgentToolCapabilities
-import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.atomic.AtomicInteger
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -146,7 +146,7 @@ class AgentModelClientConversationMessageTest {
             parallelToolCalls = false,
         )
 
-        private val next = AtomicReference(0)
+        private val next = AtomicInteger(0)
 
         override fun complete(
             request: ProviderRequest,
