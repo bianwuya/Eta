@@ -143,12 +143,11 @@ internal object AgentRunCheckpointStore {
         }
     }
 
-    fun saveTranscript(context: Context, runId: String, transcript: List<AgentModelClient.ConversationMessage>) {
+    fun saveTranscript(context: Context, runId: String, transcript: List<AgentModelClient.ConversationMessage>): Boolean =
         runBlocking(Dispatchers.IO) {
             EtaDatabase.get(context.applicationContext).runtimeRunDao()
                 .updateTranscript(runId, AgentConversationCodec.encodeTranscriptForStorage(transcript))
         }
-    }
 
     fun saveContext(context: Context, runId: String, snapshot: AgentContextSnapshot) {
         runBlocking(Dispatchers.IO) {

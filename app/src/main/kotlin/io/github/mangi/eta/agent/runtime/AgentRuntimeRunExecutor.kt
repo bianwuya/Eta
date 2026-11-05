@@ -188,12 +188,13 @@ internal class AgentRuntimeRunExecutor(
             fun localTools(
                 gui: GuiControlCoordinator.RunControl?,
                 conversationExecutor: AgentModelClient.ToolExecutor? = null,
+                toolController: AgentRunController = runController,
             ) = AgentLocalTools(
                 context = appContext,
                 logger = AndroidAgentLogger,
                 browserRunId = request.runId,
-                runController = runController,
-                userQuestions = io.github.mangi.eta.local.userquestions.UserQuestionHost(appContext, conversationId, request.runId, runController),
+                runController = toolController,
+                userQuestions = io.github.mangi.eta.local.userquestions.UserQuestionHost(appContext, conversationId, request.runId, toolController),
                 browserSession = BrowserSessionRegistry.get(browserKey),
                 guiControl = gui,
                 browserToolsEnabled = {
@@ -299,7 +300,7 @@ internal class AgentRuntimeRunExecutor(
                 },
                 capabilitiesProvider = { AgentToolCapabilities.capture(appContext) },
                 baseToolExecutor = routingExecutor,
-                childToolFactory = { RoutingToolExecutor(localTools(null), McpToolExecutor(mcpSnapshot)) },
+                childToolFactory = { child -> RoutingToolExecutor(localTools(null, toolController = child), McpToolExecutor(mcpSnapshot)) },
                 detailStoreFactory = { io.github.mangi.eta.agent.subagent.SubagentDetailStore(appContext) },
                 skillContext = skillContext,
                 memoryContext = memoryContext,
@@ -360,7 +361,7 @@ internal class AgentRuntimeRunExecutor(
             // UI and archive-capable external handoffs have durable in-flight recovery. A caller
             // without a recoverable handoff retains the synchronous protocol.
             if (checkpointRecorder != null && request.operation == AgentRuntimeWire.OP_CHAT) {
-                val store = AgentSubagentCheckpoint(appContext, request.runId)
+                val store = AgentSubagentCheckpoint(appContext, request.runId) { runController.isCancelled }
                 childCheckpoint = store
                 session.setChildRecovery { transcript -> AgentSubagentCheckpoint.recover(appContext, request.runId, transcript) }
                 childOwner = io.github.mangi.eta.agent.subagent.YieldableSubagents(
@@ -394,7 +395,11 @@ internal class AgentRuntimeRunExecutor(
                     session.commitContext(committed) { AgentRunCheckpointStore.saveContext(appContext, request.runId, committed) }
                 },
                 onTranscript = { transcript ->
-                    session.commitTranscript(transcript) { AgentRunCheckpointStore.saveTranscript(appContext, request.runId, transcript) }
+                    session.commitTranscript(transcript) {
+                        val saved = AgentRunCheckpointStore.saveTranscript(appContext, request.runId, transcript)
+                        // Non-handoff callers retain their existing in-memory synchronous path.
+                        check(checkpointRecorder == null || saved) { "运行中的 transcript 检查点不存在" }
+                    }
                 },
                 capabilitiesProvider = { AgentToolCapabilities.capture(appContext) },
                 prompt = request.prompt,
@@ -438,8 +443,10 @@ internal class AgentRuntimeRunExecutor(
             val abortFailure = runCatching { childOwner?.abort() }.exceptionOrNull()
             // 中断并不改变会话的系统前缀；保留记忆 pin，避免此前 own-write 后重新注入最新快照。
             // 外部记忆变化仍由 contextFor 检测；真正压缩历史时由 onContextSnapshot 失效。
-            cancelled = runController.isCancelled || throwable is AgentRunCancelledException
             val modelFailure = throwable as? AgentModelExecutionException
+            cancelled = runController.isCancelled || throwable is AgentRunCancelledException ||
+                throwable is java.util.concurrent.CancellationException ||
+                modelFailure?.cause is AgentRunCancelledException || modelFailure?.cause is java.util.concurrent.CancellationException
             val message = if (cancelled) {
                 "已停止"
             } else {

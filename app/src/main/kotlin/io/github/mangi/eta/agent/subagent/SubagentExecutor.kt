@@ -35,7 +35,7 @@ internal class SubagentExecutor(
     private val requestStatsEpoch: () -> String? = { null },
     private val compactionTarget: ((AgentModelClient.ModelConfig) -> AgentCompactionTarget)? = null,
     private val nanoTime: () -> Long = System::nanoTime,
-    private val childToolFactory: (() -> AgentModelClient.ToolExecutor)? = null,
+    private val childToolFactory: ((AgentRunController) -> AgentModelClient.ToolExecutor)? = null,
     private val detailStoreFactory: (() -> SubagentDetailStore)? = null,
 ) {
     private val latestSnapshots = ConcurrentHashMap<String, String>()
@@ -119,6 +119,8 @@ internal class SubagentExecutor(
             )
         } catch (failure: Exception) {
             SubagentSessionStore.releaseRunning(conversationKey, entry.subagentId)
+            if (failure is AgentRunCancelledException || failure is java.util.concurrent.CancellationException) throw failure
+            if (parentController.isCancelled) throw AgentRunCancelledException()
             failureResult(toolCall, "SUBAGENT_START_FAILED", failure.message ?: "启动失败")
         }
     }
@@ -142,6 +144,8 @@ internal class SubagentExecutor(
         var detailStoreForCleanup: SubagentDetailStore? = null
         try {
         val resolvedConfig = runCatching { configProvider() }.getOrElse { throwable ->
+            if (throwable is AgentRunCancelledException || throwable is java.util.concurrent.CancellationException) throw throwable
+            if (parentController.isCancelled || childController.isCancelled) throw AgentRunCancelledException()
             SubagentSessionStore.releaseRunning(conversationKey, subagentId)
             val message = throwable.message ?: "无法加载 Subagent 模型配置"
             // 启动失败必须是真实失败状态，不能停留在合成卡片初始的“正在启动”。
@@ -227,7 +231,7 @@ internal class SubagentExecutor(
 
         publishSnapshot(force = true)
 
-        ownedTools = childToolFactory?.invoke()
+        ownedTools = childToolFactory?.invoke(childController)
         val tools = ownedTools ?: baseToolExecutor
         toolBinding = (ownedTools as? AutoCloseable)?.let { childController.register { it.close() } }
 
@@ -335,6 +339,8 @@ internal class SubagentExecutor(
                     publishSnapshot(force = force)
                 },
             )
+            // A child stopped while the model returned must not publish a successful completion.
+            childController.throwIfCancelled()
             val updatedHistory = SubagentContinuation.history(
                 priorHistory,
                 prompt,
@@ -377,9 +383,11 @@ internal class SubagentExecutor(
                 tracker.partialOutput()
             }
 
+            val cancellationCause = (throwable as? AgentModelExecutionException)?.cause
             val cancelled = parentController.isCancelled ||
                 childController.isCancelled ||
-                throwable is AgentRunCancelledException
+                throwable is AgentRunCancelledException || throwable is java.util.concurrent.CancellationException ||
+                cancellationCause is AgentRunCancelledException || cancellationCause is java.util.concurrent.CancellationException
             val errorMessage = if (cancelled) {
                 "已停止"
             } else {
@@ -390,11 +398,12 @@ internal class SubagentExecutor(
             } else {
                 tracker.markFailed(errorMessage, partial)
             }
-            publishSnapshot(force = true)
-
-            if (parentController.isCancelled) {
+            if (cancelled) {
+                // Display failures must not turn cancellation into a startup error.
+                runCatching { publishSnapshot(force = true) }
                 throw AgentRunCancelledException()
             }
+            publishSnapshot(force = true)
 
             AgentModelClient.ToolResult(
                 content = JSONObject()

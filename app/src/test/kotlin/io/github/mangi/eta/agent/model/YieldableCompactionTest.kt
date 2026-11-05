@@ -33,7 +33,7 @@ class YieldableCompactionTest {
         val image = AgentModelClient.ModelImage("data:image/png;base64,aW1hZ2U=", "image/png", 5)
         val storage = object : YieldableSubagents.Persistence {
             override fun started(taskId: String, toolCallId: String, round: Int, subagentId: String, prompt: String, accepted: String) = Unit
-            override fun finished(taskId: String, report: String) = Unit
+            override fun finished(taskId: String, report: String) = true
             override fun interrupted() = Unit
         }
         val owner = YieldableSubagents(controller, storage) { _, start ->

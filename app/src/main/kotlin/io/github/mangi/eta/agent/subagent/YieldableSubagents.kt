@@ -2,6 +2,8 @@ package io.github.mangi.eta.agent.subagent
 
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.agent.runtime.AgentRunController
+import io.github.mangi.eta.agent.runtime.AgentRunCancelledException
+import java.util.concurrent.CancellationException
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import org.json.JSONObject
@@ -15,7 +17,8 @@ internal class YieldableSubagents(
 ) : AutoCloseable {
     interface Persistence {
         fun started(taskId: String, toolCallId: String, round: Int, subagentId: String, prompt: String, accepted: String)
-        fun finished(taskId: String, report: String)
+        /** False means the stop boundary won and the result must not be queued as complete. */
+        fun finished(taskId: String, report: String): Boolean
         fun interrupted()
     }
 
@@ -55,7 +58,7 @@ internal class YieldableSubagents(
                     }
                     if (!accepted) {
                         acknowledgement = result
-                    } else {
+                    } else if (!controller.isCancelled) {
                         try {
                             complete(taskId, report(taskId, prompt, result.content))
                         } catch (storageFailure: Throwable) {
@@ -63,8 +66,11 @@ internal class YieldableSubagents(
                         }
                     }
                 } catch (failure: Throwable) {
-                    val error = JSONObject().put("ok", false).put("code", "SUBAGENT_FAILED")
-                        .put("message", failure.message ?: failure.javaClass.simpleName).toString()
+                    val cancelled = failure is AgentRunCancelledException || failure is CancellationException || controller.isCancelled
+                    val error = JSONObject().put("ok", false)
+                        .put("code", if (cancelled) "SUBAGENT_CANCELLED" else "SUBAGENT_FAILED")
+                        .put("status", if (cancelled) "cancelled" else "failed")
+                        .put("message", if (cancelled) "子任务已停止；已发出的副作用需要核实。" else failure.message ?: failure.javaClass.simpleName).toString()
                     if (!accepted) acknowledgement = AgentModelClient.ToolResult(error)
                     else if (!controller.isCancelled) {
                         try {
@@ -74,7 +80,7 @@ internal class YieldableSubagents(
                         }
                     }
                 } finally {
-                    if (!accepted) synchronized(lock) { active.remove(taskId) }
+                    if (!accepted || controller.isCancelled) synchronized(lock) { active.remove(taskId) }
                     started.countDown()
                     controller.signalWorkAvailable()
                 }
@@ -99,10 +105,10 @@ internal class YieldableSubagents(
 
     private fun complete(taskId: String, content: String) {
         // Store full report before it is made available for delivery or marked complete.
-        persistence.finished(taskId, content)
+        val committed = persistence.finished(taskId, content)
         synchronized(lock) {
             active.remove(taskId)
-            reports[taskId] = Report(taskId, content)
+            if (committed) reports[taskId] = Report(taskId, content)
         }
         controller.signalWorkAvailable()
     }

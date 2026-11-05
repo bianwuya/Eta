@@ -11,25 +11,36 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /** Full reports in the existing chunk store, separate from bounded UI previews. */
-internal class AgentSubagentCheckpoint(context: Context, private val runId: String) : YieldableSubagents.Persistence {
+internal class AgentSubagentCheckpoint(
+    context: Context,
+    private val runId: String,
+    private val parentCancelled: () -> Boolean = { false },
+) : YieldableSubagents.Persistence {
     private val db = EtaDatabase.get(context.applicationContext)
     private var stopped = false
 
     @Synchronized
     override fun started(taskId: String, toolCallId: String, round: Int, subagentId: String, prompt: String, accepted: String) {
-        check(!stopped) { "运行已停止" }
+        if (stopped || parentCancelled()) throw AgentRunCancelledException()
         update { tasks -> tasks.put(JSONObject().put("task_id", taskId).put("subagent_id", subagentId)
             .put("tool_call_id", toolCallId).put("round", round).put("accepted", accepted)
             .put("prompt", prompt).put("state", "running")) }
     }
 
     @Synchronized
-    override fun finished(taskId: String, report: String) {
-        if (stopped) return
+    override fun finished(taskId: String, report: String): Boolean {
+        // Stop sets the controller flag before it cancels children. This guard closes the gap
+        // before interrupted() reaches the database; a completed record wins only before stop.
+        if (stopped || parentCancelled()) return false
+        var committed = false
         update { tasks ->
             val task = find(tasks, taskId) ?: error("子代理启动记录不存在")
-            if (task.optString("state") == "running") task.put("state", "finished").put("report", report)
+            if (task.optString("state") == "running") {
+                task.put("state", "finished").put("report", report)
+                committed = true
+            }
         }
+        return committed
     }
 
     @Synchronized

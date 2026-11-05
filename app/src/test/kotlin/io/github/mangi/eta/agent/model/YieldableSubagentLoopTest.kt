@@ -18,7 +18,7 @@ class YieldableSubagentLoopTest {
         val started = Collections.synchronizedList(mutableListOf<String>())
         val finished = Collections.synchronizedList(mutableListOf<String>())
         override fun started(taskId: String, toolCallId: String, round: Int, subagentId: String, prompt: String, accepted: String) { started += taskId }
-        override fun finished(taskId: String, report: String) { finished += taskId }
+        override fun finished(taskId: String, report: String): Boolean { finished += taskId; return true }
         override fun interrupted() = Unit
     }
 

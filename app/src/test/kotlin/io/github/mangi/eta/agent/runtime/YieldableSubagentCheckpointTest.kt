@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.room.withTransaction
 import kotlinx.coroutines.runBlocking
 import io.github.mangi.eta.agent.model.AgentModelClient
+import io.github.mangi.eta.agent.subagent.YieldableSubagents
 import io.github.mangi.eta.data.db.EtaDatabase
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -48,6 +49,24 @@ class YieldableSubagentCheckpointTest {
         assertFalse(stopped.last().content.contains("late result"))
         AgentSubagentCheckpoint.remove(context, run)
         assertEquals(old, AgentSubagentCheckpoint.recover(context, run, old))
+    }
+
+    @Test fun transcriptWriteReportsMissingInFlightRowAndPreservesCommittedSnapshot() {
+        val run = "missing-transcript-row"
+        val request = AgentRuntimeWire.RunRequest(runId = run, prompt = "test", images = emptyList(),
+            config = AgentModelClient.ModelConfig(baseUrl = "https://example.invalid", apiKey = "fixture", model = "fixture", systemPrompt = ""),
+            handoff = AgentRuntimeWire.EntryHandoff(run, AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE, "conversation"))
+        assertTrue(AgentRunCheckpointStore.start(context, request))
+        val session = AgentRuntimeSession(run)
+        val previous = listOf(AgentModelClient.ConversationMessage(role = "assistant", content = "已保存"))
+        session.commitTranscript(previous) { check(AgentRunCheckpointStore.saveTranscript(context, run, previous)) }
+        AgentRunCheckpointStore.remove(context, run)
+        val pending = listOf(AgentModelClient.ConversationMessage(role = "assistant", content = "工具声明"))
+        assertFalse(AgentRunCheckpointStore.saveTranscript(context, run, pending))
+        assertThrows(IllegalStateException::class.java) {
+            session.commitTranscript(pending) { check(AgentRunCheckpointStore.saveTranscript(context, run, pending)) }
+        }
+        assertEquals(previous, session.transcript)
     }
 
     @Test fun checkpointListPreservesBatchAndAppendsRecoveredReportAfterToolPairing() {
@@ -210,6 +229,76 @@ class YieldableSubagentCheckpointTest {
         assertTrue(result.error.orEmpty().contains("中断"))
         assertEquals("完整最终报告", result.transcript.last().content)
         assertTrue(AgentRunCheckpointStore.list(context).isEmpty())
+    }
+
+    @Test fun acceptedChildCancellationCannotWinAsFinishedBeforeInterruptedCallback() {
+        val run = "cancel-gap"
+        val parent = AgentRunController()
+        val child = AgentRunController()
+        val entered = CountDownLatch(1); val release = CountDownLatch(1); val workerReturned = CountDownLatch(1)
+        child.register { entered.countDown(); check(release.await(5, TimeUnit.SECONDS)) }
+        val binding = parent.registerChild(child)
+        val store = AgentSubagentCheckpoint(context, run) { parent.isCancelled }
+        store.started("prior", "earlier", 1, "sub_0", "先前任务", "accepted")
+        assertTrue(store.finished("prior", "取消前已完成"))
+        val owner = YieldableSubagents(parent, store) { _, start ->
+            start("sub_1", "")
+            check(entered.await(5, TimeUnit.SECONDS))
+            workerReturned.countDown()
+            AgentModelClient.ToolResult("""{"ok":false,"code":"SUBAGENT_START_FAILED"}""")
+        }
+        val ack = org.json.JSONObject(owner.launch(AgentModelClient.ToolCall("child", "subagent", """{"prompt":"任务","description":"检查"}""")).content)
+        val task = ack.getString("task_id")
+        val canceller = Thread { parent.cancel() }
+        try {
+            canceller.start(); assertTrue(entered.await(5, TimeUnit.SECONDS)); assertTrue(workerReturned.await(5, TimeUnit.SECONDS))
+            assertTrue(parent.isCancelled)
+            // The parent's sidecar callback is still blocked behind child.cancel().
+            assertFalse(store.finished(task, "SUBAGENT_START_FAILED"))
+            assertThrows(AgentRunCancelledException::class.java) {
+                store.started("late", "late-call", 2, "sub_2", "晚启动", "accepted")
+            }
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+            while (owner.decision() != YieldableSubagents.Decision.FINISH && System.nanoTime() < deadline) Thread.yield()
+            assertEquals(YieldableSubagents.Decision.FINISH, owner.decision())
+            assertTrue(owner.peekReports().isEmpty())
+            val recovered = AgentSubagentCheckpoint.recover(context, run, emptyList())
+            assertEquals("取消前已完成", recovered.first().content)
+            assertTrue(recovered.last().content.contains("interrupted"))
+            assertFalse(recovered.last().content.contains("SUBAGENT_START_FAILED"))
+        } finally {
+            release.countDown(); canceller.join(5000); owner.close(); binding.close()
+        }
+        val after = AgentSubagentCheckpoint.recover(context, run, emptyList())
+        assertTrue(after.last().content.contains("interrupted"))
+        assertFalse(after.last().content.contains("SUBAGENT_START_FAILED"))
+    }
+
+    @Test fun abortWithLiveParentDoesNotQueueCancelledChildAsFinished() {
+        val root = AgentRunController(); val group = AgentRunController()
+        val store = AgentSubagentCheckpoint(context, "abort-live-parent") { root.isCancelled }
+        val cancelled = CountDownLatch(1)
+        val owner = YieldableSubagents(root, store, cancelChildren = group::cancel) { _, start ->
+            val binding = group.register { cancelled.countDown() }
+            try {
+                start("sub_1", "")
+                check(cancelled.await(5, TimeUnit.SECONDS))
+                group.throwIfCancelled()
+                AgentModelClient.ToolResult("unexpected")
+            } finally { binding.close() }
+        }
+        try {
+            val ack = owner.launch(AgentModelClient.ToolCall("child", "subagent", """{"prompt":"任务","description":"检查"}"""))
+            assertEquals("accepted", org.json.JSONObject(ack.content).getString("status"))
+            owner.abort(); assertTrue(cancelled.await(5, TimeUnit.SECONDS)); assertFalse(root.isCancelled)
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+            while (owner.decision() != YieldableSubagents.Decision.FINISH && System.nanoTime() < deadline) Thread.yield()
+            assertEquals(YieldableSubagents.Decision.FINISH, owner.decision())
+            assertTrue(owner.peekReports().isEmpty())
+            val recovered = AgentSubagentCheckpoint.recover(context, "abort-live-parent", emptyList()).single()
+            assertTrue(recovered.content.contains("interrupted"))
+            assertFalse(recovered.content.contains("SUBAGENT_START_FAILED"))
+        } finally { owner.close(); group.cancel() }
     }
 
     @Test fun boundaryCollectsAllAlreadyArrivedGuidanceAndReportsInOrder() {

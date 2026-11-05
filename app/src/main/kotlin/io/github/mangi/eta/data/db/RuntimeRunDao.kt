@@ -46,9 +46,10 @@ internal interface RuntimeRunDao : ChunkedTextDao {
     suspend fun updateTranscriptRow(runId: String, transcript: String)
 
     @Transaction
-    suspend fun updateTranscript(runId: String, transcript: String) {
-        if (!hasInFlightRun(runId)) return
+    suspend fun updateTranscript(runId: String, transcript: String): Boolean {
+        if (!hasInFlightRun(runId)) return false
         updateTranscriptRow(runId, storeText("runtime_inflight_runs", runId, "transcriptJson", transcript))
+        return true
     }
 
     @Query("UPDATE runtime_inflight_runs SET context_snapshot_json = :snapshot WHERE run_id = :runId")

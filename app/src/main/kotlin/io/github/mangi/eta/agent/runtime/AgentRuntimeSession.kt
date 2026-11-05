@@ -37,7 +37,10 @@ internal class AgentRuntimeSession(
 
     /** Persist and publish one version under the same terminal-state lock. */
     fun commitTranscript(messages: List<AgentModelClient.ConversationMessage>, persist: () -> Unit) = lock.withLock {
-        if (state == State.RUNNING) { persist(); latestTranscript = messages }
+        // A rejected declaration must stop the loop before it can execute any tool.
+        if (state != State.RUNNING) throw AgentRunCancelledException()
+        persist()
+        latestTranscript = messages
     }
 
     private var recoverChildren: (List<AgentModelClient.ConversationMessage>) -> List<AgentModelClient.ConversationMessage> =
