@@ -69,9 +69,14 @@ class SubagentParentDirectiveTest {
         val second = requests.last()
         val injected = (0 until second.length()).map { second.getJSONObject(it) }
             .first { it.optBoolean("_eta_parent_agent_directive") }
-        assertEquals("assistant", injected.getString("role"))
+        assertEquals("user", injected.getString("role"))
+        assertTrue(injected.getBoolean("_eta_runtime_parent_directive"))
         assertTrue(injected.getString("content").contains("改查日志"))
         assertTrue(injected.getString("content").contains("不是终端用户发言"))
+        assertTrue(response.transcript.any {
+            it.role == "assistant" && it.messageId.startsWith("parent-agent-") &&
+                it.content.contains("改查日志")
+        })
         assertFalse(child.hasPendingParentDirective)
     }
 }
