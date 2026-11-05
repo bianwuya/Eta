@@ -72,7 +72,10 @@ class YieldableCompactionTest {
                         AgentModelClient.ConversationMessage(role = "assistant", content = "旧回答".repeat(10_000))),
                     provider = provider, runController = controller, additionalTools = JSONArray().put(AgentSubagentToolCatalog.schema()),
                     yieldableSubagents = owner, onTranscript = { transcript ->
-                        if (transcript.any { it.role == "tool" && it.content.contains("accepted") }) accepted.countDown()
+                        if (accepted.count > 0 && transcript.any { it.role == "tool" && it.content.contains("accepted") }) {
+                            controller.pause()
+                            accepted.countDown()
+                        }
                     })
             } catch (t: Throwable) { failure = t }
         }
