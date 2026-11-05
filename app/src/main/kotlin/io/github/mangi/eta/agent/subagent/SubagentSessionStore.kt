@@ -16,6 +16,8 @@ internal object SubagentSessionStore {
         val profile: SubagentProfile,
         @Volatile var history: List<AgentModelClient.ConversationMessage> = emptyList(),
         val running: AtomicBoolean = AtomicBoolean(false),
+        /** Explicit parent cancellation is terminal; a later resume must not resurrect stale work. */
+        val explicitlyCancelled: AtomicBoolean = AtomicBoolean(false),
         val requestStatsBaseline: io.github.mangi.eta.local.subagentstats.SubagentRequestBaseline =
             io.github.mangi.eta.local.subagentstats.SubagentRequestBaseline(),
     )
