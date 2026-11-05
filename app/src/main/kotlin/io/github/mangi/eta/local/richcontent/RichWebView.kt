@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Color
 import android.net.Uri
+import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
@@ -65,8 +66,10 @@ internal class RichWebView(context: Context, scripts: Boolean, onBlocked: () -> 
         android.webkit.CookieManager.getInstance().setAcceptThirdPartyCookies(this, false)
         setDownloadListener { _, _, _, _, _ -> onBlocked() }
         webViewClient = object : WebViewClient() {
-            override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse {
+            override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
                 val uri = request.url
+                // Self-contained image/font data never needs a network or file loader.
+                if (!request.isForMainFrame && request.method == "GET" && isEmbeddedPreviewResource(uri.toString())) return null
                 if (request.method != "GET" || uri.scheme != "https" || uri.host != PREVIEW_HOST) {
                     post { if (!released) onBlocked() }
                     return denied()
@@ -102,6 +105,13 @@ internal class RichWebView(context: Context, scripts: Boolean, onBlocked: () -> 
                 onBlocked()
                 return true
             }
+            override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
+                // A failed font/image must not replace an otherwise usable document.
+                if (request.isForMainFrame && !released) onFailed()
+            }
+            override fun onReceivedHttpError(view: WebView, request: WebResourceRequest, errorResponse: WebResourceResponse) {
+                if (request.isForMainFrame && !released) onFailed()
+            }
             override fun onRenderProcessGone(view: WebView, detail: android.webkit.RenderProcessGoneDetail): Boolean {
                 post { if (!released) onFailed() }
                 return true
@@ -129,8 +139,10 @@ internal class RichWebView(context: Context, scripts: Boolean, onBlocked: () -> 
         page = html
         loadedOnce = true
         scrollRestored = false
-        // 位置恢复放在页面完成之后，避免在空白文档上滚动被后续布局归零。
-        loadUrl(PREVIEW_URL)
+        // The HTML is already in memory: load it directly instead of making the
+        // main document depend on an intercepted synthetic HTTPS navigation.
+        // Keep the same private HTTPS origin for CSP and relative local resources.
+        loadDataWithBaseURL(PREVIEW_URL, html, "text/html", "UTF-8", null)
         return true
     }
 
@@ -178,14 +190,22 @@ private fun response(type: String, bytes: ByteArray) = WebResourceResponse(
 private fun denied() = WebResourceResponse("text/plain", "UTF-8", 403, "Blocked", emptyMap(), ByteArrayInputStream(byteArrayOf()))
 
 internal fun previewHtml(source: String): String {
+    require(source.isNotBlank()) { "HTML 文件为空" }
     val doc = org.jsoup.Jsoup.parse(source)
     // Preserve original CSS and scripts; network/native access is governed by CSP and the client above.
     doc.head().prependElement("meta").attr("http-equiv", "Content-Security-Policy").attr("content",
         "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; " +
-            "img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'none'; object-src 'none'; " +
+            "img-src 'self' data:; font-src 'self' data:; connect-src 'self'; frame-src 'none'; object-src 'none'; " +
             "base-uri 'none'; form-action 'none'")
     if (doc.selectFirst("meta[name=viewport]") == null) {
         doc.head().appendElement("meta").attr("name", "viewport").attr("content", "width=device-width, initial-scale=1")
     }
     return doc.outerHtml()
+}
+
+/** Only passive inline resources may bypass the local response loader; never a data: document. */
+internal fun isEmbeddedPreviewResource(url: String): Boolean {
+    val mime = url.substringBefore(',').substringBefore(';').lowercase()
+    return mime.startsWith("data:image/") || mime.startsWith("data:font/") ||
+        mime in setOf("data:application/font-woff", "data:application/x-font-woff", "data:application/x-font-ttf")
 }

@@ -4,9 +4,6 @@ import android.graphics.BitmapFactory
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.Image
-import androidx.compose.foundation.gestures.rememberTransformableState
-import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -19,18 +16,15 @@ import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clipToBounds
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import io.github.mangi.eta.ui.components.ImageViewerDialog
 import io.github.mangi.eta.ui.components.MiuixScaffold
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -52,7 +46,7 @@ internal fun RichPreviewScreen(reference: String, onBack: () -> Unit) {
     var showSource by rememberSaveable(reference) { mutableStateOf(false) }
     var scripts by rememberSaveable(reference) { mutableStateOf(false) }
     var blocked by remember(generation, scripts) { mutableStateOf(false) }
-    var rendererFailed by remember(generation, scripts) { mutableStateOf(false) }
+    var rendererFailed by remember(reference, generation, scripts) { mutableStateOf(false) }
     // 滚动位置放在普通持有者里：滚动时只写这一个 int，不触发重组，也不重建 WebView。
     // 用 Saver 交给 rememberSaveable 保存同一个值，深浅色/旋转变更后仍能回到原处。
     val scrollY = rememberSaveable(
@@ -77,7 +71,13 @@ internal fun RichPreviewScreen(reference: String, onBack: () -> Unit) {
             catch (e: Exception) { PreviewDocument(error = e.message ?: "无法读取文件") }
         }
     }
-    val image = document?.bitmap != null || LocalPreviewFiles.isImage(reference)
+    // The dialog owns image presentation. Dismissing it pops the route rather than
+    // exposing an empty preview screen behind it.
+    document?.bitmap?.let { bitmap ->
+        ImageViewerDialog(bitmap = bitmap, onDismiss = onBack)
+        return
+    }
+    val image = LocalPreviewFiles.isImage(reference)
     val source = document?.html
     val save = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/html")) { uri ->
         if (uri != null && source != null) scope.launch {
@@ -102,22 +102,30 @@ internal fun RichPreviewScreen(reference: String, onBack: () -> Unit) {
             when {
                 error != null -> BasicComponent(title = "无法预览", summary = "$error。请确认文件仍存在且已授予访问权限。")
                 document == null -> Box(Modifier.padding(24.dp)) { CircularProgressIndicator() }
-                image -> PreviewImage(requireNotNull(document?.bitmap))
                 showSource -> SelectionContainer {
                     val chunks = remember(source) { source.orEmpty().chunked(4000) }
                     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
                         items(chunks) { chunk -> Text(chunk, fontFamily = FontFamily.Monospace, modifier = Modifier.fillMaxWidth()) }
                     }
                 }
-                rendererFailed -> BasicComponent(title = "网页渲染已停止", summary = "可以查看源码或点击刷新重试。")
+                rendererFailed -> BasicComponent(title = "网页加载或渲染失败", summary = "可以查看源码或点击刷新重试。")
                 else -> {
                     Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.SpaceBetween) {
                         Text(if (scripts) "交互预览 · 禁止联网" else "静态预览 · 禁止联网", style = MiuixTheme.textStyles.footnote2, modifier = Modifier.weight(1f).padding(8.dp))
                         TextButton(text = if (scripts) "关闭脚本" else "启用交互", onClick = { scripts = !scripts })
                     }
                     if (blocked) Text("部分外链或资源已拦截；页面不会自动联网或调用手机工具。", style = MiuixTheme.textStyles.footnote2, modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp))
-                    val html by produceState<String?>(null, source) {
-                        value = withContext(Dispatchers.Default) { previewHtml(source.orEmpty()) }
+                    val prepared by produceState<Result<String>?>(null, source) {
+                        value = withContext(Dispatchers.Default) {
+                            try { Result.success(previewHtml(source.orEmpty())) }
+                            catch (e: CancellationException) { throw e }
+                            catch (e: Exception) { Result.failure(e) }
+                        }
+                    }
+                    val html = prepared?.getOrNull()
+                    when {
+                        prepared == null -> Box(Modifier.padding(24.dp)) { CircularProgressIndicator() }
+                        prepared?.isFailure == true -> BasicComponent(title = "无法预览", summary = prepared?.exceptionOrNull()?.message ?: "HTML 解析失败")
                     }
                     if (html != null) key(reference, generation, scripts, html) {
                         AndroidView(
@@ -147,18 +155,4 @@ internal fun decodePreviewImage(context: android.content.Context, reference: Str
     options.inSampleSize = 1
     while (maxOf(options.outWidth, options.outHeight) / options.inSampleSize > maxPixels) options.inSampleSize *= 2
     return (BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options) ?: error("图片解码失败")).asImageBitmap()
-}
-
-@Composable
-private fun PreviewImage(bitmap: ImageBitmap) {
-    var scale by remember(bitmap) { mutableFloatStateOf(1f) }
-    var offset by remember(bitmap) { mutableStateOf(Offset.Zero) }
-    val transform = rememberTransformableState { zoom, pan, _ ->
-        scale = (scale * zoom).coerceIn(1f, 5f)
-        offset = if (scale == 1f) Offset.Zero else offset + pan
-    }
-    Box(Modifier.fillMaxSize().clipToBounds().transformable(transform)) {
-        Image(bitmap, contentDescription = "本地图片，可双指缩放", contentScale = ContentScale.Fit,
-            modifier = Modifier.fillMaxSize().graphicsLayer { scaleX = scale; scaleY = scale; translationX = offset.x; translationY = offset.y })
-    }
 }
