@@ -115,6 +115,8 @@ internal class AgentLocalTools(
     private val guiControl: GuiControlCoordinator.RunControl? = null,
     browserSession: AgentBrowserSession? = null,
     private val userQuestions: io.github.mangi.eta.local.userquestions.UserQuestionHost? = null,
+    /** 仅主会话 run 注入；子代理与跨会话来源 run 不传，工具不会出现在其目录里。 */
+    private val conversationMessaging: AgentModelClient.ToolExecutor? = null,
 ) : AgentModelClient.ToolExecutor, AutoCloseable {
 
     private val closed = AtomicBoolean(false)
@@ -215,6 +217,12 @@ internal class AgentLocalTools(
                         "NO_OBSERVATION", "手机操作权已变化，请先调用 observe_screen 重新观察，再操作当前页面",
                     ))
                 }
+            }
+            val messaging = conversationMessaging
+            if (messaging != null && toolCall.name in
+                io.github.mangi.eta.local.conversationcommunication.ConversationMessagingToolCatalog.names
+            ) {
+                return@runCatching messaging.execute(toolCall)
             }
             val preparation = if (AgentToolRequirements.hasForegroundIntentFallback(toolCall.name)) {
                 ToolExecutionDecision.Allow

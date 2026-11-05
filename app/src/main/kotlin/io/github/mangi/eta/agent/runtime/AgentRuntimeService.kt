@@ -1,5 +1,6 @@
 package io.github.mangi.eta.agent.runtime
 
+import java.io.File
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import android.app.Service
@@ -57,6 +58,11 @@ import io.github.mangi.eta.agent.virtualdisplay.VirtualDisplayController
 import io.github.mangi.eta.agent.virtualdisplay.VirtualDisplaySnapshot
 import io.github.mangi.eta.config.Prefs
 import io.github.mangi.eta.core.AndroidAgentLogger
+import io.github.mangi.eta.local.conversationcommunication.ConversationMessageEnvelope
+import io.github.mangi.eta.local.conversationcommunication.ConversationMessageFileOutbox
+import io.github.mangi.eta.local.conversationcommunication.ConversationOutboxWrite
+import io.github.mangi.eta.local.conversationcommunication.ConversationOutcomeRecord
+import io.github.mangi.eta.local.conversationcommunication.ConversationTerminalOutcome
 import io.github.mangi.eta.core.ModuleConfig
 import io.github.mangi.eta.core.safeLogType
 import io.github.mangi.eta.data.repository.RuntimeConfigRepository
@@ -94,6 +100,11 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
 
     private val runs = RuntimeRunRegistry()
     private val guiControl = GuiControlCoordinator()
+
+    /** 跨会话消息与会话终态共用同一份原子写入记录；懒创建，避免服务启动即做文件 IO。 */
+    private val conversationOutbox by lazy {
+        ConversationMessageFileOutbox(File(filesDir, "conversation-communication/outbox.json"))
+    }
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     @Volatile private var destroyed = false
     @Volatile private var lastGuiOwnerRunId: String? = null
@@ -427,11 +438,13 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         request: AgentRuntimeWire.RunRequest,
         replyTo: Messenger?,
         incoming: AgentRuntimeWire.IncomingRunRequest? = null,
+        onRejected: (String) -> Unit = {},
     ): RuntimeRunRegistry.Run? {
         if (destroyed) {
             incoming?.close()
             sendRequestIngestedTo(replyTo, request.runId)
             sendResultTo(replyTo, AgentRuntimeWire.RunResult(request.runId, false, "", "Agent Runtime 服务已停止"))
+            onRejected("Agent Runtime 服务已停止")
             return null
         }
         val admission = runs.admit(request) {
@@ -482,6 +495,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                     request.runId, false, "", admission.message,
                     operation = request.operation, rewriteTargetMessageId = request.rewriteTargetMessageId,
                 ))
+                onRejected(admission.message)
                 return null
             }
         }
@@ -492,8 +506,11 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         ) { mainHandler.post { cancelRun(request.runId) } }
         if (!executionHeld && !allowBoundFallback) {
             failBeforeExecution(run, "无法启动后台执行服务，请返回 Eta 后重试")
+            onRejected("无法启动后台执行服务，请返回 Eta 后重试")
             return null
         }
+        // 新 run 被接纳即视为用户/入口重新开始该会话，清除上一次停止/暂停的阻塞标记。
+        clearConversationOutcome(AgentConversationIdentity.fromHandoff(request.handoff, request.runId))
         admission.replacedRuns.forEach { cancelRun(it.runId) }
         runCatching {
             startService(Intent(this, AgentRuntimeService::class.java).setAction(ACTION_KEEP_ALIVE))
@@ -535,6 +552,9 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     }
 
     private fun executeRun(run: RuntimeRunRegistry.Run) {
+        val conversationMessaging = conversationMessagingFor(run)
+        // 目标会话重新运行时补投此前排队的跨会话消息（只在完整 turn 边界交付）。
+        conversationMessaging?.service?.deliverQueued(run.conversationId, run.runId)
         val outcome = AgentRuntimeRunExecutor(
             context = this,
             guiControl = guiControl,
@@ -544,7 +564,19 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                 handleAcceptedRunEvent(run, event)
             },
             persistArtifacts = ::persistRunArtifacts,
+            conversationMessaging = conversationMessaging,
         ).execute(run.session, run.request)
+        if (!run.session.controller.isCancelled) {
+            recordConversationOutcome(
+                conversationId = run.conversationId,
+                outcome = if (outcome.result.ok) {
+                    ConversationTerminalOutcome.COMPLETED
+                } else {
+                    ConversationTerminalOutcome.FAILED
+                },
+                runId = run.runId,
+            )
+        }
         if (!outcome.shouldUpdateHost) return
         postTerminalOverlay(
             run = run,
@@ -558,6 +590,92 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                 }
             },
         )
+    }
+
+    /** 只有主会话 chat run 才注入跨会话工具；语音、归档与子代理路径保持原状。 */
+    private fun conversationMessagingFor(run: RuntimeRunRegistry.Run): AgentRuntimeConversationMessaging? {
+        val request = run.request
+        if (request.operation != AgentRuntimeWire.OP_CHAT) return null
+        if (request.handoff?.source != AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE) return null
+        val conversationId = AgentConversationIdentity.fromHandoff(request.handoff, request.runId)
+        if (conversationId.isBlank()) return null
+        return AgentRuntimeConversationMessaging(
+            context = this,
+            runs = runs,
+            runId = run.runId,
+            conversationId = conversationId,
+            outbox = conversationOutbox,
+            permissions = ::currentRuntimePermissions,
+            startRun = { request, envelope -> startCrossConversationRun(request, envelope) },
+            allowSend = request.origin != AgentRuntimeWire.RUN_ORIGIN_CONVERSATION_MESSAGE,
+        )
+    }
+
+    /**
+     * 为闲置会话按现有发送链路开启新 run；返回 null 表示已接纳，否则是真实拒绝原因。
+     *
+     * 跨会话正文不放进 user prompt：run 接纳后先排入控制器的运行时数据队列，
+     * 由 AgentLoop 在首个完整 turn 边界以 assistant 角色注入，避免伪装成用户发言。
+     */
+    private fun startCrossConversationRun(
+        request: AgentRuntimeWire.RunRequest,
+        envelope: ConversationMessageEnvelope,
+    ): String? {
+        var reason = "目标会话当前无法启动运行（可能已有任务或达到并发上限）"
+        val run = admitRun(
+            request = request,
+            replyTo = null,
+            incoming = null,
+            onRejected = { message -> reason = message },
+        ) ?: return reason
+        run.prepared(request)
+        run.session.controller.enqueueConversationMessage(
+            AgentRunController.ConversationInput(
+                messageId = envelope.messageId,
+                sourceConversationId = envelope.sourceConversationId,
+                sourceTitle = envelope.sourceTitle,
+                sourceRunId = envelope.sourceRunId,
+                createdAt = envelope.createdAt,
+                envelopeText = envelope.render(),
+            ),
+        )
+        executePreparedRun(run)
+        return null
+    }
+
+    private fun recordConversationOutcome(
+        conversationId: String,
+        outcome: ConversationTerminalOutcome,
+        runId: String,
+    ) {
+        if (conversationId.isBlank() || conversationId.startsWith("run:")) return
+        if (AgentConversationIdentity.isArchivedConversationId(conversationId)) return
+        val record = ConversationOutcomeRecord(conversationId, outcome, runId, System.currentTimeMillis())
+        dispatchResultIo {
+            when (val written = conversationOutbox.recordOutcome(record)) {
+                is ConversationOutboxWrite.Stored -> Unit
+                is ConversationOutboxWrite.Rejected -> AndroidAgentLogger.warnThrottled("conversation_outcome_rejected") {
+                    "Conversation outcome rejected: code=${written.code}"
+                }
+                is ConversationOutboxWrite.Failed -> AndroidAgentLogger.warnThrottled("conversation_outcome_failed") {
+                    "Conversation outcome write failed: reason=${written.message.take(120)}"
+                }
+            }
+        }
+    }
+
+    private fun clearConversationOutcome(conversationId: String) {
+        if (conversationId.isBlank() || conversationId.startsWith("run:")) return
+        if (AgentConversationIdentity.isArchivedConversationId(conversationId)) return
+        dispatchResultIo {
+            when (val written = conversationOutbox.clearOutcome(conversationId)) {
+                is ConversationOutboxWrite.Stored -> Unit
+                is ConversationOutboxWrite.Rejected -> Unit
+                is ConversationOutboxWrite.Failed -> AndroidAgentLogger.warnThrottled("conversation_outcome_clear_failed") {
+                    "Conversation outcome clear failed: reason=${written.message.take(120)}"
+                }
+            }
+        }
     }
 
     private fun handleAcceptedRunEvent(
@@ -880,6 +998,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         if (run.preparing) {
             run.session.controller.cancel()
             failBeforeExecution(run, "已停止")
+            recordStopIfLastActive(run)
             return
         }
         val session = run.session
@@ -889,11 +1008,28 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
             if (displayedRun === run && !guiControl.state.value.userPaused) state.value = run.overlayState
             updateKeepScreenOn()
             publishExecutionState()
+            recordStopIfLastActive(run)
         }
     }
 
+    /**
+     * 用户/入口停止该会话后记录 STOPPED：跨会话消息只会排队，不会在重启或下次发送时擅自唤醒。
+     * 允许替换时（同一会话的新 run 已接纳）不记录，避免把正常替换误判成用户停止。
+     */
+    private fun recordStopIfLastActive(run: RuntimeRunRegistry.Run) {
+        val others = runs.all().any {
+            it !== run && it.conversationId == run.conversationId && !it.session.isTerminal
+        }
+        if (others) return
+        recordConversationOutcome(run.conversationId, ConversationTerminalOutcome.STOPPED, run.runId)
+    }
+
     private fun requestPause(runId: String?) {
-        if (runId != null) guiControl.pauseForUser(runId)
+        if (runId == null) return
+        guiControl.pauseForUser(runId)
+        runs.get(runId)?.let { run ->
+            recordConversationOutcome(run.conversationId, ConversationTerminalOutcome.PAUSED, run.runId)
+        }
     }
 
     private fun requestResume() {

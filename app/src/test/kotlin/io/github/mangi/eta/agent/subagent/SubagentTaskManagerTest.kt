@@ -252,6 +252,31 @@ class SubagentTaskManagerTest {
         }
     }
 
+    @Test fun incomingConversationMessageBreaksParentFinishWaitWithoutPollingOrCancellingChildren() {
+        val parent = AgentRunController()
+        SubagentTaskManager(parent).use { manager ->
+            val started = CountDownLatch(1)
+            val finish = CountDownLatch(1)
+            val child = manager.start("child", "call", "work", SubagentTaskManager.Budget()) {
+                started.countDown()
+                finish.await(3, TimeUnit.SECONDS)
+                success()
+            }
+            await(started)
+            val pool = Executors.newSingleThreadExecutor()
+            try {
+                val waiting = pool.submit<List<String>> { manager.coordination.beforeFinish() }
+                assertTrue(parent.enqueueConversationMessage(AgentRunController.ConversationInput(
+                    messageId = "cm-test-123", sourceConversationId = "other", sourceTitle = "Other",
+                    sourceRunId = "other-run", createdAt = 1L, envelopeText = "coordination data",
+                )))
+                assertTrue(waiting.get(3, TimeUnit.SECONDS).isEmpty())
+                assertTrue(parent.hasPendingConversationMessages)
+                assertFalse(child.controller.isCancelled)
+            } finally { finish.countDown(); pool.shutdownNow() }
+        }
+    }
+
     @Test fun terminalHandoffDoesNotReinjectDetailOnlyProgress() {
         SubagentTaskManager(AgentRunController()).use { manager ->
             val entered = CountDownLatch(1)

@@ -36,6 +36,8 @@ import kotlinx.coroutines.flow.shareIn
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -52,17 +54,26 @@ internal object ProviderRepository {
         ProviderCredentialRepository.init(context)
     }
 
-    private val repositoryScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private var repositoryScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private var providerUpdates: SharedFlow<List<ProviderSetting>>? = null
+
+    /** Tests replace the Room database; a shared observer must not retain its closed predecessor. */
+    @Synchronized
+    internal fun resetObservationForTests() {
+        repositoryScope.cancel()
+        repositoryScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        providerUpdates = null
+    }
     // Stable shared flow: recomposition must not restart Room + decode every model again.
     // Room moves SQL off main, but downstream JSON decoding otherwise runs on the collector.
-    private val providerUpdates by lazy {
+    @Synchronized
+    fun providersFlow(): Flow<List<ProviderSetting>> = providerUpdates ?: run {
         dao().providersFlow().map { providers ->
             providers.map { it.toDomain() }.sortedBy(ProviderSetting::sortOrder)
         }.flowOn(Dispatchers.Default).distinctUntilChanged()
             .shareIn(repositoryScope, SharingStarted.WhileSubscribed(5_000), replay = 1)
+            .also { providerUpdates = it }
     }
-
-    fun providersFlow(): Flow<List<ProviderSetting>> = providerUpdates
 
     fun settingsFlow(): Flow<Settings> =
         SettingsDataStore.settingsFlow()
