@@ -2,6 +2,7 @@ package io.github.mangi.eta.agent.tool
 
 import io.github.mangi.eta.agent.model.AgentToolCatalog
 import io.github.mangi.eta.agent.roleplay.CharacterMemoryTools
+import io.github.mangi.eta.local.conversationcommunication.ConversationMessagingToolCatalog
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -102,7 +103,7 @@ class AgentToolRequirementsTest {
         deviceSensitiveReadTools = true, deviceSensitiveActionTools = true,
         skillGitHubDiscovery = true, skillGitHubInstall = true, memoryTools = true,
         capabilities = AgentToolCapabilities(rootAvailable = root),
-    )
+    ).also { ConversationMessagingToolCatalog.appendSchemas(it) }
 
     private fun JSONArray.names(): Set<String> = (0 until length()).mapTo(linkedSetOf()) {
         getJSONObject(it).getJSONObject("function").getString("name")

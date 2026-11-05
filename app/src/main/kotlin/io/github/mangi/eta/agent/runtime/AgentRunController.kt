@@ -20,8 +20,24 @@ internal class AgentRunController {
     private val lock = ReentrantLock()
     private val pauseCondition = lock.newCondition()
     data class SteeringInput(val text: String, val images: List<io.github.mangi.eta.agent.model.AgentModelClient.ModelImage> = emptyList())
+
+    /**
+     * 来自另一个会话的显式消息。与 steering 共用完整 turn 边界，但以运行时数据注入，
+     * 不伪装成终端用户发言；[envelopeText] 已包含来源与“非用户授权”说明。
+     */
+    data class ConversationInput(
+        val messageId: String,
+        val sourceConversationId: String,
+        val sourceTitle: String,
+        val sourceRunId: String,
+        val createdAt: Long,
+        val envelopeText: String,
+    )
+
     private val steeringMessages = ArrayDeque<SteeringInput>()
+    private val conversationMessages = ArrayDeque<ConversationInput>()
     private var acceptingSteering = true
+    private var acceptingConversationMessages = true
     @Volatile
     private var paused = false
 
@@ -32,7 +48,9 @@ internal class AgentRunController {
         lock.withLock {
             cancelled = true
             acceptingSteering = false
+            acceptingConversationMessages = false
             steeringMessages.clear()
+            conversationMessages.clear()
             paused = false
             pauseCondition.signalAll()
         }
@@ -74,6 +92,38 @@ internal class AgentRunController {
 
     val hasPendingSteering: Boolean
         get() = lock.withLock { steeringMessages.isNotEmpty() }
+
+    /**
+     * 排入下一条完整 turn 边界。run 已结束/已封口时返回 false，调用方据此改为排队或开新 run，
+     * 不能把“已接收”当成“已投递”。
+     */
+    fun enqueueConversationMessage(input: ConversationInput): Boolean = lock.withLock {
+        if (cancelled || !acceptingConversationMessages) return false
+        conversationMessages.addLast(input)
+        pauseCondition.signalAll()
+        true
+    }
+
+    /** 请求前消费全部待注入消息；返回空表示没有新消息。 */
+    fun pollConversationInputs(): List<ConversationInput> = lock.withLock {
+        if (conversationMessages.isEmpty()) return emptyList()
+        conversationMessages.toList().also { conversationMessages.clear() }
+    }
+
+    /**
+     * 自然结束前原子地消费最后一批消息；队列为空则永久关闭本 run 的会话消息入口，
+     * 避免 loop 已返回后仍把跨会话消息误报为已投递。
+     */
+    fun pollConversationInputsOrSeal(): List<ConversationInput> = lock.withLock {
+        if (conversationMessages.isNotEmpty()) {
+            return conversationMessages.toList().also { conversationMessages.clear() }
+        }
+        acceptingConversationMessages = false
+        emptyList()
+    }
+
+    private val hasPendingConversationMessages: Boolean
+        get() = lock.withLock { conversationMessages.isNotEmpty() }
 
     /**
      * 暂停执行：后续 [throwIfCancelled] 调用会阻塞挂起，直到 [resume] 或 [cancel]。
@@ -135,11 +185,13 @@ internal class AgentRunController {
         while (true) {
             val version = lock.withLock { activityVersion }
             throwIfCancelled()
-            if (hasPendingSteering || ready()) return
+            if (hasPendingSteering || hasPendingConversationMessages || ready()) return
             lock.withLock {
                 val remaining = deadline - System.nanoTime()
                 if (remaining <= 0) return
-                if (version == activityVersion && steeringMessages.isEmpty() && !cancelled) {
+                if (version == activityVersion && steeringMessages.isEmpty() &&
+                    conversationMessages.isEmpty() && !cancelled
+                ) {
                     try { pauseCondition.awaitNanos(remaining) }
                     catch (_: InterruptedException) {
                         Thread.currentThread().interrupt()

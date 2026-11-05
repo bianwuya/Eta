@@ -42,6 +42,9 @@ internal object AgentRuntimeWire {
     const val AGENT_UI_HANDOFF_SOURCE = "agent_ui"
     const val ETA_VOICE_HANDOFF_SOURCE = "eta_voice"
 
+    /** 由跨会话消息启动的 run：禁止再次发送跨会话消息，避免自动互唤链。 */
+    const val RUN_ORIGIN_CONVERSATION_MESSAGE = "conversation_message"
+
     internal class PayloadTooLargeException(sizeBytes: Int) : IllegalArgumentException(
         "Agent Runtime 请求元数据过大（$sizeBytes bytes）；请缩短输入或会话历史后重试"
     )
@@ -104,6 +107,7 @@ internal object AgentRuntimeWire {
     private const val KEY_PROMPT = "prompt"
     private const val KEY_ASSISTANT_SCREEN_CONTEXT = "assistant_screen_context"
     private const val KEY_MODEL_SESSION_ID = "model_session_id"
+    private const val KEY_ORIGIN = "run_origin"
     private const val KEY_PROVIDER_ID = "provider_id"
     private const val KEY_PROVIDER_NAME = "provider_name"
     private const val KEY_PROVIDER_TYPE = "provider_type"
@@ -180,6 +184,8 @@ internal object AgentRuntimeWire {
         val operation: String = OP_CHAT,
         val rewriteTargetMessageId: String? = null,
         val assistantScreenContext: String = "",
+        /** 空值表示用户入口；[RUN_ORIGIN_CONVERSATION_MESSAGE] 表示由跨会话消息启动。 */
+        val origin: String = "",
     ) {
         // 旧入口沿用会话 handoff；无持久会话的入口以首个 run 为会话起点。
         val effectiveModelSessionId: String
@@ -339,6 +345,7 @@ internal object AgentRuntimeWire {
         AgentWireText.put(this, KEY_PROMPT, request.prompt, payloadDirectory)
         putString(KEY_ASSISTANT_SCREEN_CONTEXT, request.assistantScreenContext)
         putString(KEY_MODEL_SESSION_ID, request.modelSessionId)
+        if (request.origin.isNotBlank()) putString(KEY_ORIGIN, request.origin)
         putString(KEY_PROVIDER_ID, request.config.providerId)
         putString(KEY_PROVIDER_NAME, request.config.providerName)
         putString(KEY_PROVIDER_TYPE, request.config.providerType)
@@ -474,6 +481,7 @@ internal object AgentRuntimeWire {
                 require(it.isNotBlank() && it.length <= 256) { "Invalid rewrite target" }
             },
             modelSessionId = bundle.getString(KEY_MODEL_SESSION_ID).orEmpty(),
+            origin = bundle.getString(KEY_ORIGIN).orEmpty(),
             config = AgentModelClient.ModelConfig(
                 providerId = bundle.getString(KEY_PROVIDER_ID).orEmpty(),
                 providerName = bundle.getString(KEY_PROVIDER_NAME).orEmpty(),
