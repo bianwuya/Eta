@@ -175,6 +175,37 @@ class SubagentStartupCleanupTest {
         assertEquals(0, children(parent))
     }
 
+    @Test fun explicitlyCancelledChildCannotBeResumed() {
+        val conversation = "cancelled-resume-test"
+        val entry = SubagentSessionStore.create(conversation, SubagentProfile.EXPLORE)
+        entry.explicitlyCancelled.set(true)
+        SubagentSessionStore.releaseRunning(conversation, entry.subagentId)
+        val parent = AgentRunController()
+        val executor = SubagentExecutor(
+            conversationKey = conversation,
+            parentController = parent,
+            configProvider = { config },
+            capabilitiesProvider = { AgentToolCapabilities(rootAvailable = false) },
+            baseToolExecutor = AgentModelClient.ToolExecutor { error("unexpected") },
+            skillContext = SkillContext.EMPTY,
+            memoryContext = AgentMemoryContext.DISABLED,
+            mcpTools = JSONArray(),
+            executionContext = null,
+            onProgress = {},
+        )
+        val resumed = AgentModelClient.ToolCall(
+            "resume-call", "subagent",
+            org.json.JSONObject().put("resume", entry.subagentId)
+                .put("prompt", "继续错误任务")
+                .put("description", "意外恢复")
+                .toString(),
+        )
+        val outcome = org.json.JSONObject(executor.execute(1, resumed).content)
+        assertFalse(outcome.getBoolean("ok"))
+        assertEquals("SUBAGENT_CANCELLED_FINAL", outcome.getString("code"))
+        assertFalse(entry.running.get())
+    }
+
     @Test fun startupJavaCancellationIsPreserved() {
         val parent = AgentRunController()
         val expected = java.util.concurrent.CancellationException("fixture cancellation")
