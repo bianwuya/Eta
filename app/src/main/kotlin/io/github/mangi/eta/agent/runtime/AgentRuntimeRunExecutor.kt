@@ -19,6 +19,7 @@ import io.github.mangi.eta.agent.roleplay.CharacterMemoryTools
 import io.github.mangi.eta.agent.roleplay.RoleplayRunContext
 import io.github.mangi.eta.agent.subagent.AgentSubagentToolCatalog
 import io.github.mangi.eta.agent.subagent.SubagentExecutor
+import io.github.mangi.eta.agent.subagent.SubagentControlRegistry
 import io.github.mangi.eta.agent.mcp.McpRunSnapshot
 import io.github.mangi.eta.agent.mcp.McpToolExecutor
 import io.github.mangi.eta.agent.mcp.RoutingToolExecutor
@@ -279,6 +280,7 @@ internal class AgentRuntimeRunExecutor(
             val subagentAllowed = {
                 request.config.subagentTools && currentPermissions().subagentTools
             }
+            val controlRegistry = SubagentControlRegistry()
             val subagentExecutor = SubagentExecutor(
                 conversationKey = browserKey,
                 parentRunId = request.runId,
@@ -292,6 +294,7 @@ internal class AgentRuntimeRunExecutor(
                     io.github.mangi.eta.local.subagentstats.SubagentStatsStore.get(appContext).save(record)
                 },
                 parentController = childController,
+                controlRegistry = controlRegistry,
                 configProvider = {
                     val rawSubagentConfig = runBlocking {
                         RuntimeConfigRepository.subagentRuntimeConfig(request.config)
@@ -343,6 +346,8 @@ internal class AgentRuntimeRunExecutor(
                         )
                     } else if (call.name == AgentSubagentToolCatalog.PROFILE_TOOL_NAME) {
                         subagentExecutor.executeProfileManagement(call)
+                    } else if (call.name == AgentSubagentToolCatalog.CONTROL_TOOL_NAME) {
+                        controlRegistry.execute(call)
                     } else {
                         subagentExecutor.execute(call.round, call)
                     }
