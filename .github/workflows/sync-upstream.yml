@@ -1,9 +1,7 @@
-name: Sync upstream main
+name: Sync upstream main (manual)
 
+# Updating the official mirror is a user decision, not a background task.
 on:
-  schedule:
-    # UTC，每小时检测官方版本；GitHub 可能延迟执行。
-    - cron: '23 * * * *'
   workflow_dispatch:
 
 permissions:
@@ -15,7 +13,7 @@ concurrency:
 
 jobs:
   sync:
-    if: github.repository == 'bianwuya/Eta'
+    if: github.repository == 'bianwuya/Eta' && github.ref == 'refs/heads/local'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -38,7 +36,7 @@ jobs:
           {
             echo '## Upstream main sync'
             echo 'Source: Mangi-11/Eta → bianwuya/Eta main'
-            echo 'local was not modified. The auto-integrate-upstream workflow will prepare a guarded PR for local.'
+            echo 'local was not modified. No integration workflow is triggered. When ready, manually run Prepare upstream PR and decide whether to merge its reviewed PR.'
             echo '[Review / create PR](https://github.com/bianwuya/Eta/compare/local...main?expand=1)'
             echo '```json'
             cat "$RUNNER_TEMP/upstream-sync.json"
