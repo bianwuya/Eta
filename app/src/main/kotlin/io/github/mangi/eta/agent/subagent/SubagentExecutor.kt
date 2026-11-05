@@ -37,6 +37,7 @@ internal class SubagentExecutor(
     private val nanoTime: () -> Long = System::nanoTime,
     private val childToolFactory: ((AgentRunController) -> AgentModelClient.ToolExecutor)? = null,
     private val detailStoreFactory: (() -> SubagentDetailStore)? = null,
+    private val controlRegistry: SubagentControlRegistry? = null,
 ) {
     private val latestSnapshots = ConcurrentHashMap<String, String>()
 
@@ -83,6 +84,13 @@ internal class SubagentExecutor(
                     "SUBAGENT_NOT_FOUND",
                     "未找到可续接的 Subagent：$resumeId（可能已过期或不属于当前会话）",
                 )
+            if (existing.explicitlyCancelled.get()) {
+                return failureResult(
+                    toolCall,
+                    "SUBAGENT_CANCELLED_FINAL",
+                    "Subagent $resumeId 已被主代理明确取消，不能继续旧任务；请根据最新要求重新创建子代理。",
+                )
+            }
             if (!existing.running.compareAndSet(false, true)) {
                 return failureResult(
                     toolCall,
@@ -139,6 +147,10 @@ internal class SubagentExecutor(
         val subagentId = entry.subagentId
         val childController = AgentRunController()
         val controllerBinding = parentController.registerChild(childController)
+        val controlBinding = controlRegistry?.register(
+            subagentId, description, toolCall.id, childController,
+            onCancel = { entry.explicitlyCancelled.set(true) },
+        )
         var ownedTools: AgentModelClient.ToolExecutor? = null
         var toolBinding: AgentRunController.ResourceBinding? = null
         var detailStoreForCleanup: SubagentDetailStore? = null
@@ -237,7 +249,18 @@ internal class SubagentExecutor(
 
         val childToolExecutor = AgentModelClient.ToolExecutor { subCall ->
             childController.throwIfCancelled()
-            if (!profile.isToolAllowed(subCall.name)) {
+            if (childController.hasPendingParentDirective) {
+                // The parent has corrected the direction while the child was thinking.
+                // Reject stale tools already emitted by the model; inject the correction at
+                // the next complete turn instead of applying stale side effects.
+                AgentModelClient.ToolResult(
+                    content = JSONObject()
+                        .put("ok", false)
+                        .put("code", "SUBAGENT_REPLAN_REQUIRED")
+                        .put("message", "主代理有新的任务修正等待处理，旧工具调用未执行；请先读取新指令再重新规划。")
+                        .toString(),
+                )
+            } else if (!profile.isToolAllowed(subCall.name)) {
                 AgentModelClient.ToolResult(
                     content = JSONObject()
                         .put("ok", false)
@@ -439,6 +462,7 @@ internal class SubagentExecutor(
             runCatching { toolBinding?.close() }
             (ownedTools as? AutoCloseable)?.let { runCatching { it.close() } }
             runCatching { kotlinx.coroutines.runBlocking { detailStoreForCleanup?.prune() } }
+            runCatching { controlBinding?.close() }
             runCatching { controllerBinding.close() }
         }
     }

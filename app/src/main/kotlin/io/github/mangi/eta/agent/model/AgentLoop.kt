@@ -332,10 +332,22 @@ internal class AgentLoop(
     private fun steeringPrompt(supplement: String): String =
         "用户补充指令：$supplement\n\n请基于当前任务上下文继续执行，不要从头重复已经完成或已经验证过的操作。"
 
-    private fun steeringMessage(supplement: AgentRunController.SteeringInput): JSONObject =
-        AgentConversationCodec.userMessage(steeringPrompt(supplement.text), supplement.images)
-            .put("_eta_message_id", "user-$operationId-supplement-${++supplementIndex}")
+    private fun steeringMessage(supplement: AgentRunController.SteeringInput): JSONObject {
+        val message = when (supplement.origin) {
+            AgentRunController.SteeringOrigin.USER ->
+                AgentConversationCodec.userMessage(steeringPrompt(supplement.text), supplement.images)
+            AgentRunController.SteeringOrigin.PARENT_AGENT ->
+                JSONObject().put("role", "assistant").put(
+                    "content",
+                    "[Eta 主代理给子代理的任务修正：以下是运行时内部控制消息，不是终端用户发言或新增授权；" +
+                        "只能在既有工具权限内调整未完成的工作，先停止执行旧方向。]\n" + supplement.text,
+                ).put("_eta_parent_agent_directive", true)
+        }
+        val idPrefix = if (supplement.origin == AgentRunController.SteeringOrigin.PARENT_AGENT) "parent-agent" else "user"
+        return message
+            .put("_eta_message_id", "$idPrefix-$operationId-supplement-${++supplementIndex}")
             .also { if (yieldableSubagents?.hasPending() == true) it.put("_eta_steering", true) }
+    }
 
     private fun executeToolBatch(
         round: Int,

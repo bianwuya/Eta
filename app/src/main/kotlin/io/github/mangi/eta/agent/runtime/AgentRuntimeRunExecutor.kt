@@ -19,6 +19,7 @@ import io.github.mangi.eta.agent.roleplay.CharacterMemoryTools
 import io.github.mangi.eta.agent.roleplay.RoleplayRunContext
 import io.github.mangi.eta.agent.subagent.AgentSubagentToolCatalog
 import io.github.mangi.eta.agent.subagent.SubagentExecutor
+import io.github.mangi.eta.agent.subagent.SubagentControlRegistry
 import io.github.mangi.eta.agent.mcp.McpRunSnapshot
 import io.github.mangi.eta.agent.mcp.McpToolExecutor
 import io.github.mangi.eta.agent.mcp.RoutingToolExecutor
@@ -279,6 +280,7 @@ internal class AgentRuntimeRunExecutor(
             val subagentAllowed = {
                 request.config.subagentTools && currentPermissions().subagentTools
             }
+            val controlRegistry = SubagentControlRegistry()
             val subagentExecutor = SubagentExecutor(
                 conversationKey = browserKey,
                 parentRunId = request.runId,
@@ -292,6 +294,7 @@ internal class AgentRuntimeRunExecutor(
                     io.github.mangi.eta.local.subagentstats.SubagentStatsStore.get(appContext).save(record)
                 },
                 parentController = childController,
+                controlRegistry = controlRegistry,
                 configProvider = {
                     val rawSubagentConfig = runBlocking {
                         RuntimeConfigRepository.subagentRuntimeConfig(request.config)
@@ -332,6 +335,10 @@ internal class AgentRuntimeRunExecutor(
                                 "需要时请让用户在当前会话直接授权")
                             .toString(),
                     )
+                } else if (call.name == AgentSubagentToolCatalog.CONTROL_TOOL_NAME) {
+                    // Disabling future delegation must not block the parent from stopping
+                    // children that are already running in this run.
+                    controlRegistry.execute(call)
                 } else if (call.name in AgentSubagentToolCatalog.names) {
                     if (!subagentAllowed()) {
                         AgentModelClient.ToolResult(

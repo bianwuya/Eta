@@ -8,24 +8,24 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * 官方同步子代理流程回归：工具目录只有同步 `subagent` / `subagent_profile`，子角色只回传最终
- * summary；实例在完成时释放执行占用并保留上下文供 `resume` 续接。
+ * 子代理兼容性回归：保留 subagent 与 subagent_profile，并增加仅主代理可调用的
+ * subagent_control；完成时释放运行占用并保留上下文供 resume。
  */
 class SubagentSyncFlowTest {
     @Test
-    fun catalogExposesOnlySynchronousSubagentTools() {
+    fun catalogIncludesLiveControlWithoutChildAccess() {
         val tools = JSONArray()
         AgentSubagentToolCatalog.appendSchemas(tools, SubagentProfile.BUILTIN_PROFILES)
         val names = (0 until tools.length()).map { index ->
             tools.getJSONObject(index).getJSONObject("function").getString("name")
         }
-        assertEquals(listOf(AgentSubagentToolCatalog.TOOL_NAME, AgentSubagentToolCatalog.PROFILE_TOOL_NAME), names)
-        assertEquals(setOf("subagent", "subagent_profile"), AgentSubagentToolCatalog.names)
-        assertFalse("subagent_control" in AgentSubagentToolCatalog.names)
+        assertEquals(listOf(AgentSubagentToolCatalog.TOOL_NAME, AgentSubagentToolCatalog.PROFILE_TOOL_NAME, AgentSubagentToolCatalog.CONTROL_TOOL_NAME), names)
+        assertEquals(setOf("subagent", "subagent_profile", "subagent_control"), AgentSubagentToolCatalog.names)
+        assertTrue("subagent_control" in AgentSubagentToolCatalog.names)
         assertFalse("subagent_report" in AgentSubagentToolCatalog.names)
 
         val schema = AgentSubagentToolCatalog.schema(SubagentProfile.BUILTIN_PROFILES).toString()
-        assertFalse(schema.contains("subagent_control"))
+        assertTrue(schema.contains("subagent_control"))
         assertFalse(schema.contains("subagent_report"))
         assertFalse(schema.contains("max_time_seconds"))
         assertFalse(schema.contains("max_rounds"))
@@ -38,11 +38,12 @@ class SubagentSyncFlowTest {
     @Test
     fun childRoleUsesFinalMessageProtocolWithoutControlTools() {
         val prompt = SubagentProfile.CODER.buildSystemPrompt()
-        assertTrue(prompt.contains("只能看到你结束时的最后一条回复"))
+        assertTrue(prompt.contains("主 Agent 通过运行时接收你的进展和最终报告"))
         assertFalse(prompt.contains("subagent_report"))
         assertFalse(prompt.contains("needs_decision"))
         assertFalse(SubagentProfile.CODER.isToolAllowed("subagent"))
         assertFalse(SubagentProfile.CODER.isToolAllowed("subagent_profile"))
+        assertFalse(SubagentProfile.CODER.isToolAllowed("subagent_control"))
         assertFalse(SubagentProfile.CODER.isToolAllowed("conversation_send"))
         assertFalse(SubagentProfile.CODER.isToolAllowed("terminal_job"))
         assertTrue(SubagentProfile.CODER.isToolAllowed("terminal"))

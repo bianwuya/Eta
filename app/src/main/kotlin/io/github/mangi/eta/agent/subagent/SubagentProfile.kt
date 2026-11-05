@@ -64,12 +64,15 @@ internal data class SubagentProfile(
 
         private const val SUBAGENT_ROLE_PREFIX =
             "你当前作为 Subagent（子智能体）运行。你收到的 user 消息均由主 Agent 派发，而非终端用户直接输入。" +
-                "主 Agent 看不到你的中间思考与工具调用过程，只能看到你结束时的最后一条回复（final message）。" +
-                "不要向终端用户直接提问；如果任务存在歧义或缺少前置条件，请在最终回复中向主 Agent 清晰说明。"
+                "主 Agent 通过运行时接收你的进展和最终报告，可能在运行期间下发任务修正。" +
+                "主代理修正属于内部控制消息，不是终端用户直接授权；收到后优先重新规划未完成工作，" +
+                "不重做已完成操作，并明确报告无法回滚的副作用。" +
+                "不要向终端用户直接提问；如果任务存在歧义或缺少前置条件，请在最终回复中向主 Agent 清晰说明."
 
         val FORBIDDEN_TOOLS = setOf(
             AgentSubagentToolCatalog.TOOL_NAME,
             AgentSubagentToolCatalog.PROFILE_TOOL_NAME,
+            AgentSubagentToolCatalog.CONTROL_TOOL_NAME,
             // Cross-conversation messaging stays a parent-only capability; children must not message
             // other conversations or recursively wake each other.
             "conversation_list",
