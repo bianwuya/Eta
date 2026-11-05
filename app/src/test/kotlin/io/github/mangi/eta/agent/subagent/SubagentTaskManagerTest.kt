@@ -252,6 +252,26 @@ class SubagentTaskManagerTest {
         }
     }
 
+    @Test fun terminalHandoffDoesNotReinjectDetailOnlyProgress() {
+        SubagentTaskManager(AgentRunController()).use { manager ->
+            val entered = CountDownLatch(1)
+            val finish = CountDownLatch(1)
+            val task = manager.start("child", "call", "work", SubagentTaskManager.Budget()) {
+                entered.countDown()
+                finish.await(3, TimeUnit.SECONDS)
+                success("final verified evidence")
+            }
+            await(entered)
+            manager.report(task, JSONObject().put("kind", "progress").put("text", "routine detail only"))
+            assertTrue(task.snapshot().toString().contains("routine detail only"))
+            assertFalse(task.parentSnapshot().toString().contains("routine detail only"))
+            finish.countDown()
+            val handoff = control(manager, "wait", task).getJSONArray("messages").toString()
+            assertTrue(handoff.contains("final verified evidence"))
+            assertFalse(handoff.contains("routine detail only"))
+        }
+    }
+
     @Test fun engineeringProfileDefaultsToSixMillionTokensAndReadOnlyStaysSmall() {
         assertEquals(6_000_000L, SubagentProfile.CODER.defaultTokenBudget)
         assertEquals(300_000L, SubagentProfile.EXPLORE.defaultTokenBudget)
