@@ -343,8 +343,9 @@ internal class AgentLoop(
                         "只能在既有工具权限内调整未完成的工作，先停止执行旧方向。]\n" + supplement.text,
                 ).put("_eta_parent_agent_directive", true)
         }
+        val idPrefix = if (supplement.origin == AgentRunController.SteeringOrigin.PARENT_AGENT) "parent-agent" else "user"
         return message
-            .put("_eta_message_id", "user-$operationId-supplement-${++supplementIndex}")
+            .put("_eta_message_id", "$idPrefix-$operationId-supplement-${++supplementIndex}")
             .also { if (yieldableSubagents?.hasPending() == true) it.put("_eta_steering", true) }
     }
 
