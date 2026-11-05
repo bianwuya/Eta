@@ -319,14 +319,14 @@ class PlanRecentFixesIntegrationTest {
     @Test fun acceptedLaunchDoesNotReleaseDependentStepBeforeTypedFinalReport() {
         approve(PlanStep("child", "Inspect", actions = listOf(action("subagent", childArguments))),
             PlanStep("dependent", "Needs result", dependsOn = listOf("child"), actions = listOf(action("terminal", writeArguments))))
-        assertTrue(JSONObject(gate.execute(AgentModelClient.ToolCall(1, "begin", PlanRunGate.BEGIN,
+        assertTrue(JSONObject(gate.execute(AgentModelClient.ToolCall(round = 1, id = "begin", name = PlanRunGate.BEGIN, argumentsJson =
             JSONObject().put("step_id", "child").put("revision", 1).toString())) { error("begin is internal") }.content).getBoolean("ok"))
         val receipt = JSONObject().put("ok", true).put("status", "accepted").put("task_id", "owned-task").put("subagent_id", "child-id")
-        gate.execute(AgentModelClient.ToolCall(2, "launch", "subagent", childArguments.toString()), knownChildLaunch = { true }) {
+        gate.execute(AgentModelClient.ToolCall(round = 2, id = "launch", name = "subagent", argumentsJson = childArguments.toString()), knownChildLaunch = { true }) {
             AgentModelClient.ToolResult(receipt.toString())
         }
         assertEquals("waiting_child", PlanModeStore.current("integration-run")!!.steps.first().status)
-        val dependent = AgentModelClient.ToolCall(3, "begin-dependent", PlanRunGate.BEGIN,
+        val dependent = AgentModelClient.ToolCall(round = 3, id = "begin-dependent", name = PlanRunGate.BEGIN, argumentsJson =
             JSONObject().put("step_id", "dependent").put("revision", 1).toString())
         assertTrue(gate.execute(dependent) { error("not delegated") }.content.contains("PLAN_STEP_BLOCKED"))
         gate.childReport("unrelated-task", true)
@@ -338,10 +338,10 @@ class PlanRecentFixesIntegrationTest {
 
     @Test fun childFailureOrRevisedPlanNeverCompletesAnUnrelatedApprovedStep() {
         approve(PlanStep("child", "Inspect", actions = listOf(action("subagent", childArguments))))
-        gate.execute(AgentModelClient.ToolCall(1, "begin", PlanRunGate.BEGIN,
+        gate.execute(AgentModelClient.ToolCall(round = 1, id = "begin", name = PlanRunGate.BEGIN, argumentsJson =
             JSONObject().put("step_id", "child").put("revision", 1).toString())) { error("internal") }
         val receipt = JSONObject().put("ok", true).put("status", "accepted").put("task_id", "owned-task").put("subagent_id", "child-id")
-        gate.execute(AgentModelClient.ToolCall(2, "launch", "subagent", childArguments.toString()), knownChildLaunch = { true }) {
+        gate.execute(AgentModelClient.ToolCall(round = 2, id = "launch", name = "subagent", argumentsJson = childArguments.toString()), knownChildLaunch = { true }) {
             AgentModelClient.ToolResult(receipt.toString())
         }
         gate.childReport("owned-task", false)
@@ -358,9 +358,9 @@ class PlanRecentFixesIntegrationTest {
 
     @Test fun unownedAcceptedJsonNeverCountsAsSuccessfulLaunchDispatch() {
         approve(PlanStep("child", "Inspect", actions = listOf(action("subagent", childArguments))))
-        gate.execute(AgentModelClient.ToolCall(1, "begin", PlanRunGate.BEGIN,
+        gate.execute(AgentModelClient.ToolCall(round = 1, id = "begin", name = PlanRunGate.BEGIN, argumentsJson =
             JSONObject().put("step_id", "child").put("revision", 1).toString())) { error("internal") }
-        gate.execute(AgentModelClient.ToolCall(2, "fake-launch", "subagent", childArguments.toString())) {
+        gate.execute(AgentModelClient.ToolCall(round = 2, id = "fake-launch", name = "subagent", argumentsJson = childArguments.toString())) {
             AgentModelClient.ToolResult("""{"ok":true,"status":"accepted","task_id":"made-up","subagent_id":"made-up"}""")
         }
         assertEquals("blocked", PlanModeStore.current("integration-run")!!.steps.first().status)
