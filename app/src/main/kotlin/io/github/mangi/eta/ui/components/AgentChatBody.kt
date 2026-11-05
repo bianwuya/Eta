@@ -237,6 +237,7 @@ internal fun AgentChatBody(
     SpeechPlaybackHost {
         SpeechAutoReadAloud(messages = messages, isStreaming = isStreaming)
         AgentChatScaffold(
+            conversationId = conversationId,
             visibleMessages = visibleMessages,
             hasMessages = visibleMessages.isNotEmpty() || hasEarlierMessages,
             scrollState = scrollState,
@@ -319,6 +320,7 @@ private fun AgentChatScaffold(
     pendingImages: List<PendingImageUi>,
     pendingFileReferences: List<PendingFileReferenceUi>,
     queuedMessages: List<QueuedMessageUi>,
+    conversationId: String?,
     inputSyncVersion: Int,
     messageEdit: MessageEditUiState?,
     showEmptySuggestions: Boolean,
@@ -377,6 +379,7 @@ private fun AgentChatScaffold(
         bottomBar = {
             Box(Modifier.graphicsLayer { alpha = if (captureInProgress) 0f else 1f }) {
                 AgentChatBottomBar(
+                    conversationId = conversationId,
                     messageBackdrop = messageBackdrop.takeIf { frostEnabled },
                     input = input,
                     modelPickerState = modelPickerState,
@@ -1012,6 +1015,7 @@ private fun AgentChatBottomBar(
     pendingImages: List<PendingImageUi>,
     pendingFileReferences: List<PendingFileReferenceUi>,
     queuedMessages: List<QueuedMessageUi>,
+    conversationId: String?,
     inputSyncVersion: Int,
     messageEdit: MessageEditUiState?,
     onSubmit: (String) -> Unit,
