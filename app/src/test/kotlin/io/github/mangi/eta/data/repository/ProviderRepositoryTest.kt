@@ -171,7 +171,9 @@ class ProviderRepositoryTest {
         assertEquals(expected, ProviderRepository.providerById(id)!!.models.single())
         assertEquals(expected, ProviderRepository.providerByModelId(stored.id)!!.models.single())
         assertEquals(expected, ProviderRepository.allProviders().first { it.id == id }.models.single())
-        assertEquals(expected, ProviderRepository.providersFlow().first().first { it.id == id }.models.single())
+        assertEquals(expected, ProviderRepository.providersFlow().first { providers ->
+            providers.firstOrNull { it.id == id }?.models == listOf(expected)
+        }.first { it.id == id }.models.single())
         assertNull(EtaDatabase.get(context).providerDao().models(id).single().contextWindow)
     }
 
@@ -188,7 +190,9 @@ class ProviderRepositoryTest {
         for ((stored, expected) in cases) {
             ProviderRepository.replaceModels(id, listOf(stored))
             SettingsDataStore.setSelection(id, stored.id)
-            val providers = ProviderRepository.providersFlow().first()
+            val providers = ProviderRepository.providersFlow().first { providers ->
+                providers.firstOrNull { it.id == id }?.models == listOf(stored)
+            }
             val picker = AgentModelPickerProjector.project(providers, id, stored.id)
             assertEquals(expected, picker.selectedModel!!.contextWindow)
             assertEquals(expected, RuntimeConfigRepository.currentRuntimeConfig()!!.contextWindow)

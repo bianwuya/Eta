@@ -78,7 +78,7 @@ internal object ConversationDeliveryPolicy {
         TARGET_STOPPED -> "目标会话已被用户停止，消息已排队，不会自动唤醒该会话"
         TARGET_RUN_UNAVAILABLE -> "目标会话运行状态暂不可用，消息已排队"
         TARGET_STATE_UNKNOWN ->
-            "无法确认目标会话是否被用户停止（本机没有该会话的终态记录），消息只排队；" +
+            "无法确认目标会话是否被用户停止（本机没有该会话的终态记录），消息只排队，不会自动唤醒；" +
                 "用户下次在该会话发送消息后才会送达"
         else -> "目标会话当前无法接收，消息已排队"
     }

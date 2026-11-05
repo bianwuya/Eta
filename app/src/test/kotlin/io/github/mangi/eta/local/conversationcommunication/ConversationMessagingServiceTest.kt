@@ -353,9 +353,9 @@ class ConversationMessagingServiceTest {
         host.deliverResult = { true }
         assertEquals(1, service.deliverQueued("conv-target", "run-next"))
         assertEquals(ConversationDeliveryState.DELIVERED, outbox.storedEntries().single().state)
-        assertEquals(2, host.deliveries.size)
+        assertEquals(1, host.deliveries.size)
         assertEquals(0, service.deliverQueued("conv-target", "run-next"))
-        assertEquals(2, host.deliveries.size)
+        assertEquals(1, host.deliveries.size)
     }
 
     @Test
