@@ -196,7 +196,6 @@ internal fun AgentChatInputBar(
             .fillMaxWidth(),
     ) {
         if (recognitionEnabled) SpeechInputFeedback(dictation)
-        io.github.mangi.eta.local.userquestions.UserQuestionsPanel(conversationId, Modifier.padding(bottom = 8.dp))
         AnimatedVisibility(
             visible = queuedMessages.isNotEmpty(),
             enter = fadeIn(tween(160)),
