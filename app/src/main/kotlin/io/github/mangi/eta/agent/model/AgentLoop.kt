@@ -53,7 +53,6 @@ internal class AgentLoop(
     private data class ToolOutcome(
         val call: AgentModelClient.ToolCall,
         val result: AgentModelClient.ToolResult,
-        val acceptedSubagent: Boolean = false,
     )
 
     private var lastQuestionRound = -1
@@ -231,7 +230,7 @@ internal class AgentLoop(
                 }
                 appendToolImages(round, outcomes)
                 publishTranscript()
-                if (outcomes.any { it.acceptedSubagent }) awaitSubagentInput()
+                // Let the model consume every result and continue independent work before waiting.
                 round += 1
                 continue
             }
@@ -590,9 +589,7 @@ internal class AgentLoop(
             sensitiveToolCallIds += roundCall.id
         }
 
-        val accepted = roundCall.name == AgentSubagentToolCatalog.TOOL_NAME &&
-            runCatching { JSONObject(result.content).optString("status") == "accepted" }.getOrDefault(false)
-        val outcome = ToolOutcome(roundCall, result, accepted)
+        val outcome = ToolOutcome(roundCall, result)
         // Persist each real result before emitting progress; request execution still waits for the full batch.
         if (yieldableSubagents != null) recordToolOutcome(outcome)
         emitToolFinished(round, roundCall, result)
