@@ -110,6 +110,47 @@ class SubagentLiveControlTest {
     }
 
     @Test
+    fun pauseStateIsConfirmedOnlyAtExecutionCheckpoint() {
+        val registry = SubagentControlRegistry()
+        val child = AgentRunController()
+        val link = registry.register("sub_pause", "pause status", "call-p", child)
+        val started = CountDownLatch(1)
+        val worker = thread {
+            started.countDown()
+            child.throwIfCancelled()
+        }
+        try {
+            // First resume the eagerly started worker, then create a fresh blocked checkpoint.
+            worker.join(1_000)
+            assertFalse(worker.isAlive)
+            assertEquals("pause_requested", result(registry, control("pause", "sub_pause")).getString("status"))
+            assertEquals("pause_requested", result(registry, control("list"))
+                .getJSONArray("active").getJSONObject(0).getString("status"))
+
+            val waiting = thread { child.throwIfCancelled() }
+            try {
+                val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+                while (!child.isPausedAtCheckpoint && System.nanoTime() < deadline) {
+                    Thread.sleep(5)
+                }
+                assertTrue(child.isPausedAtCheckpoint)
+                assertEquals("paused", result(registry, control("list"))
+                    .getJSONArray("active").getJSONObject(0).getString("status"))
+                assertEquals("resume_requested", result(registry, control("resume", "sub_pause")).getString("status"))
+                waiting.join(1_000)
+                assertFalse(waiting.isAlive)
+            } finally {
+                child.resume()
+                waiting.join(1_000)
+            }
+        } finally {
+            child.cancel()
+            link.close()
+            worker.join(1_000)
+        }
+    }
+
+    @Test
     fun sealedChildDoesNotAcknowledgeUndeliverableRevision() {
         val registry = SubagentControlRegistry()
         val child = AgentRunController()
