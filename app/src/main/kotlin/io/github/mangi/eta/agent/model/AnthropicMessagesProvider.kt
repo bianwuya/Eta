@@ -91,7 +91,8 @@ internal object AnthropicMessagesProvider : AgentProviderClient {
         // 当前轮（最后一条真实用户消息之后）的助手消息都原样带回签名块：工具循环中逐轮保持
         // 同一前缀，缓存才能在每一轮续用；更早轮次统一去掉思考，形态在各轮之间同样稳定。
         val currentTurnStart = (messages.length() - 1 downTo 0).firstOrNull { index ->
-            messages.optJSONObject(index)?.let { it.optString("role") == "user" && !it.optBoolean("_eta_observation") } == true
+            messages.optJSONObject(index)?.let { it.optString("role") == "user" && !it.optBoolean("_eta_observation") &&
+                !it.optBoolean("_eta_runtime_report") && !it.optBoolean("_eta_steering") } == true
         } ?: -1
         for (index in 0 until messages.length()) {
             val message = messages.optJSONObject(index) ?: continue
@@ -108,7 +109,10 @@ internal object AnthropicMessagesProvider : AgentProviderClient {
                         }
                     },
                 )
-                "assistant" -> appendTurn(
+                "assistant" -> if (AssistantScreenContextProjection.isRuntimeConversation(message)) {
+                    // Runtime-origin data, not a user instruction; transport as an input block.
+                    appendTurn(anthropicMessages, "user", convertUserContent(message.opt("content")))
+                } else appendTurn(
                     anthropicMessages,
                     "assistant",
                     convertAssistantContent(message, index > currentTurnStart),
@@ -630,6 +634,7 @@ internal object AnthropicEphemeralState {
         for (index in messages.length() - 1 downTo 0) {
             val message = messages.optJSONObject(index) ?: continue
             if (message.optString("role") == "assistant") {
+                if (AssistantScreenContextProjection.isRuntimeInput(message)) continue
                 return contentBlocks(message) != null &&
                     AgentConversationCodec.parseToolCalls(message).isNotEmpty()
             }

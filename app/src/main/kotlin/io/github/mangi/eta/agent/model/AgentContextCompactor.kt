@@ -55,6 +55,7 @@ internal class AgentContextCompactor(
             compactedUserTurns = covered,
             summaryThroughUserTurn = covered + if (protectedUser != null) 1 else 0,
         )))
+        val hadGeminiRunStart = history.any(GeminiEphemeralState::isRunStart)
         protectedUser?.let(result::put)
         history.drop(end).forEach { message ->
             // 新摘要改变了前缀；旧 opaque items 不再代表同一份 Provider 上下文。
@@ -64,6 +65,18 @@ internal class AgentContextCompactor(
             result.put(GeminiEphemeralState.withoutState(
                 AnthropicEphemeralState.withoutContentBlocks(withoutResponsesItems),
             ))
+        }
+        // Compaction removes the old run-start user. Re-anchor the ephemeral boundary on the
+        // retained input without mutating the source snapshot or losing the new run's tool steps.
+        if (hadGeminiRunStart) {
+            val index = (systemCount until result.length()).firstOrNull {
+                result.getJSONObject(it).optString("role") == "user"
+            }
+            if (index != null) {
+                val retained = JSONObject(result.getJSONObject(index).toString())
+                GeminiEphemeralState.markRunStart(retained)
+                result.put(index, retained)
+            }
         }
         if (result.toString().length >= messages.toString().length) {
             throw failure("CONTEXT_NO_REDUCTION", "摘要未能缩小上下文，原始上下文已保留。")

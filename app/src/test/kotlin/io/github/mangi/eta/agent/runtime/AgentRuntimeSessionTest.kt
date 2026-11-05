@@ -12,6 +12,71 @@ import org.junit.Test
 
 class AgentRuntimeSessionTest {
     @Test
+    fun rejectedDeclarationStopsLoopBeforeToolEvenBeforeControllerIsCancelled() {
+        val session = AgentRuntimeSession("commit-boundary")
+        val committing = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val writes = java.util.concurrent.atomic.AtomicInteger()
+        val executions = java.util.concurrent.atomic.AtomicInteger()
+        val requests = java.util.concurrent.atomic.AtomicInteger()
+        val commitThread = Thread {
+            session.complete(AgentRuntimeWire.RunResult("commit-boundary", true, "done")) {
+                committing.countDown()
+                check(release.await(5, TimeUnit.SECONDS))
+            }
+        }
+        val provider = object : io.github.mangi.eta.agent.model.AgentProviderClient {
+            override val id = "fixture"
+            override val capabilities = io.github.mangi.eta.agent.model.ProviderCapabilities(
+                io.github.mangi.eta.agent.model.EndpointKind.CHAT_COMPLETIONS, true, true, true, true, false, false)
+            override fun complete(
+                request: io.github.mangi.eta.agent.model.ProviderRequest,
+                runController: AgentRunController,
+                onEvent: (io.github.mangi.eta.agent.model.ProviderEvent) -> Unit,
+            ): io.github.mangi.eta.agent.model.ProviderResponse {
+                if (requests.incrementAndGet() > 1) {
+                    // A regressed loop must finish rather than issuing tools indefinitely.
+                    return io.github.mangi.eta.agent.model.ProviderResponse(org.json.JSONObject()
+                        .put("role", "assistant").put("content", "unexpected completion").put("finish_reason", "stop"))
+                }
+                return io.github.mangi.eta.agent.model.ProviderResponse(org.json.JSONObject()
+                    .put("role", "assistant").put("content", "").put("finish_reason", "tool_calls")
+                    .put("tool_calls", org.json.JSONArray().put(org.json.JSONObject().put("id", "side-effect")
+                        .put("type", "function").put("function", org.json.JSONObject()
+                            .put("name", "get_current_context").put("arguments", "{}")))))
+            }
+        }
+        try {
+            commitThread.start(); assertTrue(committing.await(5, TimeUnit.SECONDS))
+            assertTrue(session.isCommitting); assertFalse(session.controller.isCancelled)
+            val failure = assertThrows(io.github.mangi.eta.agent.model.AgentModelExecutionException::class.java) {
+                io.github.mangi.eta.agent.model.AgentModelClient.complete(
+                    config = io.github.mangi.eta.agent.model.AgentModelClient.ModelConfig(
+                        baseUrl = "https://example.invalid", apiKey = "fixture", model = "fixture", systemPrompt = ""),
+                    prompt = "test", provider = provider, runController = session.controller,
+                    toolExecutor = { executions.incrementAndGet(); io.github.mangi.eta.agent.model.AgentModelClient.ToolResult("{}") },
+                    onTranscript = { transcript -> session.commitTranscript(transcript) { writes.incrementAndGet() } },
+                )
+            }
+            assertTrue(failure.cause is AgentRunCancelledException)
+            assertEquals("declaration must be rejected after the model responded", 1, requests.get())
+            assertEquals(0, writes.get()); assertEquals(0, executions.get())
+        } finally { release.countDown(); commitThread.join(5000) }
+        assertTrue(session.isTerminal)
+        assertThrows(AgentRunCancelledException::class.java) { session.commitTranscript(emptyList()) { error("must not persist") } }
+    }
+
+    @Test
+    fun failedTranscriptPersistenceNeverPublishesAnUncommittedVersion() {
+        val session = AgentRuntimeSession("persist-failure")
+        val previous = listOf(io.github.mangi.eta.agent.model.AgentModelClient.ConversationMessage(role = "assistant", content = "已持久化"))
+        val pending = listOf(io.github.mangi.eta.agent.model.AgentModelClient.ConversationMessage(role = "assistant", content = "新工具声明"))
+        session.commitTranscript(previous) { }
+        assertThrows(IllegalStateException::class.java) { session.commitTranscript(pending) { error("fixture write failure") } }
+        assertEquals(previous, session.transcript)
+    }
+
+    @Test
     fun searchSuggestionsSurviveActiveReplayButStopAtCancellationAndBudget() {
         val delivered = mutableListOf<AgentEvent>()
         val session = AgentRuntimeSession("search", eventSink = delivered::add)

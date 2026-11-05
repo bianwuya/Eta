@@ -380,6 +380,12 @@ internal class AgentAppState(
         val terminalStateKnown = terminalRaceQuery is AgentRuntimeClient.CompletedRunsQuery.Known
         val activeRunIds = (activeRunQuery as? AgentRuntimeClient.ActiveRunsQuery.Known)?.runIds.orEmpty()
         val locallyObservedRunIds = withContext(Dispatchers.Main) { runStore.observedRunIds }
+        if (activeStateKnown && terminalStateKnown) {
+            AgentRunCheckpointStore.archiveInterruptedExternal(
+                appContext, checkpoints, activeRunIds,
+                completedRuns.mapTo(mutableSetOf()) { it.result.runId.ifBlank { it.handoff.id } } + locallyObservedRunIds,
+            )
+        }
         val plan = AgentRunRecoveryCoordinator.plan(
             checkpoints = checkpoints,
             completedRuns = completedRuns,

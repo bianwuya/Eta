@@ -46,9 +46,10 @@ internal interface RuntimeRunDao : ChunkedTextDao {
     suspend fun updateTranscriptRow(runId: String, transcript: String)
 
     @Transaction
-    suspend fun updateTranscript(runId: String, transcript: String) {
-        if (!hasInFlightRun(runId)) return
+    suspend fun updateTranscript(runId: String, transcript: String): Boolean {
+        if (!hasInFlightRun(runId)) return false
         updateTranscriptRow(runId, storeText("runtime_inflight_runs", runId, "transcriptJson", transcript))
+        return true
     }
 
     @Query("UPDATE runtime_inflight_runs SET context_snapshot_json = :snapshot WHERE run_id = :runId")
@@ -79,6 +80,9 @@ internal interface RuntimeRunDao : ChunkedTextDao {
         ))
     }
 
+    @Query("SELECT EXISTS(SELECT 1 FROM runtime_results WHERE run_id = :runId)")
+    suspend fun hasRuntimeResult(runId: String): Boolean
+
     @Query("DELETE FROM runtime_results WHERE run_id = :runId")
     suspend fun deleteRuntimeResult(runId: String)
 
@@ -100,7 +104,7 @@ internal interface RuntimeRunDao : ChunkedTextDao {
         if (results.isNotEmpty()) {
             insertRuntimeResults(results)
         }
-        removedRunIds.forEach { runId -> deleteInFlightRun(runId) }
+        removedRunIds.forEach { runId -> removeInFlightRun(runId) }
     }
 
     @Transaction
@@ -210,9 +214,15 @@ internal interface RuntimeRunDao : ChunkedTextDao {
     suspend fun deleteInFlightRun(runId: String)
 
     @Transaction
+    suspend fun removeInFlightRun(runId: String) {
+        deleteLocalTextOwner("runtime_subagent_tasks_v1", runId)
+        deleteInFlightRun(runId)
+    }
+
+    @Transaction
     suspend fun acknowledgeRuntimeResult(runId: String) {
         deleteRuntimeResult(runId)
-        deleteInFlightRun(runId)
+        removeInFlightRun(runId)
     }
 
     @Transaction

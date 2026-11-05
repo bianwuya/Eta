@@ -114,6 +114,7 @@ internal object AgentModelClient {
         compactionTarget: (() -> AgentCompactionTarget)? = null,
         onContextSnapshot: (AgentContextSnapshot) -> Unit = {},
         onTranscript: (List<ConversationMessage>) -> Unit = {},
+        yieldableSubagents: io.github.mangi.eta.agent.subagent.YieldableSubagents? = null,
         onEvent: (AgentEvent) -> Unit = {}
     ): ModelResponse.Text {
         config.validate()
@@ -205,6 +206,7 @@ internal object AgentModelClient {
         }
         val loop = AgentLoop(
             transcript = transcript,
+            yieldableSubagents = yieldableSubagents,
             compactionTarget = compactionTarget,
             systemCount = systemCount,
             operationId = operationId,
@@ -244,11 +246,13 @@ internal object AgentModelClient {
                 cause = throwable,
                 contextSnapshot = if (rewriteReply) null else loop.contextSnapshot(),
                 reasoningContent = loop.reasoningSnapshot(),
-                transcript = AgentToolBatchRecovery.completeInterrupted(AgentConversationCodec.transcript(
+                transcript = AgentConversationCodec.transcript(
                     transcript,
                     0,
                     loop.sensitiveToolCallIdsSnapshot(),
-                )),
+                ).let { partial ->
+                    if (yieldableSubagents != null) partial else AgentToolBatchRecovery.completeInterrupted(partial)
+                },
             )
         }
         return ModelResponse.Text(
@@ -267,6 +271,8 @@ internal object AgentModelClient {
 
     private fun toolNames(tools: JSONArray): Set<String> =
         (0 until tools.length()).mapNotNullTo(mutableSetOf()) { toolName(tools.getJSONObject(it)) }
+
+    internal fun validateConfig(config: ModelConfig) = config.validate()
 
     private fun ModelConfig.validate() {
         require(baseUrl.isNotBlank()) { "请先配置 API 地址" }

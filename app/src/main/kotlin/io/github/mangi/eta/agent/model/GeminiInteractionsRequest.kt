@@ -70,7 +70,7 @@ internal object GeminiInteractionHistory {
             messages.optJSONObject(it)?.let(GeminiEphemeralState::isRunStart) == true
         } ?: (messages.length() - 1 downTo 0).firstOrNull {
             messages.optJSONObject(it)?.let { message ->
-                message.optString("role") == "user" && !message.optBoolean("_eta_observation")
+                message.optString("role") == "user" && !message.optBoolean("_eta_observation") && !message.optBoolean("_eta_runtime_report")
             } == true
         } ?: messages.length()
         val input = JSONArray()
@@ -90,6 +90,11 @@ internal object GeminiInteractionHistory {
             val message = messages.optJSONObject(index) ?: continue
             val role = message.optString("role")
             if (role == "system") continue
+            if (index >= start && AssistantScreenContextProjection.isRuntimeConversation(message)) {
+                flushHistory()
+                input.put(userInput(content(message.opt("content"))))
+                continue
+            }
             val nativeSteps = GeminiEphemeralState.steps(message)
             if (index < start || role == "assistant" && nativeSteps == null ||
                 role == "tool" && message.optString("tool_call_id") !in liveCalls

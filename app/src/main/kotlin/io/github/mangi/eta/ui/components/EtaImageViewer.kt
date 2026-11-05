@@ -27,6 +27,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
@@ -40,17 +41,25 @@ import androidx.compose.ui.window.DialogProperties
 import io.github.mangi.eta.R
 import top.yukonga.miuix.kmp.basic.Icon
 
-/**
- * Image preview is allocated only while open.
- * A capped 1600px display copy is decoded here; chat thumbnails are sampled separately.
- * Pinch to zoom (1..5x), drag within image bounds, double tap to zoom/reset, tap to dismiss.
- */
+/** Data URL decoding remains limited to the chat attachment entry point. */
 @Composable
 internal fun ImageViewerDialog(dataUrl: String?, onDismiss: () -> Unit) {
     if (dataUrl == null) return
     val bitmap = rememberDataUrlBitmap(dataUrl) ?: return
-    var transform by remember(dataUrl) { mutableStateOf(ImageViewerTransform()) }
-    var viewport by remember(dataUrl) { mutableStateOf(IntSize.Zero) }
+    ImageViewerDialog(bitmap = bitmap, viewerKey = dataUrl, onDismiss = onDismiss)
+}
+
+/** Reuse the same dialog and gestures for an already decoded local image. */
+@Composable
+internal fun ImageViewerDialog(bitmap: ImageBitmap, onDismiss: () -> Unit) {
+    ImageViewerDialog(bitmap = bitmap, viewerKey = bitmap, onDismiss = onDismiss)
+}
+
+/** Pinch to zoom (1..5x), drag within bounds, double tap to zoom/reset, tap to dismiss. */
+@Composable
+private fun ImageViewerDialog(bitmap: ImageBitmap, viewerKey: Any, onDismiss: () -> Unit) {
+    var transform by remember(viewerKey) { mutableStateOf(ImageViewerTransform()) }
+    var viewport by remember(viewerKey) { mutableStateOf(IntSize.Zero) }
     val bitmapSize = IntSize(bitmap.width, bitmap.height)
 
     Dialog(
@@ -64,7 +73,7 @@ internal fun ImageViewerDialog(dataUrl: String?, onDismiss: () -> Unit) {
                 .onSizeChanged { viewport = it }
                 // Gestures belong to the untransformed parent: 1px of finger travel
                 // always corresponds to 1px of visual translation, regardless of zoom.
-                .pointerInput(dataUrl) {
+                .pointerInput(viewerKey) {
                     // detectTransformGestures discards movement until touch slop is
                     // crossed. That leaves the grabbed bitmap pixel several pixels
                     // behind the finger for the rest of the drag. Read each sample
@@ -109,7 +118,7 @@ internal fun ImageViewerDialog(dataUrl: String?, onDismiss: () -> Unit) {
                         } while (event.changes.any { it.pressed })
                     }
                 }
-                .pointerInput(dataUrl) {
+                .pointerInput(viewerKey) {
                     detectTapGestures(
                         onDoubleTap = { point ->
                             transform = ImageViewerGestureMath.onDoubleTap(

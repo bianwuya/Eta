@@ -31,7 +31,8 @@ class SubagentSyncFlowTest {
         assertFalse(schema.contains("max_rounds"))
         assertFalse(schema.contains("max_tokens"))
         assertFalse(schema.contains("budget"))
-        assertTrue(schema.contains("return a concise summary"))
+        assertTrue(schema.contains("accepted receipt"))
+        assertTrue(schema.contains("not completion"))
     }
 
     @Test

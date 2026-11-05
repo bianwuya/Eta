@@ -10,6 +10,7 @@ import kotlin.concurrent.withLock
 
 internal class AgentRunController {
     private val resources = CopyOnWriteArraySet<CancellableResource>()
+    private val children = mutableSetOf<AgentRunController>()
 
     @Volatile
     private var cancelled = false
@@ -45,7 +46,7 @@ internal class AgentRunController {
         get() = paused
 
     fun cancel() {
-        lock.withLock {
+        val childSnapshot = lock.withLock {
             cancelled = true
             acceptingSteering = false
             acceptingConversationMessages = false
@@ -53,7 +54,9 @@ internal class AgentRunController {
             conversationMessages.clear()
             paused = false
             pauseCondition.signalAll()
+            children.toList()
         }
+        childSnapshot.forEach { it.cancel() }
         resources.forEach { resource ->
             runCatching { resource.cancel() }
         }
@@ -100,6 +103,7 @@ internal class AgentRunController {
     fun enqueueConversationMessage(input: ConversationInput): Boolean = lock.withLock {
         if (cancelled || !acceptingConversationMessages) return false
         conversationMessages.addLast(input)
+        pauseCondition.signalAll()
         true
     }
 
@@ -121,12 +125,40 @@ internal class AgentRunController {
         emptyList()
     }
 
+    data class BoundaryInputs<T>(val steering: List<SteeringInput>, val conversations: List<ConversationInput>, val reports: List<T>)
+
+    fun <T> collectBoundaryInputs(reports: () -> List<T>): BoundaryInputs<T> = lock.withLock {
+        val readyReports = reports()
+        val steering = steeringMessages.toList().also { steeringMessages.clear() }
+        val conversations = conversationMessages.toList().also { conversationMessages.clear() }
+        BoundaryInputs(steering, conversations, readyReports)
+    }
+
+    /** Wait under the same lock as steering and wake notifications; never poll the model. */
+    fun awaitWorkAvailable(isReady: () -> Boolean) = lock.withLock {
+        while (!cancelled && (paused || (steeringMessages.isEmpty() && conversationMessages.isEmpty() && !isReady()))) {
+            try {
+                pauseCondition.await()
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                throw AgentRunCancelledException()
+            }
+        }
+        if (cancelled) throw AgentRunCancelledException()
+    }
+
+    fun signalWorkAvailable() = lock.withLock { pauseCondition.signalAll() }
+
     /**
      * 暂停执行：后续 [throwIfCancelled] 调用会阻塞挂起，直到 [resume] 或 [cancel]。
      * 在工作线程的检查点调用，不会阻塞调用方线程。
      */
     fun pause() {
-        lock.withLock { paused = true }
+        lock.withLock {
+            if (cancelled) return
+            paused = true
+            children.forEach { it.pause() }
+        }
     }
 
     /**
@@ -135,8 +167,22 @@ internal class AgentRunController {
     fun resume() {
         lock.withLock {
             paused = false
+            children.forEach { it.resume() }
             pauseCondition.signalAll()
         }
+    }
+
+    /** Child checkpoints follow parent pause/resume; already-running I/O is not cancelled. */
+    fun registerChild(child: AgentRunController): ResourceBinding {
+        val alreadyCancelled = lock.withLock {
+            if (cancelled) true else {
+                children.add(child)
+                if (paused) child.pause()
+                false
+            }
+        }
+        if (alreadyCancelled) child.cancel()
+        return ResourceBinding { lock.withLock { children.remove(child) } }
     }
 
     /**

@@ -35,12 +35,30 @@ internal class AgentRuntimeSession(
         if (state == State.RUNNING) latestTranscript = messages
     }
 
+    /** Persist and publish one version under the same terminal-state lock. */
+    fun commitTranscript(messages: List<AgentModelClient.ConversationMessage>, persist: () -> Unit) = lock.withLock {
+        // A rejected declaration must stop the loop before it can execute any tool.
+        if (state != State.RUNNING) throw AgentRunCancelledException()
+        persist()
+        latestTranscript = messages
+    }
+
+    private var recoverChildren: (List<AgentModelClient.ConversationMessage>) -> List<AgentModelClient.ConversationMessage> =
+        { AgentToolBatchRecovery.completeInterrupted(it) }
+    fun setChildRecovery(recover: (List<AgentModelClient.ConversationMessage>) -> List<AgentModelClient.ConversationMessage>) = lock.withLock {
+        if (state == State.RUNNING) recoverChildren = recover
+    }
+
     private var latestContext: AgentContextSnapshot? = null
     val contextSnapshot: AgentContextSnapshot?
         get() = lock.withLock { latestContext }
 
     fun updateContext(snapshot: AgentContextSnapshot) = lock.withLock {
         if (state == State.RUNNING) latestContext = snapshot
+    }
+
+    fun commitContext(snapshot: AgentContextSnapshot, persist: () -> Unit) = lock.withLock {
+        if (state == State.RUNNING) { persist(); latestContext = snapshot }
     }
     private var state = State.RUNNING
     private val replayEvents = mutableListOf<AgentEvent>()
@@ -178,20 +196,20 @@ internal class AgentRuntimeSession(
     }
 
     fun cancel(reason: String): Boolean {
-        val result = lock.withLock {
+        val snapshot = lock.withLock {
             if (state != State.RUNNING) return false
-            state = State.TERMINAL
-            AgentRuntimeWire.RunResult(
-                runId = runId,
-                ok = false,
-                content = "",
-                error = reason,
-                contextSnapshot = latestContext,
-                transcript = AgentToolBatchRecovery.completeInterrupted(latestTranscript),
-                operation = operation,
-            )
+            state = State.COMMITTING
+            Triple(latestTranscript, latestContext, recoverChildren)
         }
         controller.cancel()
+        val interrupted = AgentToolBatchRecovery.completeInterrupted(snapshot.first)
+        val recovered = runCatching { snapshot.third(snapshot.first) }
+        val result = AgentRuntimeWire.RunResult(
+            runId = runId, ok = false, content = "",
+            error = if (recovered.isSuccess) reason else "$reason；子代理恢复记录读取失败，结果可能不完整。",
+            contextSnapshot = snapshot.second, transcript = recovered.getOrDefault(interrupted), operation = operation,
+        )
+        lock.withLock { state = State.TERMINAL }
         beforeTerminalPublish(result)
         lock.withLock {
             subscribers.forEach { it.resultSink(result) }
