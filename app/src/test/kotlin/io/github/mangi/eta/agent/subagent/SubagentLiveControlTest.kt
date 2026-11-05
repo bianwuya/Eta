@@ -135,17 +135,17 @@ class SubagentLiveControlTest {
         val link = registry.register("sub_1", "race", "call-race", first)
         val other = registry.register("sub_2", "unaffected", "call-other", unaffected)
         val ready = CountDownLatch(1)
-        val result = AtomicReference<JSONObject>()
+        val outcomeRef = AtomicReference<JSONObject>()
         val worker = thread {
             ready.await()
-            result.set(result(registry, control("cancel", "sub_1")))
+            outcomeRef.set(result(registry, control("cancel", "sub_1")))
         }
         try {
             ready.countDown()
             link.close()
             worker.join(2_000)
             assertFalse(worker.isAlive)
-            val outcome = result.get()
+            val outcome = outcomeRef.get()
             assertNotNull(outcome)
             assertTrue(outcome!!.optString("status") == "cancel_requested" ||
                 outcome.optString("code") == "SUBAGENT_NOT_RUNNING")
