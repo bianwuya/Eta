@@ -239,7 +239,18 @@ internal class SubagentExecutor(
 
         val childToolExecutor = AgentModelClient.ToolExecutor { subCall ->
             childController.throwIfCancelled()
-            if (!profile.isToolAllowed(subCall.name)) {
+            if (childController.hasPendingParentDirective) {
+                // The parent has corrected the direction while the child was thinking.
+                // Reject stale tools already emitted by the model; inject the correction at
+                // the next complete turn instead of applying stale side effects.
+                AgentModelClient.ToolResult(
+                    content = JSONObject()
+                        .put("ok", false)
+                        .put("code", "SUBAGENT_REPLAN_REQUIRED")
+                        .put("message", "主代理有新的任务修正等待处理，旧工具调用未执行；请先读取新指令再重新规划。")
+                        .toString(),
+                )
+            } else if (!profile.isToolAllowed(subCall.name)) {
                 AgentModelClient.ToolResult(
                     content = JSONObject()
                         .put("ok", false)
