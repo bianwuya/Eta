@@ -51,17 +51,17 @@ internal class SubagentExecutor(
     ): AgentModelClient.ToolResult {
         parentController.throwIfCancelled()
         val args = runCatching { JSONObject(toolCall.argumentsJson) }.getOrNull()
-            ?: return errorResult("INVALID_ARGUMENTS", "subagent 参数必须是合法的 JSON 对象")
+            ?: return failureResult(toolCall, "INVALID_ARGUMENTS", "subagent 参数必须是合法的 JSON 对象")
 
         val prompt = args.optString("prompt").trim()
         val description = args.optString("description").trim()
             .replace(Regex("\\s+"), " ")
             .take(120)
         if (prompt.isEmpty()) {
-            return errorResult("INVALID_ARGUMENTS", "prompt 不能为空")
+            return failureResult(toolCall, "INVALID_ARGUMENTS", "prompt 不能为空")
         }
         if (description.isEmpty()) {
-            return errorResult("INVALID_ARGUMENTS", "description 不能为空")
+            return failureResult(toolCall, "INVALID_ARGUMENTS", "description 不能为空")
         }
 
         val resumeId = args.optString("resume").trim()
@@ -69,7 +69,8 @@ internal class SubagentExecutor(
         val isResume = resumeId.isNotEmpty()
 
         if (isResume && requestedType.isNotEmpty()) {
-            return errorResult(
+            return failureResult(
+                toolCall,
                 "RESUME_WITH_TYPE_UNAVAILABLE",
                 "resume 续接已有 Subagent 时不得同时指定 subagent_type；请仅传递 resume 与 prompt。",
             )
@@ -79,12 +80,14 @@ internal class SubagentExecutor(
         val priorHistory: List<AgentModelClient.ConversationMessage>
         if (isResume) {
             val existing = SubagentSessionStore.get(conversationKey, resumeId)
-                ?: return errorResult(
+                ?: return failureResult(
+                    toolCall,
                     "SUBAGENT_NOT_FOUND",
                     "未找到可续接的 Subagent：$resumeId（可能已过期或不属于当前会话）",
                 )
             if (!existing.running.compareAndSet(false, true)) {
-                return errorResult(
+                return failureResult(
+                    toolCall,
                     "SUBAGENT_ALREADY_RUNNING",
                     "Subagent $resumeId 当前正在运行中，无法并发续接",
                 )
@@ -106,12 +109,16 @@ internal class SubagentExecutor(
         }
 
         return try {
-            val task = tasks.start(entry.subagentId, toolCall.id, description, SubagentTaskManager.Budget.from(args),
+            val budget = SubagentTaskManager.Budget.from(args, entry.profile)
+            val task = tasks.start(entry.subagentId, toolCall.id, description, budget,
                 onFinish = { SubagentSessionStore.releaseRunning(conversationKey, entry.subagentId) },
                 onState = { task, state, reason ->
+                    val previous = latestSnapshots[toolCall.id]?.let(SubagentActivitySnapshot::decode)
+                    val failedDetail = previous?.takeIf { state == "failed" || state == "interrupted" }
                     val snapshot = SubagentActivitySnapshot(subagentId = entry.subagentId,
                         subagentType = entry.profile.name, description = description, prompt = SubagentDisplayText.redact(prompt).take(512),
-                        status = state, currentAction = reason.ifBlank { state }, previewTruncated = prompt.length > 512,
+                        status = state, currentAction = failedDetail?.currentAction?.ifBlank { null } ?: reason.ifBlank { state },
+                        error = failedDetail?.error, previewTruncated = prompt.length > 512,
                         updatedAt = System.currentTimeMillis())
                     latestSnapshots[toolCall.id] = snapshot.encode()
                     onProgress(AgentEvent.SubagentProgress(parentRound, toolCall.id, entry.subagentId, entry.profile.name, snapshot.encode()))
@@ -126,7 +133,7 @@ internal class SubagentExecutor(
                     ?: SubagentActivitySnapshot.initialFromArguments(toolCall.argumentsJson)?.copy(subagentId = entry.subagentId)?.encode())
         } catch (failure: Exception) {
             SubagentSessionStore.releaseRunning(conversationKey, entry.subagentId)
-            errorResult("SUBAGENT_START_FAILED", failure.message ?: "启动失败")
+            failureResult(toolCall, "SUBAGENT_START_FAILED", failure.message ?: "启动失败")
         }
     }
 
@@ -140,7 +147,14 @@ internal class SubagentExecutor(
 
         val resolvedConfig = runCatching { configProvider() }.getOrElse { throwable ->
             SubagentSessionStore.releaseRunning(conversationKey, subagentId)
-            return errorResult("SUBAGENT_CONFIG_ERROR", throwable.message ?: "无法加载 Subagent 模型配置")
+            val message = throwable.message ?: "无法加载 Subagent 模型配置"
+            // The launch call already returned; this child never reached the model, so publish a real
+            // failed snapshot instead of leaving the asynchronous card on "running".
+            val failed = SubagentActivitySnapshot.failureFromArguments(toolCall.argumentsJson, message)
+                .copy(subagentId = subagentId)
+            latestSnapshots[toolCall.id] = failed.encode()
+            onProgress(AgentEvent.SubagentProgress(parentRound, toolCall.id, subagentId, profile.name, failed.encode()))
+            return errorResult("SUBAGENT_CONFIG_ERROR", message)
         }
         val modelLabel = resolvedConfig.modelDisplayName.ifBlank { resolvedConfig.model }
         val tracker = StepTracker(
@@ -487,6 +501,23 @@ internal class SubagentExecutor(
                 .put("message", message)
                 .toString(),
         )
+
+    /**
+     * Launch/resume failures carry a real failed snapshot so the timeline card cannot keep the
+     * synthetic "running / 正在启动" preview produced before execution started.
+     */
+    private fun failureResult(
+        toolCall: AgentModelClient.ToolCall,
+        code: String,
+        message: String,
+    ): AgentModelClient.ToolResult = AgentModelClient.ToolResult(
+        content = JSONObject()
+            .put("ok", false)
+            .put("code", code)
+            .put("message", message)
+            .toString(),
+        command = SubagentActivitySnapshot.failureFromArguments(toolCall.argumentsJson, message).encode(),
+    )
 
     internal class StepTracker(
         private val subagentId: String,

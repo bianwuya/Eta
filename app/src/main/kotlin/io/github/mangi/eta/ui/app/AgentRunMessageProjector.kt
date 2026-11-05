@@ -438,23 +438,37 @@ internal class AgentRunMessageProjector(
         }
         val targetIndex = messages.indexOfLast { it is ToolActivityMessageUi && it.id == targetId }
         if (targetIndex < 0) return messages
+        val failedBeforeSnapshot = event.success == null && status == ToolActivityStatusUi.Failed
 
         return messages.mapIndexed { index, message ->
             if (index == targetIndex && message is ToolActivityMessageUi) {
+                val subagent = event.name == "subagent"
+                val candidates = if (subagent) {
+                    listOfNotNull(message.command, event.command).mapNotNull { raw ->
+                        io.github.mangi.eta.agent.subagent.SubagentActivitySnapshot.decode(raw)?.let { it to raw }
+                    }
+                } else emptyList()
+                val merged = candidates.maxByOrNull { it.first.updatedAt }
+                val mergedStatus = merged?.first?.status
+                val failedSnapshot = if (subagent && (event.success == false || failedBeforeSnapshot)) {
+                    failureSnapshotFor(merged?.first, event)
+                } else null
                 message.copy(
-                    status = if (event.name == "subagent") {
-                        val latest = listOfNotNull(message.command, event.command).mapNotNull {
-                            io.github.mangi.eta.agent.subagent.SubagentActivitySnapshot.decode(it)
-                        }.maxByOrNull { it.updatedAt }
-                        when (latest?.status) {
-                            "running", "queued", "pausing", "paused", "waiting_decision", "cancelling" -> ToolActivityStatusUi.Running
-                            "failed", "cancelled", "interrupted", "completed_previous_revision", "completed_with_unconsumed_guidance" -> ToolActivityStatusUi.Failed
+                    status = if (subagent) {
+                        // A failed launch/resume must not be masked by the synthetic "running" preview.
+                        when {
+                            event.success == false || failedBeforeSnapshot -> ToolActivityStatusUi.Failed
+                            mergedStatus != null && mergedStatus in TERMINAL_SUBAGENT_STATUSES -> ToolActivityStatusUi.Failed
+                            mergedStatus != null && mergedStatus in ACTIVE_SUBAGENT_STATUSES -> ToolActivityStatusUi.Running
                             else -> status
                         }
                     } else status,
-                    command = if (event.name == "subagent") listOfNotNull(message.command, event.command).maxByOrNull {
-                        io.github.mangi.eta.agent.subagent.SubagentActivitySnapshot.decode(it)?.updatedAt ?: 0
-                    } else event.command ?: message.command,
+                    command = when {
+                        failedSnapshot != null -> failedSnapshot
+                        // Keep the newest raw snapshot so unknown fields survive projection.
+                        subagent -> merged?.second ?: message.command
+                        else -> event.command ?: message.command
+                    },
                     resultSummary = event.resultSummary,
                     imageCount = event.imageCount,
                 )
@@ -462,6 +476,27 @@ internal class AgentRunMessageProjector(
                 message
             }
         }
+    }
+
+    /**
+     * When the tool call failed but the retained snapshot still claims to run, rewrite it to a real
+     * failure so the card and its inspector show the error instead of "正在启动".
+     */
+    private fun failureSnapshotFor(
+        merged: io.github.mangi.eta.agent.subagent.SubagentActivitySnapshot?,
+        event: AgentEvent.ToolFinished,
+    ): String? {
+        if (event.success == true) return null
+        val base = merged ?: return io.github.mangi.eta.agent.subagent.SubagentActivitySnapshot
+            .failureFromArguments("{}", event.resultSummary).encode()
+        if (base.status in TERMINAL_SUBAGENT_STATUSES) return null
+        val detail = event.resultSummary.takeIf { it.isNotBlank() } ?: "启动或续接失败"
+        return base.copy(
+            status = io.github.mangi.eta.agent.subagent.SubagentActivitySnapshot.STATUS_FAILED,
+            currentAction = detail.lineSequence().firstOrNull()?.take(120).orEmpty(),
+            error = base.error ?: detail.take(1_000),
+            updatedAt = base.updatedAt + 1,
+        ).encode()
     }
 
     fun updateSubagentProgress(
@@ -761,6 +796,12 @@ internal class AgentRunMessageProjector(
 }
 
 private const val MAX_TOOL_RESULT_PREVIEW_CHARS = 48
+private val ACTIVE_SUBAGENT_STATUSES = setOf(
+    "running", "queued", "pausing", "paused", "waiting_decision", "cancelling",
+)
+private val TERMINAL_SUBAGENT_STATUSES = setOf(
+    "failed", "cancelled", "interrupted", "completed_previous_revision", "completed_with_unconsumed_guidance",
+)
 
 internal fun AgentTokenUsage.toUi(): TokenUsageUi =
     TokenUsageUi(

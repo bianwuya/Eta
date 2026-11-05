@@ -18,6 +18,8 @@ class SubagentTaskManagerTest {
         text: String = "", revise: Boolean = false): JSONObject = JSONObject(manager.control(JSONObject()
         .put("action", action).put("task_id", task?.id.orEmpty()).put("text", text).put("revise", revise)
         .put("timeout_ms", 3000)).content)
+    private fun controlArgs(manager: SubagentTaskManager, args: JSONObject): JSONObject =
+        JSONObject(manager.control(args).content)
     private fun await(latch: CountDownLatch) = assertTrue(latch.await(3, TimeUnit.SECONDS))
 
     @Test fun asynchronousStartAndUserSteeringWakeWaitWithoutCancellingChildren() {
@@ -143,9 +145,136 @@ class SubagentTaskManagerTest {
             assertEquals("paused", task.snapshot().getString("status"))
             assertEquals(13, task.snapshot().getInt("observed_tokens"))
             assertEquals("budget", task.snapshot().getString("pause_reason"))
+            val hits = task.snapshot().getJSONArray("budget_hit")
+            assertTrue(hits.toString().contains("tokens"))
+            assertTrue(hits.toString().contains("rounds"))
+            val detail = task.snapshot().getString("pause_detail")
+            assertTrue(detail.contains("窗口"))
+            assertTrue(detail.contains("累计"))
             control(manager, "continue", task); control(manager, "wait", task)
             assertEquals("completed", task.snapshot().getString("status"))
         }
+    }
+
+    @Test fun continueAdjustsBudgetAndDeliversTextInTheSameNewWindow() {
+        SubagentTaskManager(AgentRunController()).use { manager ->
+            val entered = CountDownLatch(1)
+            val finish = CountDownLatch(1)
+            val task = manager.start("child", "call", "work", SubagentTaskManager.Budget(rounds = 1, tokens = 10)) { task ->
+                task.coordination.responseReceived(AgentTokenUsage(inputTokens = 11, outputTokens = 2))
+                entered.countDown()
+                task.coordination.checkpoint()
+                // Hold after the resume so the test can inspect and acknowledge the new guidance.
+                finish.await(3, TimeUnit.SECONDS)
+                success()
+            }
+            await(entered); control(manager, "wait", task)
+            assertEquals("paused", task.snapshot().getString("status"))
+
+            val applied = controlArgs(manager, JSONObject().put("action", "continue").put("task_id", task.id)
+                .put("text", "调整预算后继续完成剩余验证").put("max_tokens", 2_000_000L)
+                .put("max_rounds", 240).put("timeout_ms", 3000))
+            assertEquals(true, applied.getBoolean("ok"))
+            assertEquals("queued", applied.getString("guidance_delivery"))
+            val snapshot = task.snapshot()
+            assertEquals("running", snapshot.getString("status"))
+            assertEquals(2_000_000L, snapshot.getLong("budget_tokens"))
+            assertEquals(240, snapshot.getInt("budget_rounds"))
+            assertEquals(900L, snapshot.getLong("budget_seconds"))
+            assertEquals(2, snapshot.getInt("grants"))
+            // New window counters reset; cumulative stays for display.
+            assertEquals(0, snapshot.getInt("window_tokens"))
+            assertEquals(13, snapshot.getInt("total_tokens"))
+            val mail = task.coordination.drainMessages().single()
+            assertTrue(mail.contains("调整预算后继续完成剩余验证"))
+            task.coordination.requestStarted()
+            task.coordination.responseReceived(null)
+            assertEquals("response_received",
+                task.snapshot().getJSONArray("guidance").getJSONObject(0).getString("delivery"))
+            assertTrue(task.coordination.drainMessages().isEmpty())
+            finish.countDown()
+            control(manager, "wait", task)
+            assertEquals("completed", task.snapshot().getString("status"))
+        }
+    }
+
+    @Test fun invalidContinueBudgetChangesNothingAndKeepsTaskPaused() {
+        SubagentTaskManager(AgentRunController()).use { manager ->
+            val entered = CountDownLatch(1)
+            val task = manager.start("child", "call", "work", SubagentTaskManager.Budget(rounds = 1, tokens = 10)) { task ->
+                task.coordination.responseReceived(AgentTokenUsage(inputTokens = 11, outputTokens = 2))
+                entered.countDown(); task.coordination.checkpoint(); success()
+            }
+            await(entered); control(manager, "wait", task)
+            val rejected = controlArgs(manager, JSONObject().put("action", "continue").put("task_id", task.id)
+                .put("text", "不应投递").put("max_tokens", 0).put("timeout_ms", 3000))
+            assertEquals(false, rejected.getBoolean("ok"))
+            assertEquals("SUBAGENT_CONTROL_ERROR", rejected.getString("code"))
+            val snapshot = task.snapshot()
+            assertEquals("paused", snapshot.getString("status"))
+            assertEquals(10L, snapshot.getLong("budget_tokens"))
+            assertEquals(1, snapshot.getInt("rounds"))
+            assertEquals(0, snapshot.getJSONArray("guidance").length())
+            control(manager, "cancel", task)
+        }
+    }
+
+    @Test fun progressReportsStayDetailOnlyWhileCoordinationWakesAndIsPreserved() {
+        SubagentTaskManager(AgentRunController()).use { manager ->
+            val entered = CountDownLatch(1); val release = CountDownLatch(1)
+            val task = manager.start("child", "call", "work", SubagentTaskManager.Budget()) { task ->
+                entered.countDown(); release.await(3, TimeUnit.SECONDS); task.coordination.checkpoint(); success()
+            }
+            await(entered)
+            val progress = JSONObject(manager.report(task, JSONObject().put("text", "普通进度：正在读取文件")
+                .put("kind", "progress")).content)
+            assertEquals(false, progress.getBoolean("in_mailbox"))
+            assertTrue(manager.coordination.drainMessages().isEmpty())
+            assertEquals("普通进度：正在读取文件", task.snapshot().getString("latest_report"))
+            assertEquals(1, task.snapshot().getJSONArray("recent_progress").length())
+
+            // Legacy call without kind keeps the critical coordination semantics.
+            manager.report(task, JSONObject().put("text", "关键事实：接口位于 L20"))
+            assertEquals("coordination", task.snapshot().getString("latest_report_kind"))
+            assertTrue(manager.coordination.drainMessages().single().contains("关键事实：接口位于 L20"))
+
+            manager.report(task, JSONObject().put("text", "最终交接：已确认文件与测试").put("kind", "final"))
+            assertTrue(manager.coordination.drainMessages().single().contains("最终交接"))
+
+            // needs_decision wins over kind=progress and still pauses for a decision.
+            val decision = JSONObject(manager.report(task, JSONObject().put("text", "需要选择 A 或 B")
+                .put("kind", "progress").put("needs_decision", true)).content)
+            assertEquals(true, decision.getBoolean("will_pause_at_safe_boundary"))
+            assertTrue(manager.coordination.drainMessages().single().contains("需要选择 A 或 B"))
+            release.countDown(); control(manager, "wait", task)
+            assertEquals("waiting_decision", task.snapshot().getString("status"))
+            control(manager, "cancel", task)
+        }
+    }
+
+    @Test fun engineeringProfileDefaultsToSixMillionTokensAndReadOnlyStaysSmall() {
+        assertEquals(6_000_000L, SubagentProfile.CODER.defaultTokenBudget)
+        assertEquals(300_000L, SubagentProfile.EXPLORE.defaultTokenBudget)
+        assertEquals(6_000_000L, SubagentTaskManager.Budget.from(JSONObject(), SubagentProfile.CODER).tokens)
+        assertEquals(300_000L, SubagentTaskManager.Budget.from(JSONObject(), SubagentProfile.EXPLORE).tokens)
+        assertEquals(42L, SubagentTaskManager.Budget.from(JSONObject().put("max_tokens", 42), SubagentProfile.CODER).tokens)
+        val schema = AgentSubagentToolCatalog.controlSchema().toString()
+        assertTrue(schema.contains("max_tokens"))
+        val reportSchema = AgentSubagentToolCatalog.reportSchema().toString()
+        assertTrue(reportSchema.contains("progress"))
+        assertTrue(reportSchema.contains("coordination"))
+    }
+
+    @Test fun resumeFailureCarriesFailedSnapshotSoCardCannotStayRunning() {
+        val snapshot = SubagentActivitySnapshot.failureFromArguments(
+            JSONObject().put("resume", "sub_123").put("prompt", "继续").put("description", "续接失败")
+                .toString(),
+            "Subagent sub_123 当前正在运行中，无法并发续接",
+        )
+        assertEquals(SubagentActivitySnapshot.STATUS_FAILED, snapshot.status)
+        assertEquals("sub_123", snapshot.subagentId)
+        assertTrue(snapshot.error!!.contains("无法并发续接"))
+        assertTrue(snapshot.updatedAt > 0)
     }
 
     @Test fun cancelledQueuedTaskRunsFinalizerWithoutStartingModelWork() {

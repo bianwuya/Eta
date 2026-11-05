@@ -87,6 +87,14 @@ class SubagentTest {
         assertTrue("write_file" in coderTools)
         assertTrue("edit_file" in coderTools)
         assertTrue("terminal" in coderTools)
+
+        // Cross-conversation messaging is parent-only: children must not message or wake other conversations.
+        assertFalse(SubagentProfile.CODER.isToolAllowed("conversation_list"))
+        assertFalse(SubagentProfile.CODER.isToolAllowed("conversation_send"))
+        assertTrue("conversation_list" in SubagentProfile.FORBIDDEN_TOOLS)
+        assertTrue("conversation_send" in SubagentProfile.FORBIDDEN_TOOLS)
+        val ephemeral = SubagentProfile.resolve(name = "ad-hoc-agent", catalog = SubagentProfile.BUILTIN_PROFILES)
+        assertFalse(ephemeral.isToolAllowed("conversation_send"))
     }
 
     @Test
