@@ -46,9 +46,14 @@ internal class AgentRunController {
     private var acceptingConversationMessages = true
     @Volatile
     private var paused = false
+    private var pauseCheckpointReached = false
 
     val isPaused: Boolean
         get() = paused
+
+    /** True only once an executing worker has actually reached a paused checkpoint. */
+    val isPausedAtCheckpoint: Boolean
+        get() = lock.withLock { paused && pauseCheckpointReached }
 
     fun cancel() {
         val childSnapshot = lock.withLock {
@@ -58,6 +63,7 @@ internal class AgentRunController {
             steeringMessages.clear()
             conversationMessages.clear()
             paused = false
+            pauseCheckpointReached = false
             pauseCondition.signalAll()
             children.toList()
         }
@@ -176,6 +182,7 @@ internal class AgentRunController {
         lock.withLock {
             if (cancelled) return
             paused = true
+            pauseCheckpointReached = false
             children.forEach { it.pause() }
         }
     }
@@ -186,6 +193,7 @@ internal class AgentRunController {
     fun resume() {
         lock.withLock {
             paused = false
+            pauseCheckpointReached = false
             children.forEach { it.resume() }
             pauseCondition.signalAll()
         }
@@ -211,6 +219,7 @@ internal class AgentRunController {
     fun throwIfCancelled() {
         lock.withLock {
             while (paused && !cancelled) {
+                pauseCheckpointReached = true
                 try {
                     pauseCondition.await()
                 } catch (_: InterruptedException) {
