@@ -566,50 +566,9 @@ private fun DockEntry(
     }
 }
 
-private data class ConversationDrawerGroup(
-    val section: ConversationDrawerSection,
-    val items: List<ConversationSummaryUi>,
-)
-
-private sealed interface ConversationDrawerSection {
-    data object Pinned : ConversationDrawerSection
-    data object Today : ConversationDrawerSection
-    data class Dated(val label: String) : ConversationDrawerSection
-}
-
 @Composable
 private fun ConversationDrawerGroup.localizedLabel(): String = when (val value = section) {
     ConversationDrawerSection.Pinned -> stringResource(R.string.conversation_section_pinned)
     ConversationDrawerSection.Today -> stringResource(R.string.conversation_section_today)
     is ConversationDrawerSection.Dated -> value.label
-}
-
-private fun List<ConversationSummaryUi>.groupForDrawer(): List<ConversationDrawerGroup> {
-    if (isEmpty()) return emptyList()
-    val groups = mutableListOf<ConversationDrawerGroup>()
-    for (conversation in this) {
-        val section = conversation.drawerSection()
-        val last = groups.lastOrNull()
-        if (last?.section == section) {
-            groups[groups.lastIndex] = last.copy(items = last.items + conversation)
-        } else {
-            groups += ConversationDrawerGroup(section = section, items = listOf(conversation))
-        }
-    }
-    return groups
-}
-
-private fun ConversationSummaryUi.drawerSection(): ConversationDrawerSection = when {
-    isPinned -> ConversationDrawerSection.Pinned
-    isActiveRun || isUpdatedToday(updatedAtMillis) -> ConversationDrawerSection.Today
-    else -> ConversationDrawerSection.Dated(timeLabel)
-}
-
-private fun isUpdatedToday(timestampMillis: Long): Boolean {
-    if (timestampMillis <= 0L) return true
-    val now = java.util.Calendar.getInstance()
-    val target = java.util.Calendar.getInstance().apply { timeInMillis = timestampMillis }
-    return now.get(java.util.Calendar.ERA) == target.get(java.util.Calendar.ERA) &&
-        now.get(java.util.Calendar.YEAR) == target.get(java.util.Calendar.YEAR) &&
-        now.get(java.util.Calendar.DAY_OF_YEAR) == target.get(java.util.Calendar.DAY_OF_YEAR)
 }
