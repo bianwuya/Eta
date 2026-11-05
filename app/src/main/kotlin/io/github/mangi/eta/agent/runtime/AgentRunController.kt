@@ -20,7 +20,12 @@ internal class AgentRunController {
 
     private val lock = ReentrantLock()
     private val pauseCondition = lock.newCondition()
-    data class SteeringInput(val text: String, val images: List<io.github.mangi.eta.agent.model.AgentModelClient.ModelImage> = emptyList())
+    enum class SteeringOrigin { USER, PARENT_AGENT }
+    data class SteeringInput(
+        val text: String,
+        val images: List<io.github.mangi.eta.agent.model.AgentModelClient.ModelImage> = emptyList(),
+        val origin: SteeringOrigin = SteeringOrigin.USER,
+    )
 
     /**
      * 来自另一个会话的显式消息。与 steering 共用完整 turn 边界，但以运行时数据注入，
@@ -65,12 +70,22 @@ internal class AgentRunController {
     /**
      * 将补充指令排入下一个 turn。steering 不取消当前模型请求或工具批次。
      */
-    fun steer(text: String, images: List<io.github.mangi.eta.agent.model.AgentModelClient.ModelImage> = emptyList()): Boolean {
+    fun steer(text: String, images: List<io.github.mangi.eta.agent.model.AgentModelClient.ModelImage> = emptyList()): Boolean =
+        enqueueSteering(text, images, SteeringOrigin.USER)
+
+    /** Parent-agent directives are distinct from end-user steering and never imply user authorization. */
+    fun steerFromParent(text: String): Boolean = enqueueSteering(text, emptyList(), SteeringOrigin.PARENT_AGENT)
+
+    private fun enqueueSteering(
+        text: String,
+        images: List<io.github.mangi.eta.agent.model.AgentModelClient.ModelImage>,
+        origin: SteeringOrigin,
+    ): Boolean {
         val prompt = text.trim()
         if (prompt.isBlank() && images.isEmpty()) return false
         lock.withLock {
             if (cancelled || !acceptingSteering) return false
-            steeringMessages.addLast(SteeringInput(prompt, images.toList()))
+            steeringMessages.addLast(SteeringInput(prompt, images.toList(), origin))
             pauseCondition.signalAll()
         }
         return true
