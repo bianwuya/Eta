@@ -492,6 +492,9 @@ fun AgentAppRoot(
                     onOpenRequestStats = { pushRoute(AppRoute.SubagentStats) },
                 )
             }
+            entry<AppRoute.ImageGenSettings>(swipeDismiss = swipeDismiss) {
+                io.github.mangi.eta.local.imagegen.ImageGenSettingsScreen(onBack = ::popRoute)
+            }
             entry<AppRoute.CompactionSettings>(swipeDismiss = swipeDismiss) {
                 io.github.mangi.eta.local.compaction.CompactionSettingsScreen(onBack = ::popRoute)
             }
@@ -846,6 +849,15 @@ fun AgentAppRoot(
                     label = stringResource(R.string.conversation_rename_hint),
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
+                )
+                top.yukonga.miuix.kmp.basic.TextButton(
+                    text = "重新生成标题",
+                    enabled = !conversation.isActiveRun,
+                    onClick = {
+                        agentState.regenerateConversationTitle(conversation.id)
+                        conversationRenameTarget = null
+                    },
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
                 )
                 MiuixDialogActions(
                     confirmText = stringResource(R.string.action_save),

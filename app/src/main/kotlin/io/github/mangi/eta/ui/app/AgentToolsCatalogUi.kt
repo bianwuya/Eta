@@ -10,6 +10,14 @@ internal fun buildToolsState(context: Context): AgentToolsUiState =
     AgentToolsUiState(
         groups = listOf(
             ToolGroupUi(
+                id = "creation",
+                title = "创作",
+                tools = listOf(
+                    ToolItemUi("generate_image", "生成图片", "使用独立固定配置生成并保存真实图片，不随聊天模型或账号切换"),
+                    ToolItemUi("ask_user_questions", "向用户提问", "在原会话显示紧凑选项，统一提交后由原任务继续；未回答不等于同意"),
+                ),
+            ),
+            ToolGroupUi(
                 id = "screen",
                 title = context.getString(R.string.state_screens_and_controls_3f095b),
                 tools = listOf(

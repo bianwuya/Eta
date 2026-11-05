@@ -84,6 +84,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -102,6 +103,12 @@ internal class AgentAppState(
     private val runMessageProjector = AgentRunMessageProjector()
     private val runStore = AgentRunStore(scope) { runId, event -> applyRunEvent(runId, event) }
     private val pendingConversationDeletes = mutableSetOf<String>()
+    private data class TitleCandidate(
+        val conversationId: String, val expectedTitle: String, val prompt: String,
+        val source: io.github.mangi.eta.local.titles.ConversationTitleGenerator.Source? = null,
+    )
+    private val titleCandidates = mutableMapOf<String, TitleCandidate>()
+    private val titleJobs = mutableMapOf<String, Job>()
     private val steeringMutex = Mutex()
     private val steeringJobs = mutableMapOf<String, Pair<String, Job>>()
     private val unconfirmedSteering = mutableSetOf<String>()
@@ -1053,6 +1060,8 @@ internal class AgentAppState(
     }
 
     private fun deleteSettledConversation(conversationId: String) {
+        titleCandidates.entries.removeAll { it.value.conversationId == conversationId }
+        titleJobs.remove(conversationId)?.cancel()
         pendingConversationDeletes.remove(conversationId)
         BrowserSessionRegistry.requestRemove(conversationId)
         val wasSelected = selectedConversationId == conversationId
@@ -1090,8 +1099,80 @@ internal class AgentAppState(
     fun renameConversation(conversationId: String, title: String) {
         val trimmed = title.trim()
         if (trimmed.isBlank()) return
+        titleCandidates.entries.removeAll { it.value.conversationId == conversationId }
+        titleJobs.remove(conversationId)?.cancel()
         conversationTitles = conversationTitles + (conversationId to trimmed)
         conversationUpdatedAt = conversationUpdatedAt + (conversationId to System.currentTimeMillis())
+        refreshConversationSummaries()
+        persistConversations()
+    }
+
+    fun regenerateConversationTitle(conversationId: String) {
+        val state = conversationsById[conversationId] ?: return
+        if (state.isStreaming || state.roleplay != null || conversationId in titleJobs) return
+        val expectedTitle = conversationTitles[conversationId].orEmpty()
+        val preparation = scope.launch(start = CoroutineStart.LAZY) {
+            try {
+                val messages = withContext(Dispatchers.IO) { AgentConversationStore.loadAllMessages(appContext, conversationId) }
+                val prompt = messages.filterIsInstance<UserMessageUi>().firstOrNull()?.content ?: return@launch
+                val answer = messages.filterIsInstance<AgentMessageUi>().firstOrNull()?.content ?: return@launch
+                val source = withContext(Dispatchers.IO) {
+                    RuntimeConfigRepository.runtimeConfigFor(state.modelId)?.let {
+                        io.github.mangi.eta.local.titles.ConversationTitleGenerator.source(it)
+                    }
+                } ?: return@launch
+                if (conversationId !in conversationsById || conversationsById[conversationId]?.isStreaming == true ||
+                    conversationTitles[conversationId] != expectedTitle) return@launch
+                generateAndApplyTitle(TitleCandidate(conversationId, expectedTitle, prompt, source), answer, manual = true)
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) {
+                Toast.makeText(appContext, "生成标题失败，原名称已保留。", Toast.LENGTH_SHORT).show()
+            } finally {
+                if (titleJobs[conversationId] === kotlinx.coroutines.currentCoroutineContext()[Job]) titleJobs.remove(conversationId)
+            }
+        }
+        titleJobs[conversationId] = preparation
+        preparation.start()
+    }
+
+    private fun settleAutoTitle(runId: String, result: AgentRuntimeWire.RunResult, saved: Boolean) {
+        val candidate = titleCandidates.remove(runId) ?: return
+        if (!saved || !result.ok || result.content.isBlank() || candidate.source == null ||
+            result.operation != AgentRuntimeWire.OP_CHAT || candidate.conversationId in titleJobs) return
+        val job = scope.launch(start = CoroutineStart.LAZY) {
+            try { generateAndApplyTitle(candidate, result.content, manual = false) }
+            catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) { /* Best effort: retain provisional title; never fail the chat. */ }
+            finally {
+                if (titleJobs[candidate.conversationId] === kotlinx.coroutines.currentCoroutineContext()[Job]) titleJobs.remove(candidate.conversationId)
+            }
+        }
+        titleJobs[candidate.conversationId] = job
+        job.start()
+    }
+
+    private suspend fun generateAndApplyTitle(candidate: TitleCandidate, answer: String, manual: Boolean) {
+        val source = candidate.source ?: return
+        if (!manual && !io.github.mangi.eta.data.datastore.SettingsDataStore.settings().autoConversationTitle) return
+        val controller = io.github.mangi.eta.agent.runtime.AgentRunController()
+        val title = try {
+            kotlinx.coroutines.withTimeout(45_000) { kotlinx.coroutines.coroutineScope {
+                val work = async(Dispatchers.IO) {
+                    io.github.mangi.eta.local.titles.ConversationTitleGenerator.generate(source, candidate.prompt, answer, controller)
+                }
+                try { work.await() } catch (cancelled: CancellationException) {
+                    controller.cancel()
+                    throw cancelled
+                }
+            } }
+        } finally { controller.cancel() }
+        val id = candidate.conversationId
+        val enabled = manual || io.github.mangi.eta.data.datastore.SettingsDataStore.settings().autoConversationTitle
+        kotlinx.coroutines.currentCoroutineContext()[Job]?.ensureActive()
+        // Final compare-and-apply has no suspension: a concurrent manual rename always wins.
+        if (!enabled || id !in conversationsById || id in pendingConversationDeletes ||
+            conversationTitles[id] != candidate.expectedTitle) return
+        conversationTitles = conversationTitles + (id to title)
         refreshConversationSummaries()
         persistConversations()
     }
@@ -1340,6 +1421,9 @@ internal class AgentAppState(
         }
 
         conversationTitles = conversationTitles + (conversationId to title)
+        if (currentTitle.isNullOrBlank() && history.isEmpty() && editBoundary == null && state.roleplay == null) {
+            titleCandidates[runId] = TitleCandidate(conversationId, title, prompt)
+        }
         if (selectedConversationId == conversationId) {
             conversationPaneState = conversationPaneState.copy(selectedConversationId = conversationId)
         }
@@ -1658,6 +1742,12 @@ internal class AgentAppState(
                     )
                 }
                 return@launch
+            }
+            val titleSource = try {
+                io.github.mangi.eta.local.titles.ConversationTitleGenerator.source(config)
+            } catch (_: Exception) { null }
+            withContext(Dispatchers.Main) {
+                titleCandidates[runId]?.let { titleCandidates[runId] = it.copy(source = titleSource) }
             }
             val modelImages = images.map { p ->
                 AgentModelClient.ModelImage(
@@ -2161,6 +2251,7 @@ internal class AgentAppState(
             val stoppedDuringSettlement = runStore.wasStoppedByUser(runId)
             setConversationStreaming(runId, false)
             runStore.remove(runId)
+            settleAutoTitle(runId, result, resultSaved && !explicitlyStoppedByUser && !stoppedDuringSettlement)
             refreshConversationSummaries()
             if (conversationId in pendingConversationDeletes) {
                 if (resultSaved && acknowledged) {

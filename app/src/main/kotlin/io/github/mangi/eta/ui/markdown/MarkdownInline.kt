@@ -337,7 +337,8 @@ internal class MarkdownInlineBuilder(
         val label = alt.ifBlank { destination.orEmpty() }
         val safeUrl = destination?.let(::safeLinkUrl)
         if (destination != null && io.github.mangi.eta.local.richcontent.LocalPreviewFiles.isReference(destination)) {
-            pushStringAnnotation(io.github.mangi.eta.local.richcontent.IMAGE_ANNOTATION, destination)
+            // 与 appendLink 一致：解码 CommonMark 转义与实体，否则中文/空格路径会解析成功而打开失败。
+            pushStringAnnotation(io.github.mangi.eta.local.richcontent.IMAGE_ANNOTATION, decodeMarkdownText(destination))
             append(label)
             pop()
         } else if (safeUrl == null) append(label) else withLink(linkAnnotation(safeUrl)) { append(label) }

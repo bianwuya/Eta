@@ -252,6 +252,8 @@ private fun SettingsPageContent(
     val selectedModel = remember(selectedProvider, selectedModelId) {
         selectedProvider?.models?.find { it.id == selectedModelId }
     }
+    val chatSettingsFlow = remember { io.github.mangi.eta.data.datastore.SettingsDataStore.settingsFlow() }
+    val chatSettings by chatSettingsFlow.collectAsState(initial = io.github.mangi.eta.data.model.Settings())
     val providerSummary = selectedProvider?.let { provider ->
         "${provider.name} / ${selectedModel?.displayName ?: stringResource(R.string.settings_model_not_selected)}"
     } ?: stringResource(R.string.settings_not_configured)
@@ -342,6 +344,14 @@ private fun SettingsPageContent(
             item(key = "section_context_extensions") {
                 SmallTitle(stringResource(R.string.settings_context_extensions))
                 SettingsGroupCard {
+                    SwitchPreference(
+                        title = "自动命名新会话",
+                        summary = "首轮完成后生成一次简短标题；手动名称不覆盖，失败不影响聊天",
+                        checked = chatSettings.autoConversationTitle,
+                        onCheckedChange = { enabled -> coroutineScope.launch {
+                            io.github.mangi.eta.data.datastore.SettingsDataStore.updateSettings { it.copy(autoConversationTitle = enabled) }
+                        } },
+                    )
                     SwitchPref(
                         context = context,
                         prefs = agentPrefs,
@@ -369,6 +379,12 @@ private fun SettingsPageContent(
                             )
                         },
                         onClick = { onNavigate(AppRoute.Subagents) },
+                    )
+                    ArrowPreference(
+                        title = "生图配置",
+                        summary = "固定生图来源、账号和模型；独立于聊天选择",
+                        startAction = { SettingsIcon(Icons.Rounded.Palette, SettingsIconColors.Orange) },
+                        onClick = { onNavigate(AppRoute.ImageGenSettings) },
                     )
                     ArrowPreference(
                         title = stringResource(R.string.route_skills),

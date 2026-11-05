@@ -91,6 +91,9 @@ internal object ProviderCredentialRepository {
         else -> null
     }
 
+    fun codexAccountBinding(providerId: String, accountId: String): ProviderCredentialBinding =
+        codex().bindingForAccount(providerId, accountId)
+
     fun isCurrent(binding: ProviderCredentialBinding): Boolean = sessions().isCurrent(binding)
 
     fun accessToken(providerId: String, authMode: String, controller: AgentRunController,

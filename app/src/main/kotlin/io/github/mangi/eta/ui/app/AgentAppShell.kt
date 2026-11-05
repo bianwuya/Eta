@@ -427,6 +427,7 @@ private fun titleForRoute(route: AppRoute?): String = when (route) {
     is AppRoute.Skills -> stringResource(R.string.route_skills)
     is AppRoute.Subagents -> "Subagent"
     is AppRoute.CompactionSettings -> "上下文压缩"
+    is AppRoute.ImageGenSettings -> "生图配置"
     is AppRoute.SubagentStats -> "子代理请求统计"
     is AppRoute.SubagentConversationStats -> "会话请求明细"
     is AppRoute.Characters -> "角色"

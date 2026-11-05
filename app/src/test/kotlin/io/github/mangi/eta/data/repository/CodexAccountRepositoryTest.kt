@@ -73,6 +73,20 @@ class CodexAccountRepositoryTest {
     }
 
     @Test
+    fun fixedImageAccountBindingDoesNotFollowOrChangeChatSelection() {
+        val accounts = setUpWith()
+        storage.write(PROVIDER_ID, credential("subject-a", "workspace-a"))
+        val first = accounts.views(PROVIDER_ID, AUTH_MODE).single().accountId
+        oauth.next = credential("subject-b", "workspace-b")
+        val second = accounts.login(PROVIDER_ID, AUTH_MODE, AgentRunController(), {})
+        accounts.select(PROVIDER_ID, AUTH_MODE, second.accountId)
+        val fixed = accounts.bindingForAccount(PROVIDER_ID, first)
+        assertEquals("access-subject-a", accounts.accessToken(fixed, AgentRunController(), null))
+        assertEquals(second.accountId, accounts.views(PROVIDER_ID, AUTH_MODE).single { it.selected }.accountId)
+        assertThrows(ProviderAuthException::class.java) { accounts.bindingForAccount(PROVIDER_ID, "missing") }
+    }
+
+    @Test
     fun legacySingleAccountBecomesTheSelectedAccountWithoutMovingCiphertext() {
         val accounts = setUpWith()
         storage.write(PROVIDER_ID, credential("legacy-subject", "workspace-legacy"))

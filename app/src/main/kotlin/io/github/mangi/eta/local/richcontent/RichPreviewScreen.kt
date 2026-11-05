@@ -47,11 +47,21 @@ private data class PreviewDocument(val html: String? = null, val bitmap: ImageBi
 internal fun RichPreviewScreen(reference: String, onBack: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var generation by remember { mutableIntStateOf(0) }
+    // saveable：深浅色、字体缩放、旋转等重建后不重新加载页面，也不丢当前位置。
+    var generation by rememberSaveable(reference) { mutableIntStateOf(0) }
     var showSource by rememberSaveable(reference) { mutableStateOf(false) }
     var scripts by rememberSaveable(reference) { mutableStateOf(false) }
     var blocked by remember(generation, scripts) { mutableStateOf(false) }
     var rendererFailed by remember(generation, scripts) { mutableStateOf(false) }
+    // 滚动位置放在普通持有者里：滚动时只写这一个 int，不触发重组，也不重建 WebView。
+    // 用 Saver 交给 rememberSaveable 保存同一个值，深浅色/旋转变更后仍能回到原处。
+    val scrollY = rememberSaveable(
+        reference,
+        saver = androidx.compose.runtime.saveable.Saver<IntArray, Int>(
+            save = { it[0] },
+            restore = { intArrayOf(it) },
+        ),
+    ) { intArrayOf(0) }
     val document by produceState<PreviewDocument?>(null, reference, generation) {
         value = null
         value = withContext(Dispatchers.IO) {
@@ -113,10 +123,13 @@ internal fun RichPreviewScreen(reference: String, onBack: () -> Unit) {
                         AndroidView(
                             factory = { ctx -> RichWebView(ctx, scripts, onBlocked = { blocked = true }, onFailed = { rendererFailed = true }).apply {
                                 resourceRoot = if (reference.startsWith("content://")) null else runCatching { LocalPreviewFiles.file(ctx, reference).parentFile }.getOrNull()
-                                show(requireNotNull(html))
+                                onScrollYChanged = { y -> scrollY[0] = y }
+                                show(requireNotNull(html), restoreScrollY = scrollY[0])
                             } },
                             onRelease = { it.release() },
-                            modifier = Modifier.fillMaxSize(),
+                            // Column 里 fillMaxSize 会连同上方标题行一起超出父高，底部被裁掉，
+                            // 网页自身的滚动永远到不了最后一屏。改为占满剩余高度。
+                            modifier = Modifier.fillMaxWidth().weight(1f),
                         )
                     }
                 }

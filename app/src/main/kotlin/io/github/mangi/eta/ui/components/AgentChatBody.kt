@@ -145,6 +145,7 @@ internal fun AgentChatBody(
     pendingImages: List<PendingImageUi>,
     pendingFileReferences: List<PendingFileReferenceUi>,
     queuedMessages: List<QueuedMessageUi> = emptyList(),
+    conversationId: String? = null,
     inputSyncVersion: Int = 0,
     messageEdit: MessageEditUiState?,
     onReasoningEffortChange: (ReasoningEffort) -> Unit,
@@ -1090,6 +1091,7 @@ private fun AgentChatBottomBar(
                 .padding(start = 16.dp, end = 16.dp, bottom = 12.dp),
         ) {
             AgentChatInputBar(
+                conversationId = conversationId,
                 input = input,
                 modelPickerState = modelPickerState,
                 isCompacting = isCompacting,

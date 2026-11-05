@@ -124,6 +124,7 @@ internal fun AgentChatInputBar(
     pendingImages: List<PendingImageUi>,
     pendingFileReferences: List<PendingFileReferenceUi>,
     queuedMessages: List<QueuedMessageUi> = emptyList(),
+    conversationId: String? = null,
     inputSyncVersion: Int = 0,
     isEditingMessage: Boolean,
     editHasLaterTurns: Boolean,
@@ -195,6 +196,7 @@ internal fun AgentChatInputBar(
             .fillMaxWidth(),
     ) {
         if (recognitionEnabled) SpeechInputFeedback(dictation)
+        io.github.mangi.eta.local.userquestions.UserQuestionsPanel(conversationId, Modifier.padding(bottom = 8.dp))
         AnimatedVisibility(
             visible = queuedMessages.isNotEmpty(),
             enter = fadeIn(tween(160)),

@@ -73,6 +73,7 @@ internal class AgentLocalTools(
     private val context: Context,
     private val logger: AgentLogger,
     private val browserRunId: String = "",
+    private val runController: io.github.mangi.eta.agent.runtime.AgentRunController = io.github.mangi.eta.agent.runtime.AgentRunController(),
     private val browserToolsEnabled: () -> Boolean = {
         Prefs.isEnabled(Prefs.Keys.AGENT_BROWSER_TOOLS)
     },
@@ -113,6 +114,7 @@ internal class AgentLocalTools(
     private val lsposedAvailable: () -> Boolean = { EtaApp.serviceInstance != null },
     private val guiControl: GuiControlCoordinator.RunControl? = null,
     browserSession: AgentBrowserSession? = null,
+    private val userQuestions: io.github.mangi.eta.local.userquestions.UserQuestionHost? = null,
 ) : AgentModelClient.ToolExecutor, AutoCloseable {
 
     private val closed = AtomicBoolean(false)
@@ -129,6 +131,9 @@ internal class AgentLocalTools(
         foregroundAction = ::executeForegroundIntent,
     )
     private val imageTools = AgentImageTools(context, rootCommandExecutor, rootAvailable)
+    private val imageGenerationTool by lazy {
+        io.github.mangi.eta.local.imagegen.ImageGenTool(context, controller = { runController })
+    }
     private val webTools = AgentWebTools(
         transport = WebHttpTransport(AgentHttpClient.client),
         localNetworkAccess = { LocalNetworkPermission.accessState(context).name.lowercase(Locale.ROOT) },
@@ -167,6 +172,7 @@ internal class AgentLocalTools(
 
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
+        userQuestions?.cancelPending()
         publishedObservation.set(PublishedObservation())
         if (browserSessionRef.isInitialized()) browserSessionRef.value.interruptAgentAction(browserRunId)
         webTools.close()
@@ -228,6 +234,13 @@ internal class AgentLocalTools(
                 }
             }
             when (toolCall.name) {
+                "generate_image" -> imageGenerationTool.execute(toolCall)
+                "ask_user_questions" -> {
+                    publishedObservation.set(PublishedObservation())
+                    guiControl?.release()
+                    textResult(userQuestions?.ask(toolCall.id, args)
+                        ?: io.github.mangi.eta.local.userquestions.UserQuestionStore.unanswered("当前入口没有提问宿主"))
+                }
                 "get_current_context" -> textResult(DeviceContextTool.current(context))
                 "search_apps" -> textResult(searchApps(args))
                 "launch_app" -> {
