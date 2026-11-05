@@ -80,6 +80,7 @@ internal fun ProviderConnectionFields(
     }
     if (oauth) {
         ProviderAccountControls(
+            providerId = provider.id,
             state = loginState,
             authMode = draft.authMode,
             enabled = enabled,

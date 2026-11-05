@@ -17,6 +17,7 @@ import io.github.mangi.eta.agent.overlay.AgentOverlayStatus
 import io.github.mangi.eta.agent.overlay.localizedText
 import io.github.mangi.eta.core.AndroidAgentLogger
 import io.github.mangi.eta.core.safeLogType
+import io.github.mangi.eta.local.runtime.ExecutionKeepAlive
 import io.github.mangi.eta.ui.MainActivity
 import java.util.concurrent.atomic.AtomicLong
 
@@ -25,6 +26,7 @@ internal class AgentExecutionService : Service() {
     private val stopQueue = ExecutionStopQueue { failure ->
         AndroidAgentLogger.warn("Execution task stop failed: type=${failure.safeLogType()}")
     }
+    private val keepAlive by lazy(LazyThreadSafetyMode.NONE) { ExecutionKeepAlive(this) }
     private val owner = ownerSequence.incrementAndGet()
     private var foregroundActive = false
     @Volatile private var startRejected = false
@@ -50,6 +52,8 @@ internal class AgentExecutionService : Service() {
                 startForeground(NOTIFICATION_ID, notification())
             }
             foregroundActive = true
+            // 前台服务只保证进程优先级；息屏后的 CPU 休眠与 Wi-Fi 省电仍会掐断模型长连接。
+            keepAlive.acquire()
         } catch (failure: RuntimeException) {
             startRejected = true
             AndroidAgentLogger.warn("Execution service foreground failed: type=${failure.safeLogType()}")
@@ -73,6 +77,7 @@ internal class AgentExecutionService : Service() {
         if (instance === this) instance = null
         // 销毁时同样收回本服务拥有的任务。回收在独立有界工作线程上完成，不阻塞 Main。
         stopQueue.close(leases.drainOwner(owner))
+        keepAlive.release()
         super.onDestroy()
     }
 
@@ -86,6 +91,7 @@ internal class AgentExecutionService : Service() {
     private fun refreshNotification() {
         if (leases.closeOwnerIfIdle(owner)) {
             foregroundActive = false
+            keepAlive.release()
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
         } else {

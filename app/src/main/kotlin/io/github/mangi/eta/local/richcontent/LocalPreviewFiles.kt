@@ -10,7 +10,9 @@ import java.security.MessageDigest
 /** UI-only output references. This is deliberately not a Root/file-tool bridge. */
 internal object LocalPreviewFiles {
     const val MAX_DOCUMENT_BYTES = 2 * 1024 * 1024
-    const val MAX_IMAGE_BYTES = 20 * 1024 * 1024
+
+    /** 与服务端单图产出上限对齐，避免已生成图片因为本地读取限过小而无法预览。 */
+    const val MAX_IMAGE_BYTES = 32 * 1024 * 1024
     private val extensions = setOf("html", "htm", "png", "jpg", "jpeg", "webp", "gif")
     private val resources = extensions + setOf("css", "js", "mjs", "svg", "woff", "woff2", "ttf", "otf", "json")
 
@@ -33,8 +35,12 @@ internal object LocalPreviewFiles {
     @Suppress("DEPRECATION")
     fun file(context: Context, raw: String): File {
         val uri = Uri.parse(raw)
-        val path = if (uri.scheme == "file") requireNotNull(uri.path) else raw
         require(uri.scheme == null || uri.scheme == "file") { "不是本地文件" }
+        // file: URI 的 path 已由 Uri 解码；裸路径需要自己解码百分号转义，否则中文/空格路径
+        // 在 isReference 通过后仍会打开失败。只解码一次，随后的规范化与白名单校验照旧。
+        // 裸路径里的 ?query/#fragment 与 isReference 一样先剥离，否则带版本参数的引用永远打不开。
+        val path = if (uri.scheme == "file") requireNotNull(uri.path)
+        else percentDecodedPath(raw.substringBefore('?').substringBefore('#'))
         val target = File(path).canonicalFile
         val downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).canonicalFile
         val cache = directory(context).canonicalFile
@@ -76,6 +82,57 @@ internal object LocalPreviewFiles {
     }
 
     fun isWithin(file: File, root: File) = file.path.startsWith(root.path + File.separator)
+}
+
+/**
+ * 只解码一次 `%XX`（按 UTF-8），不把 `+` 当作空格：路径不是查询参数。
+ * 无法解码的转义原样保留，避免把损坏输入变成另一个合法路径；
+ * 调用方随后仍执行 canonicalFile 规范化与目录白名单校验，所以 `%2F` 不能绕过边界。
+ */
+internal fun percentDecodedPath(raw: String): String {
+    if ('%' !in raw) return raw
+    val out = StringBuilder(raw.length)
+    var index = 0
+    while (index < raw.length) {
+        val char = raw[index]
+        if (char == '%' && index + 2 < raw.length) {
+            val high = hexValue(raw[index + 1])
+            val low = hexValue(raw[index + 2])
+            if (high >= 0 && low >= 0) {
+                // 收集连续的转义字节后按 UTF-8 解码，中文等多字节序列才能还原。
+                val bytes = java.io.ByteArrayOutputStream(8)
+                var cursor = index
+                while (cursor + 2 < raw.length && raw[cursor] == '%') {
+                    val hi = hexValue(raw[cursor + 1])
+                    val lo = hexValue(raw[cursor + 2])
+                    if (hi < 0 || lo < 0) break
+                    bytes.write((hi shl 4) or lo)
+                    cursor += 3
+                }
+                val decoded = String(bytes.toByteArray(), Charsets.UTF_8)
+                // 非法 UTF-8 会被替换成 U+FFFD；这种情况下保留原文更接近用户的真实路径。
+                if ('\uFFFD' !in decoded) {
+                    out.append(decoded)
+                    index = cursor
+                    continue
+                }
+            }
+        }
+        out.append(char)
+        index += 1
+    }
+    return out.toString()
+}
+
+/** 卡片上显示的文件名：只用于展示，不参与路径解析。 */
+internal fun percentName(reference: String): String =
+    percentDecodedPath(reference.substringBefore('?').substringBefore('#')).substringAfterLast('/')
+
+private fun hexValue(char: Char): Int = when (char) {
+    in '0'..'9' -> char - '0'
+    in 'a'..'f' -> char - 'a' + 10
+    in 'A'..'F' -> char - 'A' + 10
+    else -> -1
 }
 
 internal fun InputStream.readBytesBounded(max: Int): ByteArray {

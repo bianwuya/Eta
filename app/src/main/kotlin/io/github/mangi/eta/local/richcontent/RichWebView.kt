@@ -23,14 +23,24 @@ internal class RichWebView(context: Context, scripts: Boolean, onBlocked: () -> 
     @Volatile var page: String = ""
     @Volatile var resourceRoot: File? = null
     var onHeightChanged: ((Int) -> Unit)? = null
+    /** 重建实例时恢复到的滚动位置；只在首个 onPageFinished 生效一次。 */
+    var initialScrollY: Int = 0
+    /** 每次滚动都把位置交给调用方保存，切换源码/刷新后可以回到原处。 */
+    var onScrollYChanged: ((Int) -> Unit)? = null
+    private var scrollRestored = false
+    private var loadedOnce = false
     private var released = false
     private var pending = false
     private var lastHeight = 0
     private val reportHeight = Runnable {
         pending = false
-        if (!released) {
+        if (!released && onHeightChanged != null) {
             val h = (contentHeight * resources.displayMetrics.density).toInt().coerceAtLeast(1)
-            if (h != lastHeight) { lastHeight = h; onHeightChanged?.invoke(h) }
+            val tolerance = resources.displayMetrics.density.toInt().coerceAtLeast(1)
+            acceptedReportedHeight(lastHeight, h, tolerance)?.let { accepted ->
+                lastHeight = accepted
+                onHeightChanged?.invoke(accepted)
+            }
         }
     }
     private val assets = WebViewAssetLoader.Builder().setDomain(PREVIEW_HOST)
@@ -96,17 +106,42 @@ internal class RichWebView(context: Context, scripts: Boolean, onBlocked: () -> 
                 post { if (!released) onFailed() }
                 return true
             }
+            override fun onPageFinished(view: WebView, url: String?) {
+                if (url != PREVIEW_URL) return
+                val target = pendingScrollRestore(initialScrollY, scrollRestored) ?: return
+                if (released) return
+                scrollRestored = true
+                // 恢复放在页面完成之后，避免在空白文档上滚动被后续布局归零。
+                post { if (!released) scrollTo(0, target) }
+            }
         }
     }
 
+    /**
+     * 装载文档并返回是否真的发起了新加载。
+     *
+     * 同一实例对同一份内容重复 show 不再 loadUrl：普通重组、提示状态变化不应该让页面重来一遍。
+     * 需要真正刷新时由调用方换实例键（页面重建），那时是新的 WebView，第一次 show 照常加载。
+     */
+    fun show(html: String, restoreScrollY: Int = 0): Boolean {
+        initialScrollY = restoreScrollY
+        if (loadedOnce && page == html) return false
+        page = html
+        loadedOnce = true
+        scrollRestored = false
+        // 位置恢复放在页面完成之后，避免在空白文档上滚动被后续布局归零。
+        loadUrl(PREVIEW_URL)
+        return true
+    }
+
+    override fun onScrollChanged(l: Int, t: Int, oldl: Int, oldt: Int) {
+        super.onScrollChanged(l, t, oldl, oldt)
+        val callback = onScrollYChanged
+        if (!released && callback != null && t != oldt) callback(t)
+    }
     override fun onDraw(canvas: android.graphics.Canvas) {
         super.onDraw(canvas)
         if (!released && onHeightChanged != null && !pending) { pending = true; post(reportHeight) }
-    }
-
-    fun show(html: String) {
-        page = html
-        loadUrl(PREVIEW_URL)
     }
 
     fun release() {
@@ -114,12 +149,28 @@ internal class RichWebView(context: Context, scripts: Boolean, onBlocked: () -> 
         released = true
         removeCallbacks(reportHeight)
         onHeightChanged = null
+        onScrollYChanged = null
         stopLoading()
         webViewClient = WebViewClient()
         removeAllViews()
         destroy()
     }
 }
+
+/**
+ * WebView 在 onDraw 里回报内容高度，而容器高度又由这个值决定：任何 1px 的测量抖动都会变成
+ * 改高 → 重排 → 再 onDraw 的自激循环，表现就是公式块持续抖动。
+ * 只有相对上次接受值超过容差的变化才继续上报；容差内视为同一高度，不再回灌。
+ */
+internal fun acceptedReportedHeight(previous: Int, reported: Int, tolerancePx: Int): Int? = when {
+    reported <= 0 -> null
+    previous <= 0 -> reported
+    kotlin.math.abs(reported - previous) < tolerancePx.coerceAtLeast(1) -> null
+    else -> reported
+}
+
+internal fun pendingScrollRestore(initial: Int, restored: Boolean): Int? =
+    if (restored) null else initial.coerceAtLeast(0)
 
 private fun response(type: String, bytes: ByteArray) = WebResourceResponse(
     type, "UTF-8", 200, "OK", mapOf("Cache-Control" to "no-store"), ByteArrayInputStream(bytes),

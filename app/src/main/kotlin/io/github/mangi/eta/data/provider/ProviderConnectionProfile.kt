@@ -39,8 +39,13 @@ internal enum class ProviderConnectionProfile(
         else -> "$baseUrl/chat/completions"
     }
 
+    val imageGenerationUrl: String? get() = if (this == OPENAI_CODEX) "$baseUrl/images/generations" else null
+
+    val usageUrl: String? get() = if (this == OPENAI_CODEX) "https://chatgpt.com/backend-api/wham/usage" else null
+
     fun requireRequestTarget(url: HttpUrl) {
-        require(url == modelsUrl.toHttpUrl() || url == inferenceUrl.toHttpUrl()) {
+        require(url == modelsUrl.toHttpUrl() || url == inferenceUrl.toHttpUrl() ||
+            imageGenerationUrl?.toHttpUrl() == url || usageUrl?.toHttpUrl() == url) {
             "订阅凭据只能用于对应服务商的官方模型接口"
         }
     }

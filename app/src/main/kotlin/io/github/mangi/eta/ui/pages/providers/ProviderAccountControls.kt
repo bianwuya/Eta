@@ -51,6 +51,7 @@ internal fun ProviderAccountControls(
     onReloginAccount: (String) -> Unit = {},
     onRenameAccount: (String, String) -> Unit = { _, _ -> },
     onRemoveAccount: (String) -> Unit = {},
+    providerId: String = "",
 ) {
     val prompt = state.prompt
     val account = state.account
@@ -59,9 +60,16 @@ internal fun ProviderAccountControls(
     val brand = if (authMode == ProviderAuthModes.XAI_GROK) "Grok" else "Codex"
     val accounts = state.accounts
     val multiAccount = authMode == ProviderAuthModes.OPENAI_CHATGPT && accounts.isNotEmpty()
+    var showAccounts by remember { mutableStateOf(false) }
+    var showMore by remember { mutableStateOf(false) }
+    val current = state.selected
+    var manageId by remember { mutableStateOf<String?>(null) }
+    val managed = accounts.firstOrNull { it.accountId == manageId } ?: current
 
     BasicComponent(
-        title = account?.email ?: account?.displayName ?: "$brand 账号",
+        title = current?.name?.takeIf { it.isNotBlank() } ?: account?.email?.let(::maskedAccountEmail)
+            ?: account?.displayName ?: "$brand 账号",
+        onClick = { if (multiAccount && enabled && !state.isBusy) showAccounts = true },
         summary = browserError ?: state.message ?: when (state.phase) {
             ProviderLoginPhase.Loading -> "正在读取登录状态…"
             ProviderLoginPhase.Saving -> "正在保存配置…"
@@ -119,6 +127,9 @@ internal fun ProviderAccountControls(
                     if (loggedIn) {
                         TextButton(text = "管理用量", enabled = enabled, onClick = onManageUsage, modifier = Modifier.weight(1f))
                     }
+                    if (current != null) {
+                        TextButton(text = "更多", enabled = enabled, onClick = { manageId = current.accountId; showMore = true }, modifier = Modifier.weight(1f))
+                    }
                 } else if (needsLogin) {
                     TextButton(
                         text = if (loggedIn) "重新授权" else "使用 $brand 登录",
@@ -135,22 +146,39 @@ internal fun ProviderAccountControls(
     }
 
     if (multiAccount) {
-        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) {
-            accounts.forEach { item ->
-                CodexAccountRow(
-                    account = item,
-                    enabled = enabled && !state.isBusy,
-                    busy = state.isBusy && state.activeAccountId == item.accountId,
-                    brand = brand,
-                    onSelect = { onSelectAccount(item.accountId) },
-                    onRelogin = { onReloginAccount(item.accountId) },
-                    onRename = { name -> onRenameAccount(item.accountId, name) },
-                    onRemove = { onRemoveAccount(item.accountId) },
-                )
+        TextButton(text = "切换账号", enabled = enabled && !state.isBusy,
+            onClick = { showAccounts = true }, modifier = Modifier.padding(horizontal = 16.dp))
+        if (providerId.isNotBlank() && current != null) {
+            io.github.mangi.eta.local.codexusage.CodexUsagePanel(providerId, current.accountId, current.usable)
+        }
+        top.yukonga.miuix.kmp.overlay.OverlayBottomSheet(show = showAccounts, title = "选择 Codex 账号",
+            onDismissRequest = { showAccounts = false }) {
+            Column {
+                accounts.forEach { item ->
+                    BasicComponent(title = item.name.ifBlank { item.email?.let(::maskedAccountEmail) ?: item.displayName ?: "Codex账号" },
+                        summary = when { item.selected -> "当前账号"; item.usable -> "已登录"; else -> "需要重新登录" },
+                        enabled = enabled && !state.isBusy,
+                        endActions = { TextButton(text = "管理", onClick = { manageId = item.accountId; showAccounts = false; showMore = true }) },
+                        onClick = {
+                            if (item.usable) onSelectAccount(item.accountId)
+                            else { manageId = item.accountId; showMore = true }
+                            showAccounts = false
+                        })
+                }
             }
+        }
+        if (managed != null) top.yukonga.miuix.kmp.overlay.OverlayBottomSheet(show = showMore, title = "账号操作",
+            onDismissRequest = { showMore = false }) {
+            CodexAccountRow(managed, enabled && !state.isBusy, state.isBusy && state.activeAccountId == managed.accountId,
+                brand, onSelect = { onSelectAccount(managed.accountId); showMore = false },
+                onRelogin = { onReloginAccount(managed.accountId); showMore = false },
+                onRename = { onRenameAccount(managed.accountId, it); showMore = false },
+                onRemove = { onRemoveAccount(managed.accountId); showMore = false })
         }
     }
 }
+
+internal fun maskedAccountEmail(email: String): String = email.substringBefore('@').take(1) + "***@" + email.substringAfter('@', "***")
 
 @Composable
 private fun CodexAccountRow(
@@ -170,7 +198,7 @@ private fun CodexAccountRow(
         account.loggedIn -> "已登录"
         else -> "需要重新登录"
     }
-    val detail = listOfNotNull(account.email?.takeIf { it != account.name }, account.displayName?.takeIf { it != account.email })
+    val detail = listOfNotNull(account.email?.takeIf { it != account.name }?.let(::maskedAccountEmail), account.displayName?.takeIf { it != account.email })
         .distinct()
         .joinToString(" · ")
         .ifBlank { null }
@@ -182,7 +210,7 @@ private fun CodexAccountRow(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(text = account.label, style = MiuixTheme.textStyles.headline1)
+                    Text(text = account.name.ifBlank { account.email?.let(::maskedAccountEmail) ?: account.displayName ?: "Codex账号" }, style = MiuixTheme.textStyles.headline1)
                     Text(
                         text = listOfNotNull(status, detail).joinToString(" · "),
                         style = MiuixTheme.textStyles.footnote2,

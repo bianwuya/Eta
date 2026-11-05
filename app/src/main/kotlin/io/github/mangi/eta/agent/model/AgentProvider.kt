@@ -38,7 +38,7 @@ internal enum class EndpointKind {
 }
 
 internal enum class ProviderRequestPurpose {
-    CHAT, COMPACTION, REPLY_REWRITE, TRANSCRIPT_REFINE;
+    CHAT, COMPACTION, REPLY_REWRITE, TRANSCRIPT_REFINE, CONVERSATION_TITLE;
 
     val allowsTools: Boolean get() = this == CHAT
 }

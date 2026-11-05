@@ -32,6 +32,7 @@ internal object AgentToolRequirements {
         }
         register(
             RootRequirement.NONE,
+            "generate_image", "ask_user_questions",
             "conversation_list", "conversation_send",
             "get_current_context", "search_apps", "launch_app", "present_to_user", "open_uri", "browser_use", "web_search", "fetch_url",
             "observe_screen", "release_gui", "tap", "tap_area", "tap_element", "long_press",

@@ -188,6 +188,8 @@ internal class AgentRuntimeRunExecutor(
                 context = appContext,
                 logger = AndroidAgentLogger,
                 browserRunId = request.runId,
+                runController = runController,
+                userQuestions = io.github.mangi.eta.local.userquestions.UserQuestionHost(appContext, conversationId, request.runId, runController),
                 browserSession = BrowserSessionRegistry.get(browserKey),
                 guiControl = gui,
                 browserToolsEnabled = {

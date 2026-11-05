@@ -34,6 +34,9 @@ sealed interface AppRoute : NavKey {
     data object CompactionSettings : AppRoute
 
     @Serializable
+    data object ImageGenSettings : AppRoute
+
+    @Serializable
     data object SubagentStats : AppRoute
 
     @Serializable

@@ -101,6 +101,16 @@ internal class CodexAccountRepository(
     fun binding(providerId: String): ProviderCredentialBinding =
         bindingOrNull(providerId) ?: throw ProviderAuthException("unsupported_auth_mode", "当前连接不支持账号登录")
 
+    fun bindingForAccount(providerId: String, accountId: String): ProviderCredentialBinding {
+        val entry = lock.withLock { requirePool(providerId).accounts.firstOrNull { it.accountId == accountId } }
+            ?: throw ProviderAuthException("oauth_account_missing", "固定账号不存在")
+        val summary = sessions.account(entry.credentialSlotId, ProviderAuthModes.OPENAI_CHATGPT)
+        if (summary == null || summary.needsReauthentication || !summary.planEnabled) {
+            throw ProviderAuthException("oauth_account_required", "固定账号需要重新登录")
+        }
+        return sessions.binding(entry.credentialSlotId, ProviderAuthModes.OPENAI_CHATGPT, providerId)
+    }
+
     fun isCurrent(binding: ProviderCredentialBinding): Boolean = sessions.isCurrent(binding)
 
     fun accessToken(binding: ProviderCredentialBinding, controller: AgentRunController, rejected: String?): String =
