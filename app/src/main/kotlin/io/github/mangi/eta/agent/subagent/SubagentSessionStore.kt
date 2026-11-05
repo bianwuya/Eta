@@ -18,6 +18,9 @@ internal object SubagentSessionStore {
         val running: AtomicBoolean = AtomicBoolean(false),
         /** Explicit parent cancellation is terminal; a later resume must not resurrect stale work. */
         val explicitlyCancelled: AtomicBoolean = AtomicBoolean(false),
+        // A live entry starts at zero and keeps the count across resume invocations.
+        // The session store is process-local; archived snapshots have their own value.
+        val compactionCount: AtomicInteger = AtomicInteger(0),
         val requestStatsBaseline: io.github.mangi.eta.local.subagentstats.SubagentRequestBaseline =
             io.github.mangi.eta.local.subagentstats.SubagentRequestBaseline(),
     )

@@ -15,17 +15,18 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.Lightbulb
+import androidx.compose.material.icons.rounded.MoreHoriz
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.key
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -43,9 +44,11 @@ import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.subagent.SubagentActivitySnapshot
 import io.github.mangi.eta.agent.subagent.SubagentStepSnapshot
+import io.github.mangi.eta.local.subagentdisplay.SubagentReadableText
 import io.github.mangi.eta.ui.model.ToolActivityMessageUi
 import io.github.mangi.eta.ui.model.ToolActivityStatusUi
 import top.yukonga.miuix.kmp.basic.Icon
+import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.preference.ArrowPreference
 import top.yukonga.miuix.kmp.overlay.OverlayBottomSheet
@@ -210,92 +213,94 @@ private fun SubagentInspectorContent(
 ) {
     val density = LocalDensity.current
     val maxSheetHeight = with(density) { LocalWindowInfo.current.containerSize.height.toDp() } * 0.76f
-    var promptExpanded by rememberSaveable(snapshot.subagentId) { mutableStateOf(false) }
+    var showInformation by rememberSaveable(snapshot.subagentId) { mutableStateOf(false) }
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .heightIn(max = maxSheetHeight)
-            .verticalScroll(rememberScrollState())
-            .navigationBarsPadding()
-            .padding(bottom = 24.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
+            .navigationBarsPadding(),
     ) {
-        Text(
-            text = when { running -> "进行中"; failed -> "执行失败"; else -> "已结束" },
-            style = MiuixTheme.textStyles.footnote2,
-            color = when { running -> MiuixTheme.colorScheme.primary; failed -> StatusError; else -> StatusSuccess },
-        )
-
-        if (snapshot.previewTruncated) Text("这是实时预览，内容已截短；不是模型收到的完整指令。", style = MiuixTheme.textStyles.footnote2)
-        if (snapshot.detailId.isNotBlank()) {
-            ArrowPreference(title = "保留详情", onClick = onOpenDetails)
-        } else if (snapshot.previewTruncated) {
-            Text("旧记录未保留全文，已丢内容无法恢复。", style = MiuixTheme.textStyles.footnote2)
-        }
-
-        // 任务指令（Prompt）：浅色容器，长文本默认收起，点按展开
-        if (snapshot.prompt.isNotBlank()) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .squircleSurface(
-                        color = MiuixTheme.colorScheme.surfaceContainer,
-                        cornerRadius = 12.dp,
-                    )
-                    .clickable { promptExpanded = !promptExpanded }
-                    .padding(horizontal = 14.dp, vertical = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
+        // Keep the compact identity visible; only the execution list scrolls.
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        text = if (snapshot.resumed) "Prompt (Resumed)" else "Prompt",
-                        style = MiuixTheme.textStyles.footnote2.copy(fontFamily = FontFamily.Monospace),
-                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary.copy(alpha = 0.7f),
-                        modifier = Modifier.weight(1f),
+                        text = when { running -> "进行中"; failed -> "执行失败"; else -> "已结束" },
+                        style = MiuixTheme.textStyles.footnote2,
+                        color = when { running -> MiuixTheme.colorScheme.primary; failed -> StatusError; else -> StatusSuccess },
                     )
-                    ExpandChevron(
-                        expanded = promptExpanded,
-                        contentDescription = null,
+                    Text(
+                        text = " · ${SubagentReadableText.modelName(snapshot.model)}",
+                        style = MiuixTheme.textStyles.footnote2,
+                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                        modifier = Modifier.weight(1f),
                     )
                 }
                 Text(
-                    text = snapshot.prompt,
-                    style = MiuixTheme.textStyles.body2,
+                    text = SubagentReadableText.contextSummary(snapshot.contextTokens, snapshot.contextWindow, snapshot.compactionCount),
+                    style = MiuixTheme.textStyles.footnote2,
                     color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                    maxLines = if (promptExpanded) Int.MAX_VALUE else 3,
-                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            IconButton(onClick = { showInformation = !showInformation }) {
+                Icon(
+                    imageVector = Icons.Rounded.MoreHoriz,
+                    contentDescription = if (showInformation) "收起任务信息" else "查看任务指令与统计说明",
+                    tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                 )
             }
         }
-
-        // 内部执行时间线：沿用主聊天界面的 1dp 细线与圆点徽章
-        if (snapshot.steps.isNotEmpty() || running) {
-            Column(modifier = Modifier.fillMaxWidth()) {
-                snapshot.steps.forEachIndexed { index, step ->
-                    key(step.id) {
-                        val isLastStep = index == snapshot.steps.lastIndex && !running
-                        WorkTimelineNode(
-                            icon = if (step.kind == SubagentStepSnapshot.KIND_THINKING) {
-                                Icons.Rounded.Lightbulb
-                            } else {
-                                iconForTool(step.toolName)
-                            },
-                            tone = when (step.status) {
-                                SubagentStepSnapshot.STATUS_RUNNING -> WorkNodeTone.Running
-                                SubagentStepSnapshot.STATUS_FAILED -> WorkNodeTone.Failed
-                                else -> WorkNodeTone.Done
-                            },
-                            isLast = isLastStep,
-                            connectTop = index > 0,
-                        ) {
-                            SubagentStepRow(step = step)
+        LazyColumn(
+            modifier = Modifier.fillMaxWidth().weight(1f, fill = false),
+        ) {
+            if (showInformation) {
+                item(key = "task-information") {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(vertical = 8.dp)) {
+                        Text(
+                            text = "上下文单位为 Token，万位数四舍五入；用量取此子代理最近一次模型上报，不是实时重新计算。上限取本次运行配置。压缩次数仅统计成功完成，续接同一子代理时累计。\n精确用量：${snapshot.contextTokens ?: "待上报"} / ${snapshot.contextWindow ?: "上限未知"} Token。",
+                            style = MiuixTheme.textStyles.footnote2,
+                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                        )
+                        if (snapshot.previewTruncated) Text(
+                            text = "当前为截短预览，不是模型收到的完整指令。",
+                            style = MiuixTheme.textStyles.footnote2,
+                        )
+                        if (snapshot.detailId.isNotBlank()) {
+                            ArrowPreference(title = "保留全文", onClick = onOpenDetails)
+                        } else if (snapshot.previewTruncated) {
+                            Text("旧记录未保留全文，已丢内容无法恢复。", style = MiuixTheme.textStyles.footnote2)
+                        }
+                        if (snapshot.prompt.isNotBlank()) {
+                            Text(if (snapshot.resumed) "续接任务指令" else "任务指令", style = MiuixTheme.textStyles.footnote2)
+                            SelectionContainer {
+                                Text(snapshot.prompt, style = MiuixTheme.textStyles.body2)
+                            }
                         }
                     }
                 }
-                if (running && snapshot.steps.none { it.status == SubagentStepSnapshot.STATUS_RUNNING }) {
+            }
+            // Reuse the main chat timeline, composing only visible execution steps.
+            itemsIndexed(snapshot.steps, key = { _, step -> step.id }) { index, step ->
+                val isLastStep = index == snapshot.steps.lastIndex && !running
+                WorkTimelineNode(
+                    icon = if (step.kind == SubagentStepSnapshot.KIND_THINKING) {
+                        Icons.Rounded.Lightbulb
+                    } else {
+                        iconForTool(step.toolName)
+                    },
+                    tone = when (step.status) {
+                        SubagentStepSnapshot.STATUS_RUNNING -> WorkNodeTone.Running
+                        SubagentStepSnapshot.STATUS_FAILED -> WorkNodeTone.Failed
+                        else -> WorkNodeTone.Done
+                    },
+                    isLast = isLastStep,
+                    connectTop = index > 0,
+                ) {
+                    SubagentStepRow(step = step)
+                }
+            }
+            if (running && snapshot.steps.none { it.status == SubagentStepSnapshot.STATUS_RUNNING }) {
+                item(key = "current-action") {
                     WorkTimelineNode(
                         icon = Icons.Rounded.Lightbulb,
                         tone = WorkNodeTone.Running,
@@ -319,48 +324,47 @@ private fun SubagentInspectorContent(
                     }
                 }
             }
-        }
-
-        // 错误信息
-        val error = snapshot.error?.takeIf { it.isNotBlank() && failed }
-        if (error != null) {
-            Text(
-                text = error,
-                style = MiuixTheme.textStyles.footnote1,
-                color = StatusError,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .squircleSurface(
-                        color = StatusError.copy(alpha = 0.08f),
-                        cornerRadius = 12.dp,
-                    )
-                    .padding(horizontal = 14.dp, vertical = 10.dp),
-            )
-        }
-
-        // 实时或最终汇报（Output）
-        if (snapshot.output.isNotBlank()) {
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text(
-                    text = if (running) "Streaming" else "Summary",
-                    style = MiuixTheme.textStyles.footnote2.copy(fontFamily = FontFamily.Monospace),
-                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary.copy(alpha = 0.7f),
-                )
-                SelectionContainer {
+            val error = snapshot.error?.takeIf { it.isNotBlank() && failed }
+            if (error != null) {
+                item(key = "error") {
                     Text(
-                        text = snapshot.output,
-                        style = MiuixTheme.textStyles.body2,
-                        color = MiuixTheme.colorScheme.onSurface,
+                        text = error,
+                        style = MiuixTheme.textStyles.footnote1,
+                        color = StatusError,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .squircleSurface(
-                                color = MiuixTheme.colorScheme.surfaceContainer,
-                                cornerRadius = 12.dp,
-                            )
-                            .padding(horizontal = 14.dp, vertical = 12.dp),
+                            .squircleSurface(color = StatusError.copy(alpha = 0.08f), cornerRadius = 12.dp)
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
                     )
                 }
             }
+
+            if (snapshot.output.isNotBlank()) {
+                item(key = "output") {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            text = if (running) "接收中的正文" else "任务汇报",
+                            style = MiuixTheme.textStyles.footnote2,
+                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary.copy(alpha = 0.7f),
+                        )
+                        SelectionContainer {
+                            Text(
+                                text = snapshot.output,
+                                style = MiuixTheme.textStyles.body2,
+                                color = MiuixTheme.colorScheme.onSurface,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .squircleSurface(
+                                        color = MiuixTheme.colorScheme.surfaceContainer,
+                                        cornerRadius = 12.dp,
+                                    )
+                                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                            )
+                        }
+                    }
+                }
+            }
+            item(key = "bottom-space") { Spacer(Modifier.height(16.dp)) }
         }
     }
 }
@@ -371,10 +375,21 @@ private fun SubagentStepRow(
 ) {
     val hasDetail = step.detail.isNotBlank()
     var expanded by rememberSaveable(step.id) {
-        mutableStateOf(step.kind == SubagentStepSnapshot.KIND_THINKING && step.status == SubagentStepSnapshot.STATUS_RUNNING)
+        mutableStateOf(false)
     }
     val running = step.status == SubagentStepSnapshot.STATUS_RUNNING
     val failed = step.status == SubagentStepSnapshot.STATUS_FAILED
+    val readableTitle = remember(step.kind, step.title, step.detail, step.toolName) {
+        if (step.kind == SubagentStepSnapshot.KIND_THINKING) {
+            SubagentReadableText.thinkingTitle(step.detail)
+        } else if (step.title.startsWith("终端") || step.title.isBlank()) {
+            // Legacy detail can contain both the command and its result; never treat its
+            // first line alone as the complete command of a compound execution.
+            SubagentReadableText.toolTitle(step.toolName, step.title, step.detail)
+        } else {
+            step.title
+        }
+    }
 
     Column(modifier = Modifier.fillMaxWidth()) {
         Row(
@@ -386,17 +401,24 @@ private fun SubagentStepRow(
                 .padding(vertical = 5.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            ShimmerText(
-                text = step.title.ifBlank { step.toolName.ifBlank { "步骤" } },
-                active = running,
-                style = MiuixTheme.textStyles.body2,
-                color = when {
-                    running -> MiuixTheme.colorScheme.onSurface
-                    failed -> StatusError
-                    else -> MiuixTheme.colorScheme.onSurfaceVariantSummary
-                },
-                modifier = Modifier.weight(1f),
-            )
+            Column(modifier = Modifier.weight(1f)) {
+                ShimmerText(
+                    text = readableTitle,
+                    active = running,
+                    style = MiuixTheme.textStyles.body2,
+                    color = when {
+                        running -> MiuixTheme.colorScheme.onSurface
+                        failed -> StatusError
+                        else -> MiuixTheme.colorScheme.onSurfaceVariantSummary
+                    },
+                )
+                Text(
+                    text = (if (step.kind == SubagentStepSnapshot.KIND_THINKING) "思考" else "工具执行") +
+                        " · " + when { running -> "进行中"; failed -> "执行失败"; else -> "已结束" },
+                    style = MiuixTheme.textStyles.footnote2,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                )
+            }
             if (hasDetail) {
                 ExpandChevron(
                     expanded = expanded,

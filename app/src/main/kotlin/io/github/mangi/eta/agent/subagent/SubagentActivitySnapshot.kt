@@ -48,6 +48,10 @@ internal data class SubagentActivitySnapshot(
     val previewTruncated: Boolean = false,
     val totalSteps: Int = steps.size,
     val updatedAt: Long = 0,
+    // Null means that the source did not report a value (including old snapshots).
+    val contextTokens: Int? = null,
+    val contextWindow: Int? = null,
+    val compactionCount: Int? = null,
 ) {
     val toolStepCount: Int
         get() = steps.count { it.kind == SubagentStepSnapshot.KIND_TOOL }
@@ -65,6 +69,7 @@ internal data class SubagentActivitySnapshot(
             previewTruncated = true,
             description = description.take(limit),
             prompt = prompt.take(limit),
+            model = model.takeIf { it.length <= limit }.orEmpty(),
             currentAction = currentAction.take(limit),
             steps = recentSteps.map { step ->
                 step.copy(
