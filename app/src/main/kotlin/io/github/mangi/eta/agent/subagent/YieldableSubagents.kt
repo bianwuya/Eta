@@ -22,11 +22,12 @@ internal class YieldableSubagents(
         fun interrupted()
     }
 
-    data class Report(val taskId: String, val content: String)
+    data class Report(val taskId: String, val content: String, val succeeded: Boolean = false)
     private val executor = Executors.newCachedThreadPool()
     private val lock = Any()
     private val active = linkedSetOf<String>()
     private val reports = linkedMapOf<String, Report>()
+    private val launches = mutableMapOf<String, Pair<String, String>>()
     private var closed = false
     private var persistenceFailure: Throwable? = null
     private val cancellation = controller.register { persistence.interrupted() }
@@ -52,6 +53,7 @@ internal class YieldableSubagents(
                             .put("task_id", taskId).put("subagent_id", subagentId)
                             .put("message", "已启动；这不是最终结果，完成报告将另行追加。").toString()
                         persistence.started(taskId, call.id, call.round, subagentId, prompt, content)
+                        synchronized(lock) { launches[taskId] = call.id to subagentId }
                         acknowledgement = AgentModelClient.ToolResult(content, command = command)
                         accepted = true
                         started.countDown()
@@ -60,7 +62,9 @@ internal class YieldableSubagents(
                         acknowledgement = result
                     } else if (!controller.isCancelled) {
                         try {
-                            complete(taskId, report(taskId, prompt, result.content))
+                            val outcome = runCatching { JSONObject(result.content) }.getOrNull()
+                            val succeeded = outcome?.optBoolean("ok") == true && outcome.optString("status") == "completed"
+                            complete(taskId, report(taskId, prompt, result.content), succeeded)
                         } catch (storageFailure: Throwable) {
                             synchronized(lock) { persistenceFailure = storageFailure }
                         }
@@ -103,14 +107,21 @@ internal class YieldableSubagents(
         return checkNotNull(acknowledgement)
     }
 
-    private fun complete(taskId: String, content: String) {
+    private fun complete(taskId: String, content: String, succeeded: Boolean = false) {
         // Store full report before it is made available for delivery or marked complete.
         val committed = persistence.finished(taskId, content)
         synchronized(lock) {
             active.remove(taskId)
-            if (committed) reports[taskId] = Report(taskId, content)
+            if (committed) reports[taskId] = Report(taskId, content, succeeded)
         }
         controller.signalWorkAvailable()
+    }
+
+    /** Accept only a launch actually persisted by this owner, never arbitrary tool JSON. */
+    fun isKnownLaunch(callId: String, receipt: JSONObject): Boolean = synchronized(lock) {
+        val identity = launches[receipt.optString("task_id")] ?: return@synchronized false
+        receipt.optBoolean("ok") && receipt.optString("status") == "accepted" &&
+            identity.first == callId && identity.second.isNotBlank() && identity.second == receipt.optString("subagent_id")
     }
 
     enum class Decision { WAIT, RESUME, FINISH }

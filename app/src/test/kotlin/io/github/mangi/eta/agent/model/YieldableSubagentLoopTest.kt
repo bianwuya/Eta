@@ -31,11 +31,91 @@ class YieldableSubagentLoopTest {
         .put("content", "").put("finish_reason", "tool_calls").put("tool_calls", JSONArray(calls.toList())))
     private fun answer(text: String) = ProviderResponse(JSONObject().put("role", "assistant").put("content", text).put("finish_reason", "stop"))
 
-    @Test fun acceptedWaitsWithoutPollingThenImageSteerAndFinalReportAtBoundary() {
+    @Test fun singleAcceptedChildDoesNotBlockIndependentToolsWithoutAnyNewInput() {
+        val controller = AgentRunController()
+        val memory = MemoryPersistence()
+        val release = CountDownLatch(1)
+        val independentWork = CountDownLatch(1)
+        val naturalAnswer = CountDownLatch(1)
+        val reportReceived = CountDownLatch(1)
+        val calls = AtomicInteger()
+        val launches = AtomicInteger()
+        val requests = Collections.synchronizedList(mutableListOf<String>())
+        val owner = YieldableSubagents(controller, memory) { _, start ->
+            launches.incrementAndGet()
+            start("sub-single", "")
+            check(release.await(5, TimeUnit.SECONDS))
+            AgentModelClient.ToolResult("single-child-report")
+        }
+        val provider = object : AgentProviderClient {
+            override val id = "fake"
+            override val capabilities = ProviderCapabilities(EndpointKind.CHAT_COMPLETIONS, true, true, true, true, false, false)
+            override fun complete(request: ProviderRequest, runController: AgentRunController, onEvent: (ProviderEvent) -> Unit): ProviderResponse {
+                requests += request.messages.toString()
+                return when (calls.incrementAndGet()) {
+                    1 -> response(childCall("single"))
+                    2 -> {
+                        assertEquals(YieldableSubagents.Decision.WAIT, owner.decision())
+                        val accepted = request.messages.getJSONObject(request.messages.length() - 1)
+                        assertEquals("tool", accepted.getString("role"))
+                        assertEquals("single", accepted.getString("tool_call_id"))
+                        assertEquals("accepted", JSONObject(accepted.getString("content")).getString("status"))
+                        response(call("independent", "get_current_context"))
+                    }
+                    3 -> answer("独立工作完成")
+                    4 -> { reportReceived.countDown(); answer("全部完成") }
+                    else -> error("unexpected model polling")
+                }
+            }
+        }
+        var result: AgentModelClient.ModelResponse.Text? = null
+        var failure: Throwable? = null
+        val thread = Thread {
+            try {
+                result = AgentModelClient.complete(
+                    AgentModelClient.ModelConfig(baseUrl = "https://example.invalid", apiKey = "fixture", model = "fixture", systemPrompt = "stable"),
+                    "派发一个任务，同时继续自己的工作", AgentModelClient.ToolExecutor {
+                        assertEquals("independent", it.id)
+                        independentWork.countDown()
+                        AgentModelClient.ToolResult("independent-result")
+                    }, provider = provider, runController = controller,
+                    additionalTools = JSONArray().put(AgentSubagentToolCatalog.schema()), yieldableSubagents = owner,
+                    onTranscript = { if (it.any { m -> m.content == "独立工作完成" }) naturalAnswer.countDown() },
+                )
+            } catch (t: Throwable) { failure = t }
+        }
+        try {
+            thread.start()
+            assertTrue("accepted must not park the parent", independentWork.await(2, TimeUnit.SECONDS))
+            assertTrue(naturalAnswer.await(2, TimeUnit.SECONDS))
+            assertFalse("no model polling while waiting", reportReceived.await(150, TimeUnit.MILLISECONDS))
+            assertEquals(3, calls.get())
+            assertTrue(thread.isAlive)
+            release.countDown()
+            thread.join(5000)
+            assertFalse(thread.isAlive)
+            failure?.let { throw AssertionError(it) }
+            assertEquals("全部完成", result!!.content)
+            assertEquals(4, calls.get())
+            assertEquals(1, launches.get())
+            assertEquals(memory.started, memory.finished)
+            assertTrue(requests[3].contains("single-child-report"))
+            assertTrue(requests[3].contains("不是终端用户发言或授权"))
+            assertEquals(1, result!!.transcript.count { it.messageId.startsWith("subagent-report-") })
+            val beforeReport = JSONArray(requests[2])
+            val withReport = JSONArray(requests[3])
+            for (index in 0 until beforeReport.length()) {
+                assertEquals(beforeReport.get(index).toString(), withReport.get(index).toString())
+            }
+        } finally { release.countDown(); controller.cancel(); owner.close(); thread.join(5000) }
+    }
+
+    @Test fun acceptedContinuesThenNaturalAnswerWaitsForImageSteerAndFinalReportAtBoundary() {
         val controller = AgentRunController()
         val memory = MemoryPersistence()
         val release = CountDownLatch(1)
         val accepted = CountDownLatch(1)
+        val initialAnswer = CountDownLatch(1)
         val afterSteer = CountDownLatch(1)
         val calls = AtomicInteger()
         val snapshots = Collections.synchronizedList(mutableListOf<String>())
@@ -58,8 +138,9 @@ class YieldableSubagentLoopTest {
                 cacheKeys += JSONObject().also { OpenAiPromptCache.apply(it, request) }.getString("prompt_cache_key")
                 return when (calls.incrementAndGet()) {
                     1 -> response(childCall("c1"), call("ordinary", "get_current_context"))
-                    2 -> { afterSteer.countDown(); answer("先处理用户的新方向") }
-                    3 -> answer("汇总子代理结果")
+                    2 -> answer("当前独立工作已处理，等待子任务")
+                    3 -> { afterSteer.countDown(); answer("先处理用户的新方向") }
+                    4 -> answer("汇总子代理结果")
                     else -> error("unexpected model polling")
                 }
             }
@@ -73,31 +154,39 @@ class YieldableSubagentLoopTest {
                     prompt = "开始", toolExecutor = AgentModelClient.ToolExecutor { AgentModelClient.ToolResult("{\"ok\":true}") },
                     provider = provider, runController = controller, sessionId = "stable-session",
                     additionalTools = JSONArray().put(AgentSubagentToolCatalog.schema()), yieldableSubagents = owner,
-                    onTranscript = { transcript -> if (transcript.any { it.role == "tool" && it.content.contains("accepted") }) accepted.countDown() },
+                    onTranscript = { transcript ->
+                        if (transcript.any { it.role == "tool" && it.content.contains("accepted") }) accepted.countDown()
+                        if (transcript.any { it.content == "当前独立工作已处理，等待子任务" }) initialAnswer.countDown()
+                    },
                 )
             } catch (t: Throwable) { failure = t }
         }
         try {
             thread.start()
             assertTrue(accepted.await(5, TimeUnit.SECONDS))
-            assertEquals(1, calls.get())
+            assertTrue(initialAnswer.await(5, TimeUnit.SECONDS))
+            assertFalse(afterSteer.await(150, TimeUnit.MILLISECONDS))
+            assertEquals(2, calls.get())
             assertTrue(controller.steer("改变方向", listOf(image)))
             assertTrue(afterSteer.await(5, TimeUnit.SECONDS))
-            assertEquals(2, calls.get())
+            assertEquals(3, calls.get())
             assertFalse(controller.isCancelled)
             release.countDown()
             thread.join(5000)
             assertFalse(thread.isAlive)
             failure?.let { throw AssertionError(it) }
             assertEquals("汇总子代理结果", result!!.content)
-            assertEquals(3, calls.get())
+            assertEquals(4, calls.get())
             assertEquals(1, memory.started.size)
             assertEquals(memory.started, memory.finished)
-            val second = JSONArray(snapshots[1]); val third = JSONArray(snapshots[2])
+            val acceptedRequest = JSONArray(snapshots[1])
+            val second = JSONArray(snapshots[2]); val third = JSONArray(snapshots[3])
+            assertEquals(listOf("assistant", "tool", "tool"), (0 until acceptedRequest.length())
+                .map { acceptedRequest.getJSONObject(it).optString("role") }.takeLast(3))
             val roles = (0 until second.length()).map { second.getJSONObject(it).optString("role") }
-            assertEquals(listOf("assistant", "tool", "tool", "user"), roles.takeLast(4))
-            assertEquals("c1", second.getJSONObject(second.length()-3).getString("tool_call_id"))
-            assertEquals("ordinary", second.getJSONObject(second.length()-2).getString("tool_call_id"))
+            assertEquals(listOf("assistant", "tool", "tool", "assistant", "user"), roles.takeLast(5))
+            assertEquals("c1", second.getJSONObject(second.length()-4).getString("tool_call_id"))
+            assertEquals("ordinary", second.getJSONObject(second.length()-3).getString("tool_call_id"))
             assertEquals(image.reference, second.getJSONObject(second.length()-1).getJSONArray("content").getJSONObject(1).getJSONObject("image_url").getString("url"))
             assertTrue(third.toString().contains("完整最终报告"))
             assertTrue(third.toString().contains("不是终端用户发言或授权"))
@@ -113,6 +202,7 @@ class YieldableSubagentLoopTest {
         val controller = AgentRunController()
         val releases = mapOf("one" to CountDownLatch(1), "two" to CountDownLatch(1))
         val accepted = CountDownLatch(1)
+        val initialAnswer = CountDownLatch(1)
         val secondRequest = CountDownLatch(1)
         val counter = AtomicInteger()
         val requests = Collections.synchronizedList(mutableListOf<String>())
@@ -128,8 +218,9 @@ class YieldableSubagentLoopTest {
                 requests += request.messages.toString()
                 return when (counter.incrementAndGet()) {
                     1 -> response(childCall("one"), childCall("two"))
-                    2 -> { secondRequest.countDown(); answer("仍有一个任务") }
-                    3 -> answer("全部结束")
+                    2 -> answer("本轮工作完成，等待两个任务")
+                    3 -> { secondRequest.countDown(); answer("仍有一个任务") }
+                    4 -> answer("全部结束")
                     else -> error("unexpected request")
                 }
             }
@@ -141,18 +232,22 @@ class YieldableSubagentLoopTest {
                 result = AgentModelClient.complete(AgentModelClient.ModelConfig(baseUrl = "https://example.invalid", apiKey = "fixture", model = "fixture", systemPrompt = ""),
                     "开始", AgentModelClient.ToolExecutor { error("unexpected") }, provider = provider, runController = controller,
                     additionalTools = JSONArray().put(AgentSubagentToolCatalog.schema()), yieldableSubagents = owner,
-                    onTranscript = { if (it.count { m -> m.role == "tool" && m.content.contains("accepted") } == 2) accepted.countDown() })
+                    onTranscript = {
+                        if (it.count { m -> m.role == "tool" && m.content.contains("accepted") } == 2) accepted.countDown()
+                        if (it.any { m -> m.content == "本轮工作完成，等待两个任务" }) initialAnswer.countDown()
+                    })
             } catch (t: Throwable) { failure = t }
         }
         try {
-            thread.start(); assertTrue(accepted.await(5, TimeUnit.SECONDS)); assertEquals(1, counter.get())
+            thread.start(); assertTrue(accepted.await(5, TimeUnit.SECONDS))
+            assertTrue(initialAnswer.await(5, TimeUnit.SECONDS)); assertEquals(2, counter.get())
             releases.getValue("two").countDown(); assertTrue(secondRequest.await(5, TimeUnit.SECONDS))
-            assertTrue(thread.isAlive); assertTrue(requests[1].contains("report-two")); assertFalse(requests[1].contains("report-one"))
+            assertTrue(thread.isAlive); assertTrue(requests[2].contains("report-two")); assertFalse(requests[2].contains("report-one"))
             releases.getValue("one").countDown(); thread.join(5000); assertFalse(thread.isAlive)
             failure?.let { throw AssertionError(it) }
             assertEquals("全部结束", result!!.content)
             assertEquals(2, result!!.transcript.count { it.messageId.startsWith("subagent-report-") })
-            assertTrue(requests[2].contains("report-one"))
+            assertTrue(requests[3].contains("report-one"))
         } finally { releases.values.forEach { it.countDown() }; controller.cancel(); owner.close(); thread.join(5000) }
     }
     @Test fun failedLaunchIsARealFailureAndNeverEntersWaitingState() {
@@ -170,11 +265,12 @@ class YieldableSubagentLoopTest {
         } finally { owner.close() }
     }
 
-    @Test fun steerCanDispatchAnotherChildAndDoIndependentWorkWithoutRerunningFirst() {
+    @Test fun noGuidanceNeededToDispatchAnotherChildAndDoIndependentWorkWithoutRerunningFirst() {
         val controller = AgentRunController()
         val firstAccepted = CountDownLatch(1)
         val secondAccepted = CountDownLatch(1)
         val afterSecond = CountDownLatch(1)
+        val firstReport = CountDownLatch(1)
         val releases = mapOf("first" to CountDownLatch(1), "second" to CountDownLatch(1))
         val started = Collections.synchronizedList(mutableListOf<String>())
         val counter = AtomicInteger()
@@ -192,7 +288,8 @@ class YieldableSubagentLoopTest {
                     1 -> response(childCall("first"))
                     2 -> response(call("own-work", "get_current_context"), childCall("second"))
                     3 -> { afterSecond.countDown(); answer("先处理已完成的工作") }
-                    4 -> answer("全部完成")
+                    4 -> { firstReport.countDown(); answer("已处理第二个报告，等待第一个") }
+                    5 -> answer("全部完成")
                     else -> error("unexpected")
                 }
         }
@@ -212,14 +309,14 @@ class YieldableSubagentLoopTest {
         }
         try {
             thread.start(); assertTrue(firstAccepted.await(5, TimeUnit.SECONDS))
-            assertTrue(controller.steer("再做一个并行任务，自己也工作"))
             assertTrue(secondAccepted.await(5, TimeUnit.SECONDS))
+            assertTrue(afterSecond.await(5, TimeUnit.SECONDS))
             assertEquals(1, workCount.get())
             assertEquals(listOf("first", "second"), started.toList())
-            releases.getValue("second").countDown(); assertTrue(afterSecond.await(5, TimeUnit.SECONDS))
+            releases.getValue("second").countDown(); assertTrue(firstReport.await(5, TimeUnit.SECONDS))
             releases.getValue("first").countDown(); thread.join(5000); assertFalse(thread.isAlive)
             failure?.let { throw AssertionError(it) }
-            assertEquals(4, counter.get())
+            assertEquals(5, counter.get())
             assertEquals(listOf("first", "second"), started.toList())
         } finally { releases.values.forEach { it.countDown() }; controller.cancel(); owner.close(); thread.join(5000) }
     }
@@ -230,6 +327,7 @@ class YieldableSubagentLoopTest {
         val binding = parent.register(child::cancel)
         val ready = CountDownLatch(1)
         val childStopped = CountDownLatch(1)
+        val calls = AtomicInteger()
         val owner = YieldableSubagents(parent, MemoryPersistence(), cancelChildren = child::cancel) { _, start ->
             val cancelled = child.register { childStopped.countDown() }
             try {
@@ -242,7 +340,12 @@ class YieldableSubagentLoopTest {
         val provider = object : AgentProviderClient {
             override val id = "fake"
             override val capabilities = ProviderCapabilities(EndpointKind.CHAT_COMPLETIONS, true, true, true, true, false, false)
-            override fun complete(request: ProviderRequest, runController: AgentRunController, onEvent: (ProviderEvent) -> Unit) = response(childCall("stop"))
+            override fun complete(request: ProviderRequest, runController: AgentRunController, onEvent: (ProviderEvent) -> Unit) =
+                when (calls.incrementAndGet()) {
+                    1 -> response(childCall("stop"))
+                    2 -> answer("等待子任务")
+                    else -> error("unexpected model polling")
+                }
         }
         val thread = Thread {
             try {

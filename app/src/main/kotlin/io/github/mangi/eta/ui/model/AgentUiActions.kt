@@ -9,10 +9,14 @@ sealed interface AgentHomeAction {
     data object CompactContext : AgentHomeAction
     data class ReasoningEffortChanged(val effort: ReasoningEffort) : AgentHomeAction
     data class ModelSelected(val modelId: String) : AgentHomeAction
-    data class SubmitMessage(val text: String) : AgentHomeAction
-    data class InterruptAndSubmitMessage(val text: String) : AgentHomeAction
+    data class SubmitMessage(val text: String, val requestMode: String = "normal") : AgentHomeAction
+    data class InterruptAndSubmitMessage(val text: String, val requestMode: String = "normal") : AgentHomeAction
     data class SteerQueuedMessage(val id: String) : AgentHomeAction
-    data class RecallQueuedMessage(val id: String, val currentDraftText: String) : AgentHomeAction
+    data class RecallQueuedMessage(
+        val id: String,
+        val currentDraftText: String,
+        val currentRequestMode: String = "normal",
+    ) : AgentHomeAction
     data class RemoveQueuedMessage(val id: String) : AgentHomeAction
     data object StopRun : AgentHomeAction
     data class ImageAttached(val uri: String) : AgentHomeAction

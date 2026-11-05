@@ -33,6 +33,9 @@ class SubagentSyncFlowTest {
         assertFalse(schema.contains("budget"))
         assertTrue(schema.contains("accepted receipt"))
         assertTrue(schema.contains("not completion"))
+        assertTrue(schema.contains("no new user guidance is required"))
+        assertTrue(schema.contains("When no independent work remains"))
+        assertFalse(schema.contains("delegate again after guidance"))
     }
 
     @Test

@@ -13,9 +13,14 @@ internal data class UserQuestion(val prompt: String, val tab: String, val multip
 @Serializable
 internal data class QuestionDraft(val selected: Set<Int> = emptySet(), val otherSelected: Boolean = false, val other: String = "")
 @Serializable
+internal enum class UserQuestionPresentation { COLLAPSED, EXPANDED, HIDDEN }
+@Serializable
 internal data class UserQuestionSet(val id: String, val conversationId: String, val runId: String,
     val callId: String, val intro: String, val questions: List<UserQuestion>, val drafts: List<QuestionDraft>,
-    val status: String = "waiting", val active: Boolean = true, val summary: String = "")
+    val status: String = "waiting", val active: Boolean = true, val summary: String = "",
+    val presentation: UserQuestionPresentation = UserQuestionPresentation.COLLAPSED,
+    val hostId: String = "main", val planId: String? = null, val planRevision: Int? = null,
+    val endReason: String = "")
 
 internal object UserQuestionParser {
     fun parse(args: JSONObject): Pair<String, List<UserQuestion>> {
@@ -30,7 +35,6 @@ internal object UserQuestionParser {
             val options = q.optJSONArray("options") ?: JSONArray()
             require(prompt.isNotBlank() && prompt.length <= 400 && tab.isNotBlank() && tab.length <= 12 && options.length() <= 6) { "问题或选项超过限制" }
             val allowOther = q.optBoolean("allow_other")
-            require(options.length() > 0 || allowOther) { "没有选项时须允许自由填写" }
             UserQuestion(prompt, tab, q.optBoolean("multiple"), allowOther, (0 until options.length()).map { n ->
                 val item = options.getJSONObject(n)
                 QuestionOption(item.getString("label"), item.optString("description")).also {
@@ -40,11 +44,13 @@ internal object UserQuestionParser {
         }
         return intro to questions
     }
-    fun valid(question: UserQuestion, draft: QuestionDraft): Boolean =
+    // otherSelected and allowOther are retained for old data, not gates for free text.
+    fun validDraft(question: UserQuestion, draft: QuestionDraft): Boolean =
         draft.selected.all { it in question.options.indices } &&
-            (!draft.otherSelected || question.allowOther && draft.other.isNotBlank()) && draft.other.length <= 2000 &&
-            (draft.selected.isNotEmpty() || draft.otherSelected) &&
-            (question.multiple || draft.selected.size + (if (draft.otherSelected) 1 else 0) == 1)
+            (question.multiple || draft.selected.size <= 1) && draft.other.length <= 2000
+
+    fun valid(question: UserQuestion, draft: QuestionDraft): Boolean =
+        validDraft(question, draft) && (draft.selected.isNotEmpty() || draft.other.isNotBlank())
 }
 
 internal object AgentUserQuestionsToolCatalog {
@@ -58,11 +64,12 @@ internal object AgentUserQuestionsToolCatalog {
             .put("prompt", JSONObject().put("type", "string").put("maxLength", 400))
             .put("tab", JSONObject().put("type", "string").put("maxLength", 12))
             .put("multiple", JSONObject().put("type", "boolean"))
-            .put("allow_other", JSONObject().put("type", "boolean"))
+            .put("allow_other", JSONObject().put("type", "boolean")
+                .put("description", "历史兼容字段；每题始终支持自由填写，可与选项同时提交。"))
             .put("options", JSONObject().put("type", "array").put("maxItems", 6).put("items", option)))
             .put("required", JSONArray().put("prompt"))
         tools.put(AgentToolSchema.function("ask_user_questions", "缺少关键参数或需要用户决策时，在原会话显示紧凑选项卡，一次1到4题，统一提交后继续原任务。" +
-            "此工具等待本人回答；未回答、稍后、取消或任务已结束绝不代表同意，不得据此执行待批准操作。不要用于每条日常回复。",
+            "每题始终可自由填写，支持选项加文字或纯文字。此工具等待本人回答；未回答、稍后、取消或任务已结束绝不代表同意，不得据此执行待批准操作。不要用于每条日常回复。",
             JSONObject().put("type", "object").put("properties", JSONObject()
                 .put("intro", JSONObject().put("type", "string").put("maxLength", 200))
                 .put("questions", JSONObject().put("type", "array").put("minItems", 1).put("maxItems", 4).put("items", question)))

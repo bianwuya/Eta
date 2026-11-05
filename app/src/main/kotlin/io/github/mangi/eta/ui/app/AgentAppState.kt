@@ -1225,12 +1225,12 @@ internal class AgentAppState(
         },
     )
 
-    fun sendCurrentMessage(submittedText: String? = null) {
-        submitOrQueueCurrentMessage(submittedText = submittedText, immediateInterrupt = false)
+    fun sendCurrentMessage(submittedText: String? = null, requestMode: String = "normal") {
+        submitOrQueueCurrentMessage(submittedText = submittedText, immediateInterrupt = false, requestMode = requestMode)
     }
 
-    fun interruptAndSendCurrentMessage(submittedText: String? = null) {
-        submitOrQueueCurrentMessage(submittedText = submittedText, immediateInterrupt = true)
+    fun interruptAndSendCurrentMessage(submittedText: String? = null, requestMode: String = "normal") {
+        submitOrQueueCurrentMessage(submittedText = submittedText, immediateInterrupt = true, requestMode = requestMode)
     }
 
     fun steerQueuedMessage(id: String) {
@@ -1245,12 +1245,13 @@ internal class AgentAppState(
         }
     }
 
-    fun recallQueuedMessage(id: String, currentDraftText: String) {
+    fun recallQueuedMessage(id: String, currentDraftText: String, currentRequestMode: String = "normal") {
         if (!homeState.isConversationLoaded || id in steeringJobs) return
         val nextState = AgentMessageQueueReducer.recallToDraft(
             state = homeState,
             currentInputText = currentDraftText,
             id = id,
+            currentRequestMode = currentRequestMode,
         ) ?: return
         updateCurrentConversation(nextState, updateTimestamp = false)
     }
@@ -1266,7 +1267,9 @@ internal class AgentAppState(
     private fun submitOrQueueCurrentMessage(
         submittedText: String?,
         immediateInterrupt: Boolean,
+        requestMode: String = "normal",
     ) {
+        require(requestMode == "normal" || requestMode == "plan")
         if (!homeState.isConversationLoaded || homeState.isCompacting ||
             selectedConversationId in pendingConversationDeletes) return
         val prompt = (submittedText ?: homeState.input).trim()
@@ -1310,13 +1313,14 @@ internal class AgentAppState(
                 content = prompt,
                 pendingImages = pendingImages,
                 pendingFileReferences = pendingFileReferences,
-                immediateInterrupt = immediateInterrupt,
+                immediateInterrupt = immediateInterrupt && requestMode != "plan",
+                requestMode = requestMode,
             )
             updateCurrentConversation(
                 state = AgentMessageQueueReducer.enqueue(homeState, queued),
                 updateTimestamp = false,
             )
-            if (immediateInterrupt) {
+            if (queued.immediateInterrupt) {
                 requestSteeringCurrentRun(queued.id)
             }
             return
@@ -1345,6 +1349,7 @@ internal class AgentAppState(
             pendingImages = pendingImages,
             pendingFileReferences = pendingFileReferences,
             editBoundary = editBoundary,
+            requestMode = requestMode,
         )
     }
 
@@ -1378,6 +1383,7 @@ internal class AgentAppState(
             pendingFileReferences = item.pendingFileReferences,
             editBoundary = null,
             preserveCurrentDraft = true,
+            requestMode = item.requestMode,
         )
     }
 
@@ -1389,6 +1395,7 @@ internal class AgentAppState(
         pendingFileReferences: List<PendingFileReferenceUi>,
         editBoundary: AgentConversationRevisionReducer.Boundary?,
         preserveCurrentDraft: Boolean = false,
+        requestMode: String = "normal",
     ) {
         val fileReferences = pendingFileReferences.map { it.reference }
         val runtimePrompt = AgentFileReferencePromptCodec.format(prompt, fileReferences)
@@ -1447,15 +1454,12 @@ internal class AgentAppState(
                     messageEdit = null,
                 )
             } else {
-                state.copy(
+                AgentMessageQueueReducer.clearSubmittedDraft(state).copy(
                     journal = editBoundary?.journalPrefix ?: state.journal,
-                    input = "",
-                    pendingImages = emptyList(),
-                    pendingFileReferences = emptyList(),
-                    messageEdit = null,
                 )
             },
             reasoningEffort = state.reasoningEffort,
+            requestMode = requestMode,
         )
     }
 
@@ -1648,6 +1652,7 @@ internal class AgentAppState(
         reasoningEffort: ReasoningEffort,
         operation: String = AgentRuntimeWire.OP_CHAT,
         rewriteTargetMessageId: String? = null,
+        requestMode: String = "normal",
     ) {
         if (conversationId in pendingConversationDeletes || !runStore.register(runId, conversationId)) return
         // 发送即绑定：会话记住本轮实际使用的模型，回落到默认模型时也随之更新。
@@ -1776,6 +1781,7 @@ internal class AgentAppState(
                         rewriteTargetMessageId = rewriteTargetMessageId,
                         runId = runId,
                         prompt = prompt,
+                        requestMode = requestMode,
                         config = config.copy(supportsSearchSuggestions = true),
                         images = modelImages,
                         history = history,
@@ -2048,6 +2054,7 @@ internal class AgentAppState(
         val conversationId = selectedConversationId ?: return
         val runId = runStore.activeRunId(conversationId) ?: return
         val item = conversationsById[conversationId]?.queuedMessages?.firstOrNull { it.id == queueMessageId } ?: return
+        if (item.requestMode == "plan") return // Never drop a plan mode by steering it into an existing run.
         // Original attachment references use the same bounded FD ingestion as a normal send.
         if (runStore.isStopRequested(runId) ||
             queueMessageId in steeringJobs || queueMessageId in unconfirmedSteering) return

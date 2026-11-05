@@ -10,7 +10,9 @@ import io.github.mangi.eta.agent.runtime.AgentRunController
 import io.github.mangi.eta.agent.skill.SkillContext
 import io.github.mangi.eta.agent.terminal.TerminalExecutionContext
 import io.github.mangi.eta.agent.tool.AgentToolCapabilities
+import io.github.mangi.eta.local.subagentdisplay.SubagentReadableText
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -38,6 +40,8 @@ internal class SubagentExecutor(
     private val childToolFactory: ((AgentRunController) -> AgentModelClient.ToolExecutor)? = null,
     private val detailStoreFactory: (() -> SubagentDetailStore)? = null,
     private val controlRegistry: SubagentControlRegistry? = null,
+    private val providerFactory: (AgentModelClient.ModelConfig) -> io.github.mangi.eta.agent.model.AgentProviderClient =
+        io.github.mangi.eta.agent.model.ProviderClientFactory::getClient,
 ) {
     private val latestSnapshots = ConcurrentHashMap<String, String>()
 
@@ -158,11 +162,12 @@ internal class SubagentExecutor(
         val resolvedConfig = runCatching { configProvider() }.getOrElse { throwable ->
             if (throwable is AgentRunCancelledException || throwable is java.util.concurrent.CancellationException) throw throwable
             if (parentController.isCancelled || childController.isCancelled) throw AgentRunCancelledException()
+            val previousCompactions = entry.compactionCount.get()
             SubagentSessionStore.releaseRunning(conversationKey, subagentId)
             val message = throwable.message ?: "无法加载 Subagent 模型配置"
             // 启动失败必须是真实失败状态，不能停留在合成卡片初始的“正在启动”。
             val failed = SubagentActivitySnapshot.failureFromArguments(toolCall.argumentsJson, message)
-                .copy(subagentId = subagentId)
+                .copy(subagentId = subagentId, compactionCount = previousCompactions)
             latestSnapshots[toolCall.id] = failed.encode()
             onProgress(
                 AgentEvent.SubagentProgress(
@@ -190,6 +195,8 @@ internal class SubagentExecutor(
             prompt = prompt,
             model = modelLabel,
             resumed = isResume,
+            contextWindow = resolvedConfig.knownContextWindow,
+            successfulCompactions = entry.compactionCount,
         )
 
         val detailStore = detailStoreFactory?.invoke().also { detailStoreForCleanup = it }
@@ -303,7 +310,7 @@ internal class SubagentExecutor(
             val response = AgentModelClient.complete(
                 config = subagentConfig,
                 provider = io.github.mangi.eta.local.subagentstats.SubagentRequestStats.provider(
-                    delegate = io.github.mangi.eta.agent.model.ProviderClientFactory.getClient(subagentConfig),
+                    delegate = providerFactory(subagentConfig),
                     template = io.github.mangi.eta.local.subagentstats.SubagentRequestStat(
                         conversationId = conversationKey,
                         subagentId = subagentId,
@@ -615,6 +622,8 @@ internal class SubagentExecutor(
         private val prompt: String,
         private val model: String,
         private val resumed: Boolean,
+        private val contextWindow: Int? = null,
+        private val successfulCompactions: AtomicInteger = AtomicInteger(0),
     ) {
         private val lock = Any()
         private val steps = mutableListOf<SubagentStepSnapshot>()
@@ -626,6 +635,10 @@ internal class SubagentExecutor(
         private var finalOutput = ""
         private var retainedTruncated = false
         private var errorText: String? = null
+        // Usage belongs to this invocation: resume may select a different model or append a prompt.
+        private var contextTokens: Int? = null
+        private var compactionCount = successfulCompactions.get()
+        private var lastCompletedCompactionId: String? = null
 
         fun onChildEvent(event: AgentEvent): Boolean = synchronized(lock) {
             when (event) {
@@ -637,9 +650,32 @@ internal class SubagentExecutor(
                 is AgentEvent.ModelRetryScheduled -> {
                     // 失败尝试只留作步骤记录，不拼进后续的部分汇报。
                     roundTexts.remove(event.round)
+                    // The retry discarded that attempt; await fresh usage rather than keep it.
+                    contextTokens = null
                     finishAllRunningSteps(SubagentStepSnapshot.STATUS_FAILED)
                     currentAction = event.displayMessage
                     true
+                }
+
+                is AgentEvent.UsageReceived -> {
+                    val reported = event.usage.contextTokens?.takeIf { it >= 0 }
+                    val changed = contextTokens != reported
+                    contextTokens = reported
+                    changed
+                }
+
+                is AgentEvent.ContextCompaction -> {
+                    if (event.phase == AgentEvent.ContextCompaction.PHASE_COMPLETED &&
+                        lastCompletedCompactionId != event.operationId
+                    ) {
+                        lastCompletedCompactionId = event.operationId
+                        compactionCount = successfulCompactions.incrementAndGet()
+                        // Only a supplied post-compaction value is current; never retain old usage.
+                        contextTokens = event.tokensAfter?.takeIf { it >= 0 }
+                        true
+                    } else {
+                        false
+                    }
                 }
 
                 is AgentEvent.AssistantBlockDelta -> when (event.kind) {
@@ -711,7 +747,7 @@ internal class SubagentExecutor(
                 is AgentEvent.ToolStarted -> {
                     finishRunningThinkingSteps()
                     val stepId = "tool-${event.round}-${event.toolCallId}"
-                    val title = event.argsPreview.ifBlank { event.name }
+                    val title = SubagentReadableText.toolTitle(event.name, event.argsPreview, event.command)
                     val detail = event.command?.trim().orEmpty().take(MAX_STEP_DETAIL_CHARS)
                     if (steps.none { it.id == stepId }) {
                         totalTools++
@@ -813,6 +849,9 @@ internal class SubagentExecutor(
                 previewTruncated = retainedTruncated || totalStepCount > MAX_STEPS,
                 output = liveOutput,
                 error = errorText,
+                contextTokens = contextTokens,
+                contextWindow = contextWindow,
+                compactionCount = compactionCount,
             )
         }
 

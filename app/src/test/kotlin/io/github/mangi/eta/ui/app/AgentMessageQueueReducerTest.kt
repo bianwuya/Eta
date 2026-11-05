@@ -156,6 +156,225 @@ class AgentMessageQueueReducerTest {
         assertEquals(listOf("q-1"), afterInterruptState.queuedMessages.map { it.id })
     }
 
+    @Test
+    fun planEnqueueKeepsFifoAndCannotBecomeSteering() {
+        val state = baseState(isStreaming = true).copy(
+            draftRequestMode = "plan",
+            queuedMessages = listOf(QueuedMessageUi("normal", "first")),
+        )
+        val queued = AgentMessageQueueReducer.enqueue(
+            state,
+            QueuedMessageUi("plan", "second", immediateInterrupt = true, requestMode = "plan"),
+        )
+
+        assertEquals(listOf("normal", "plan"), queued.queuedMessages.map { it.id })
+        assertEquals("plan", queued.queuedMessages.last().requestMode)
+        assertFalse(queued.queuedMessages.last().immediateInterrupt)
+        assertEquals("normal", queued.draftRequestMode)
+        for (compacting in listOf(false, true)) {
+            val running = queued.copy(isCompacting = compacting)
+            val (unchanged, steering) = AgentMessageQueueReducer.promoteToInterrupt(running, "plan")
+            assertEquals(running, unchanged)
+            assertNull(steering)
+        }
+    }
+
+    @Test
+    fun planCanBeSentAsANewRequestWhenIdle() {
+        val plan = QueuedMessageUi("plan", "review", requestMode = "plan")
+        val state = baseState(isStreaming = false).copy(queuedMessages = listOf(plan))
+
+        val (next, dispatched) = AgentMessageQueueReducer.promoteToInterrupt(state, plan.id)
+
+        assertTrue(next.queuedMessages.isEmpty())
+        assertEquals(plan, dispatched)
+        assertFalse(dispatched!!.immediateInterrupt)
+    }
+
+    @Test
+    fun automaticPlanDispatchPreservesModeAttachmentsAndCurrentDraft() {
+        val image = PendingImageUi("image", "uri", "data", "image/png")
+        val file = PendingFileReferenceUi(
+            "file",
+            AgentFileReference("doc.txt", "/sdcard/doc.txt", AgentFileReferenceKind.File),
+        )
+        val plan = QueuedMessageUi(
+            "plan", "review", listOf(image), listOf(file), requestMode = "plan",
+        )
+        val state = baseState(isStreaming = false, input = "unsent", images = listOf(image)).copy(
+            draftRequestMode = "plan",
+            pendingFileReferences = listOf(file),
+            queuedMessages = listOf(plan, QueuedMessageUi("normal", "next")),
+        )
+
+        val (next, dispatched) = AgentMessageQueueReducer.pollNextToSendAfterRun(state, stoppedByUser = false)
+
+        assertEquals(plan, dispatched)
+        assertEquals("unsent", next.input)
+        assertEquals("plan", next.draftRequestMode)
+        assertEquals(listOf(image), next.pendingImages)
+        assertEquals(listOf(file), next.pendingFileReferences)
+        assertEquals(listOf("normal"), next.queuedMessages.map { it.id })
+    }
+
+    @Test
+    fun stoppingDoesNotAutomaticallyDispatchQueuedPlan() {
+        val plan = QueuedMessageUi("plan", "review", requestMode = "plan")
+        val state = AgentMessageQueueReducer.enqueue(baseState(isStreaming = true), plan)
+
+        val (next, dispatched) = AgentMessageQueueReducer.pollNextToSendAfterRun(state, stoppedByUser = true)
+
+        assertNull(dispatched)
+        assertEquals(listOf(plan), next.queuedMessages)
+    }
+
+    @Test
+    fun recallingAttachmentOnlyPlanRestoresModeAndDeduplicatesAttachments() {
+        val image = PendingImageUi("image", "uri", "data", "image/png")
+        val file = PendingFileReferenceUi(
+            "file",
+            AgentFileReference("doc.txt", "/sdcard/doc.txt", AgentFileReferenceKind.File),
+        )
+        val state = baseState(isStreaming = true, images = listOf(image)).copy(
+            pendingFileReferences = listOf(file),
+            queuedMessages = listOf(
+                QueuedMessageUi("plan", "", listOf(image), listOf(file), requestMode = "plan"),
+            ),
+            inputSyncVersion = 4,
+        )
+
+        val recalled = AgentMessageQueueReducer.recallToDraft(state, "local text", "plan")!!
+
+        assertEquals("local text", recalled.input)
+        assertEquals("plan", recalled.draftRequestMode)
+        assertEquals(listOf(image), recalled.pendingImages)
+        assertEquals(listOf(file), recalled.pendingFileReferences)
+        assertTrue(recalled.queuedMessages.isEmpty())
+        assertEquals(5, recalled.inputSyncVersion)
+    }
+
+    @Test
+    fun ordinaryRecallPreservesExplicitCurrentPlanDraft() {
+        val state = baseState(isStreaming = true).copy(
+            draftRequestMode = "plan",
+            queuedMessages = listOf(QueuedMessageUi("normal", "queued text")),
+        )
+
+        val recalled = AgentMessageQueueReducer.recallToDraft(state, "draft", "normal", currentRequestMode = "plan")!!
+
+        assertEquals("draft\nqueued text", recalled.input)
+        assertEquals("plan", recalled.draftRequestMode)
+    }
+
+    @Test
+    fun normalRecallUsesLiveModeInsteadOfOppositeStaleParentAndMergesAttachments() {
+        val existingImage = PendingImageUi("existing-image", "u1", "d1", "image/png")
+        val queuedImage = PendingImageUi("queued-image", "u2", "d2", "image/png")
+        val existingFile = PendingFileReferenceUi(
+            "existing-file", AgentFileReference("one.txt", "/sdcard/one.txt", AgentFileReferenceKind.File),
+        )
+        val queuedFile = PendingFileReferenceUi(
+            "queued-file", AgentFileReference("two.txt", "/sdcard/two.txt", AgentFileReferenceKind.File),
+        )
+        for (currentMode in listOf("normal", "plan")) {
+            val state = baseState(isStreaming = true, images = listOf(existingImage)).copy(
+                draftRequestMode = if (currentMode == "normal") "plan" else "normal",
+                pendingFileReferences = listOf(existingFile),
+                queuedMessages = listOf(
+                    QueuedMessageUi(
+                        "normal", "queued text", listOf(existingImage, queuedImage),
+                        listOf(existingFile, queuedFile), requestMode = "normal",
+                    ),
+                ),
+                inputSyncVersion = 6,
+            )
+
+            val recalled = AgentMessageQueueReducer.recallToDraft(
+                state, "live draft", "normal", currentRequestMode = currentMode,
+            )!!
+
+            assertEquals(currentMode, recalled.draftRequestMode)
+            assertEquals("live draft\nqueued text", recalled.input)
+            assertEquals(listOf(existingImage, queuedImage), recalled.pendingImages)
+            assertEquals(listOf(existingFile, queuedFile), recalled.pendingFileReferences)
+            assertTrue(recalled.queuedMessages.isEmpty())
+            assertEquals(7, recalled.inputSyncVersion)
+        }
+    }
+
+    @Test
+    fun recalledPlanOverridesCurrentNormalModeAndRestoresAttachments() {
+        val image = PendingImageUi("image", "uri", "data", "image/png")
+        val file = PendingFileReferenceUi(
+            "file", AgentFileReference("doc.txt", "/sdcard/doc.txt", AgentFileReferenceKind.File),
+        )
+        val state = baseState(isStreaming = true).copy(
+            draftRequestMode = "normal",
+            queuedMessages = listOf(
+                QueuedMessageUi("plan", "review", listOf(image), listOf(file), requestMode = "plan"),
+            ),
+        )
+
+        val recalled = AgentMessageQueueReducer.recallToDraft(
+            state, "draft", "plan", currentRequestMode = "normal",
+        )!!
+
+        assertEquals("plan", recalled.draftRequestMode)
+        assertEquals("draft\nreview", recalled.input)
+        assertEquals(listOf(image), recalled.pendingImages)
+        assertEquals(listOf(file), recalled.pendingFileReferences)
+    }
+
+    @Test
+    fun legacyRecallDefaultsToNormalRatherThanStaleParentPlan() {
+        val state = baseState(isStreaming = true).copy(
+            draftRequestMode = "plan",
+            queuedMessages = listOf(QueuedMessageUi("normal", "text")),
+        )
+
+        val recalled = AgentMessageQueueReducer.recallToDraft(state, "draft", "normal")!!
+
+        assertEquals("normal", recalled.draftRequestMode)
+        assertEquals("draft\ntext", recalled.input)
+    }
+
+    @Test
+    fun submittingRecalledPlanClearsRestoreModeButDoesNotChangeQueuedSnapshots() {
+        val image = PendingImageUi("image", "uri", "data", "image/png")
+        val plan = QueuedMessageUi("plan", "review", pendingImages = listOf(image), requestMode = "plan")
+        val state = baseState(isStreaming = false, input = "draft", images = listOf(image)).copy(
+            draftRequestMode = "plan",
+            queuedMessages = listOf(plan),
+            inputSyncVersion = 9,
+        )
+
+        val cleared = AgentMessageQueueReducer.clearSubmittedDraft(state)
+
+        assertEquals("normal", cleared.draftRequestMode)
+        assertEquals("", cleared.input)
+        assertTrue(cleared.pendingImages.isEmpty())
+        assertTrue(cleared.pendingFileReferences.isEmpty())
+        assertEquals(listOf(plan), cleared.queuedMessages)
+        assertEquals(9, cleared.inputSyncVersion)
+        assertEquals("plan", state.draftRequestMode)
+        assertEquals(listOf(image), state.pendingImages)
+    }
+
+    @Test
+    fun normalSteeringAndRemovalDoNotMutateAQueuedPlanMode() {
+        val plan = QueuedMessageUi("plan", "review", requestMode = "plan")
+        val state = baseState(isStreaming = true).copy(
+            queuedMessages = listOf(plan, QueuedMessageUi("normal", "guidance")),
+        )
+
+        val (next, steering) = AgentMessageQueueReducer.promoteToInterrupt(state, "normal")
+
+        assertEquals("normal", steering!!.requestMode)
+        assertEquals(plan, next.queuedMessages.last())
+        val removed = AgentMessageQueueReducer.remove(next, "normal")
+        assertEquals(listOf(plan), removed.queuedMessages)
+    }
+
     private fun baseState(
         isStreaming: Boolean,
         input: String = "",
