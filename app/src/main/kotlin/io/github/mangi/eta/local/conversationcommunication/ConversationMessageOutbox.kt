@@ -184,7 +184,7 @@ internal class ConversationMessageFileOutbox(private val file: File) : Conversat
                         message = "待投递的跨会话消息已达上限（$MAX_ENTRIES），本次未发送；请等目标会话运行后再试",
                     ),
                 )
-            val entries = current.entries - evictable
+            val entries = (current.entries - evictable) + entry
             Mutation(current.copy(entries = entries), ConversationOutboxWrite.Stored(entry))
         } else {
             Mutation(current.copy(entries = current.entries + entry), ConversationOutboxWrite.Stored(entry))
