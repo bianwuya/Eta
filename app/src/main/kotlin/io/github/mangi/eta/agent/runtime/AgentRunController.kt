@@ -111,6 +111,10 @@ internal class AgentRunController {
     val hasPendingSteering: Boolean
         get() = lock.withLock { steeringMessages.isNotEmpty() }
 
+    /** Used to defer stale child tool calls until the parent directive reaches the model. */
+    val hasPendingParentDirective: Boolean
+        get() = lock.withLock { steeringMessages.any { it.origin == SteeringOrigin.PARENT_AGENT } }
+
     /**
      * 排入下一条完整 turn 边界。run 已结束/已封口时返回 false，调用方据此改为排队或开新 run，
      * 不能把“已接收”当成“已投递”。
