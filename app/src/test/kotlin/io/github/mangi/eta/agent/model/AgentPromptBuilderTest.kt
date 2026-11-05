@@ -148,7 +148,7 @@ class AgentPromptBuilderTest {
         assertTrue(messages.getJSONObject(2).getString("content").contains("只需 command"))
         assertTrue(messages.getJSONObject(2).getString("content").contains("同一轮最多读取一张"))
         assertTrue(messages.getJSONObject(2).getString("content").contains("观察返回内容后再读下一张"))
-        assertTrue(messages.getJSONObject(3).getString("content").contains("可调用 subagent 异步派发子智能体"))
+        assertTrue(messages.getJSONObject(3).getString("content").contains("可调用 subagent 派发子智能体"))
         assertFalse(messages.systemContents().any { it.contains("网页浏览、读取") })
         assertEquals("旧问题", messages.getJSONObject(4).getString("content"))
         assertEquals("旧回答", messages.getJSONObject(5).getString("content"))
@@ -190,7 +190,7 @@ class AgentPromptBuilderTest {
         val systemContents = messages.systemContents()
         assertTrue(systemContents.any { it.contains("browser_use") })
         assertFalse(systemContents.any { it.contains("只需 command") })
-        assertTrue(messages.getJSONObject(2).getString("content").contains("可调用 subagent 异步派发子智能体"))
+        assertTrue(messages.getJSONObject(2).getString("content").contains("可调用 subagent 派发子智能体"))
         val skillMessage = systemContents.single { it.contains("id=screen-audit") }
         assertEquals(skillMessage, messages.getJSONObject(3).getString("content"))
         assertTrue(skillMessage.contains("path=/skills/screen-audit/SKILL.md"))
@@ -212,10 +212,17 @@ class AgentPromptBuilderTest {
 
         val disabled = contents(false)
         val enabled = contents(true)
-        val subagentGuidance = "可调用 subagent 异步派发子智能体"
+        val subagentGuidance = "可调用 subagent 派发子智能体"
         assertFalse(disabled.any { it.contains(subagentGuidance) })
         assertEquals(1, enabled.count { it.contains(subagentGuidance) })
         assertEquals(disabled, enabled.filterNot { it.contains(subagentGuidance) })
+        for (obsolete in listOf("异步派发子智能体", "返回启动状态不代表完成", "subagent_control", "subagent_report", "结束父任务前处理所有活动子任务")) {
+            assertFalse("同步流程不应暴露旧协作协议: $obsolete", enabled.any { it.contains(obsolete) })
+        }
+        val guidance = enabled.single { it.contains(subagentGuidance) }
+        assertTrue(guidance.contains("subagent_type"))
+        assertTrue(guidance.contains("role 与 tools"))
+        assertTrue(guidance.contains("subagent_profile"))
     }
 
     @Test

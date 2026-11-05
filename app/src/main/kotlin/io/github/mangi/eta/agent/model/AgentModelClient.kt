@@ -112,7 +112,6 @@ internal object AgentModelClient {
         assistantScreenContext: String = "",
         toolFilter: ((JSONArray) -> JSONArray)? = null,
         compactionTarget: (() -> AgentCompactionTarget)? = null,
-        coordination: AgentRunCoordination? = null,
         onContextSnapshot: (AgentContextSnapshot) -> Unit = {},
         onTranscript: (List<ConversationMessage>) -> Unit = {},
         onEvent: (AgentEvent) -> Unit = {}
@@ -207,7 +206,6 @@ internal object AgentModelClient {
         val loop = AgentLoop(
             transcript = transcript,
             compactionTarget = compactionTarget,
-            coordination = coordination,
             systemCount = systemCount,
             operationId = operationId,
             onContextSnapshot = if (rewriteReply) ({ _ -> }) else onContextSnapshot,
