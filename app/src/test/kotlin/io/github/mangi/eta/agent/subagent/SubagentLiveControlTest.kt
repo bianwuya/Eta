@@ -5,6 +5,7 @@ import io.github.mangi.eta.agent.runtime.AgentRunController
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -87,12 +88,16 @@ class SubagentLiveControlTest {
         val anotherRegistry = SubagentControlRegistry()
         val first = AgentRunController()
         val second = AgentRunController()
-        val firstLink = oneRegistry.register("sub_1", "first run", "call-a", first)
+        val cancelledSessions = AtomicInteger()
+        val firstLink = oneRegistry.register("sub_1", "first run", "call-a", first) {
+            cancelledSessions.incrementAndGet()
+        }
         val secondLink = anotherRegistry.register("sub_1", "another run", "call-b", second)
         try {
             assertEquals("cancel_requested", result(oneRegistry, control("cancel", "sub_1")).getString("status"))
             assertTrue(first.isCancelled)
             assertFalse(second.isCancelled)
+            assertEquals(1, cancelledSessions.get())
             assertEquals("cancelling", result(oneRegistry, control("list"))
                 .getJSONArray("active").getJSONObject(0).getString("status"))
             assertEquals("SUBAGENT_ALREADY_CANCELLING",
