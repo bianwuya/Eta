@@ -232,6 +232,15 @@ internal class SubagentTaskManager(
                 .apply { if (includeResult) result?.let { put("result", JSONObject(it.content)) } }
         }
 
+        /** Routine progress belongs to the detail view, not an automatic parent handoff. */
+        fun parentSnapshot(includeResult: Boolean = false): JSONObject = snapshot(includeResult).apply {
+            remove("recent_progress")
+            if (optString("latest_report_kind") == REPORT_PROGRESS) {
+                remove("latest_report")
+                remove("latest_report_kind")
+            }
+        }
+
         fun hasUnconsumedGuidance(): Boolean = guidance.any { it.delivery != "response_received" }
 
         fun guide(text: String, revise: Boolean): JSONObject = synchronized(lock) {
@@ -333,7 +342,7 @@ internal class SubagentTaskManager(
                     synchronized(lock) {
                         task.finalized = true
                         if (task.status != "interrupted" && notices.size < 512) {
-                            notices += Mail(text = task.snapshot(true).toString(), revision = task.revision,
+                            notices += Mail(text = task.parentSnapshot(true).toString(), revision = task.revision,
                                 important = true, kind = REPORT_FINAL)
                         }
                     }
@@ -383,7 +392,7 @@ internal class SubagentTaskManager(
             }
             return if (messages.isEmpty() && needsDecision()) listOf(
                 "仍有暂停/等待决策的子任务，结束父任务前请显式继续或取消：" +
-                    synchronized(lock) { tasks.values.filter { it.status in PAUSED }.map { it.snapshot() } }.joinToString(),
+                    synchronized(lock) { tasks.values.filter { it.status in PAUSED }.map { it.parentSnapshot() } }.joinToString(),
             ) else messages
         }
     }
