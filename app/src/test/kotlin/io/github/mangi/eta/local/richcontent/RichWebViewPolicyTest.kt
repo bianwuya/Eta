@@ -1,7 +1,7 @@
 package io.github.mangi.eta.local.richcontent
 
 import android.net.Uri
-import android.webkit.WebResourceError
+import android.webkit.PreviewTestWebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import java.io.ByteArrayInputStream
@@ -95,10 +95,7 @@ class RichWebViewPolicyTest {
     @Test fun mainFrameErrorsAreReportedButSubresourceErrorsAreNot() {
         var failures = 0
         val view = RichWebView(RuntimeEnvironment.getApplication(), false, onFailed = { failures++ })
-        val error = object : WebResourceError() {
-            override fun getErrorCode() = -2
-            override fun getDescription(): CharSequence = "fixture failure"
-        }
+        val error = PreviewTestWebResourceError()
         val httpError = WebResourceResponse("text/plain", "UTF-8", 403, "Blocked", emptyMap(), ByteArrayInputStream(byteArrayOf()))
         try {
             val client = view.webViewClient
