@@ -28,4 +28,18 @@ class RecentFixesDisplayIntegrationTest {
         val keys = decoded.steps.map { it.id }
         assertEquals("Bounded transport must preserve unique inspector keys", keys.size, keys.toSet().size)
     }
+    @Test
+    fun boundedIdsRetainReadablePrefixAndRemainUniqueWithinPayloadBudget() {
+        val snapshot = SubagentActivitySnapshot(subagentId = "child", steps = (1..100).map { index ->
+            SubagentStepSnapshot(id = "step-$index" + "x".repeat(2000),
+                kind = SubagentStepSnapshot.KIND_TOOL, title = "标题".repeat(2000),
+                toolName = "read_file".repeat(2000))
+        })
+        val encoded = snapshot.encodeBounded(16_000)
+        assertTrue(encoded.length <= 16_000)
+        val decoded = requireNotNull(SubagentActivitySnapshot.decode(encoded))
+        assertTrue(decoded.steps.last().id.startsWith("step-100"))
+        assertEquals(decoded.steps.size, decoded.steps.map { it.id }.toSet().size)
+    }
+
 }

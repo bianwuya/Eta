@@ -75,7 +75,7 @@ internal data class SubagentActivitySnapshot(
                 step.copy(
                     // IDs are display identity, not visible text. Prefix truncation can merge
                     // distinct provider IDs and crash the inspector's LazyColumn.
-                    id = if (step.id.length <= limit) step.id else "preview-" +
+                    id = if (step.id.length <= limit) step.id else step.id.take(32) + "~" +
                         java.security.MessageDigest.getInstance("SHA-256")
                             .digest(step.id.toByteArray(Charsets.UTF_8))
                             .joinToString("") { "%02x".format(it) },
