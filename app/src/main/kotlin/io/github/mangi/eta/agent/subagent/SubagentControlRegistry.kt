@@ -16,12 +16,19 @@ internal class SubagentControlRegistry {
         val description: String,
         val toolCallId: String,
         val controller: AgentRunController,
+        val onCancel: () -> Unit,
     )
 
     private val children = ConcurrentHashMap<String, LiveChild>()
 
-    fun register(id: String, description: String, toolCallId: String, controller: AgentRunController): AutoCloseable {
-        val child = LiveChild(id, description, toolCallId, controller)
+    fun register(
+        id: String,
+        description: String,
+        toolCallId: String,
+        controller: AgentRunController,
+        onCancel: () -> Unit = {},
+    ): AutoCloseable {
+        val child = LiveChild(id, description, toolCallId, controller, onCancel)
         check(children.putIfAbsent(id, child) == null) { "Subagent already registered: $id" }
         return AutoCloseable { children.remove(id, child) }
     }
@@ -58,6 +65,7 @@ internal class SubagentControlRegistry {
 
         return when (action) {
             "cancel" -> {
+                child.onCancel()
                 child.controller.cancel()
                 success(id, "cancel_requested", "已请求停止该子代理；已执行的外部操作不会自动回滚，最终结果请检查后续报告。")
             }
