@@ -114,16 +114,9 @@ class SubagentLiveControlTest {
         val registry = SubagentControlRegistry()
         val child = AgentRunController()
         val link = registry.register("sub_pause", "pause status", "call-p", child)
-        val started = CountDownLatch(1)
-        val worker = thread {
-            started.countDown()
-            child.throwIfCancelled()
-        }
         try {
-            // First resume the eagerly started worker, then create a fresh blocked checkpoint.
-            worker.join(1_000)
-            assertFalse(worker.isAlive)
             assertEquals("pause_requested", result(registry, control("pause", "sub_pause")).getString("status"))
+            assertFalse(child.isPausedAtCheckpoint)
             assertEquals("pause_requested", result(registry, control("list"))
                 .getJSONArray("active").getJSONObject(0).getString("status"))
 
@@ -146,7 +139,6 @@ class SubagentLiveControlTest {
         } finally {
             child.cancel()
             link.close()
-            worker.join(1_000)
         }
     }
 
