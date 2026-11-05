@@ -96,6 +96,7 @@ class MainActivity : ComponentActivity() {
                     )
                 }
             }
+            io.github.mangi.eta.local.longshot.ColorOsLongshotHost.install(this@MainActivity)
             contentReady = true
         }
     }

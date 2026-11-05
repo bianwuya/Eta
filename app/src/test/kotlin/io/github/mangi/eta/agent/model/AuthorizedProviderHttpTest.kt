@@ -2,6 +2,7 @@ package io.github.mangi.eta.agent.model
 
 import com.sun.net.httpserver.HttpServer
 import io.github.mangi.eta.agent.auth.CodexOAuthFixture
+import io.github.mangi.eta.agent.auth.ProviderCredentialBinding
 import io.github.mangi.eta.agent.runtime.AgentRunCancelledException
 import io.github.mangi.eta.agent.runtime.AgentRunController
 import io.github.mangi.eta.data.model.ProviderAuthModes
@@ -23,6 +24,30 @@ import org.junit.Test
 
 class AuthorizedProviderHttpTest {
     @Test
+    fun manualSwitchDuring401CannotChangeTheRequestBinding() {
+        val seenSlots = mutableListOf<String>()
+        var selected = binding.copy(credentialSlotId = "slot-a")
+        val original = selected
+        val client = OkHttpClient.Builder().addInterceptor { chain ->
+            selected = binding.copy(credentialSlotId = "slot-b")
+            response(chain.request(), if (seenSlots.size == 1) 401 else 200)
+        }.build()
+
+        val result = AuthorizedProviderHttp.execute(
+            client, "account", ProviderAuthModes.OPENAI_CHATGPT, request(), AgentRunController(),
+            binding = original,
+            accessToken = { bound, _, _ ->
+                seenSlots += bound.credentialSlotId
+                CodexOAuthFixture.accessToken("workspace-a")
+            },
+        ) { it.code }
+
+        assertEquals(200, result)
+        assertEquals("slot-b", selected.credentialSlotId)
+        assertEquals(listOf("slot-a", "slot-a"), seenSlots)
+    }
+
+    @Test
     fun refreshesRejectedCredentialBeforeConsumingResponseAndNeverReusesSnapshot() {
         val authorizations = mutableListOf<String?>()
         val accounts = mutableListOf<String?>()
@@ -36,7 +61,8 @@ class AuthorizedProviderHttpTest {
         }.build()
         val value = AuthorizedProviderHttp.execute(
             client, "account", ProviderAuthModes.OPENAI_CHATGPT, request(), AgentRunController(),
-            accessToken = { _, _, _, previous ->
+            binding = binding,
+            accessToken = { _, _, previous ->
                 rejected += previous
                 if (previous == null) oldToken else newToken
             },
@@ -57,7 +83,8 @@ class AuthorizedProviderHttpTest {
         val failure = runCatching {
             AuthorizedProviderHttp.execute(
                 client, "account", ProviderAuthModes.OPENAI_CHATGPT, request(), AgentRunController(),
-                accessToken = { _, _, _, _ -> CodexOAuthFixture.accessToken() },
+                binding = binding,
+                accessToken = { _, _, _ -> CodexOAuthFixture.accessToken() },
             ) { error("未授权响应不应进入模型解析") }
         }.exceptionOrNull()
         assertEquals("OAUTH_UNAUTHORIZED", (failure as AgentModelFailure).code)
@@ -80,7 +107,8 @@ class AuthorizedProviderHttpTest {
                 AuthorizedProviderHttp.execute(
                     OkHttpClient(), "account", ProviderAuthModes.OPENAI_CHATGPT,
                     Request.Builder().url(url).build(), AgentRunController(),
-                    accessToken = { _, _, _, _ -> error("不应读取凭据") },
+                    binding = binding,
+                    accessToken = { _, _, _ -> error("不应读取凭据") },
                 ) { error("不应连接网络") }
             }.exceptionOrNull()
             assertTrue(url, failure is IllegalArgumentException)
@@ -98,7 +126,8 @@ class AuthorizedProviderHttpTest {
         val failure = runCatching {
             AuthorizedProviderHttp.execute(
                 client, "account", ProviderAuthModes.OPENAI_CHATGPT, request(), AgentRunController(),
-                accessToken = { _, _, _, _ -> reads.incrementAndGet(); CodexOAuthFixture.accessToken() },
+                binding = binding,
+                accessToken = { _, _, _ -> reads.incrementAndGet(); CodexOAuthFixture.accessToken() },
             ) { throw IOException("fixture-stream-failed") }
         }.exceptionOrNull()
         assertTrue(failure is IOException)
@@ -117,7 +146,7 @@ class AuthorizedProviderHttpTest {
             Request.Builder().url("https://gateway.example/v1/models")
                 .header("Authorization", "Bearer api-fixture").build(),
             AgentRunController(),
-            accessToken = { _, _, _, _ -> error("API Key 不应读取 OAuth 凭据") },
+            accessToken = { _, _, _ -> error("API Key 不应读取 OAuth 凭据") },
         ) { it.code }
         assertEquals(401, status)
     }
@@ -146,7 +175,8 @@ class AuthorizedProviderHttpTest {
             }.build()
             val status = AuthorizedProviderHttp.execute(
                 client, "account", ProviderAuthModes.OPENAI_CHATGPT, request(), AgentRunController(),
-                accessToken = { _, _, _, _ -> CodexOAuthFixture.accessToken() },
+                binding = binding,
+                accessToken = { _, _, _ -> CodexOAuthFixture.accessToken() },
             ) { it.code }
             assertEquals(302, status)
             assertEquals(0, redirected.get())
@@ -172,7 +202,8 @@ class AuthorizedProviderHttpTest {
                 runCatching {
                     AuthorizedProviderHttp.execute(
                         client, "account", ProviderAuthModes.OPENAI_CHATGPT, request(), controller,
-                        accessToken = { _, _, _, _ -> CodexOAuthFixture.accessToken() },
+                        binding = binding,
+                        accessToken = { _, _, _ -> CodexOAuthFixture.accessToken() },
                     ) { it.code }
                 }.exceptionOrNull()
             }
@@ -185,6 +216,8 @@ class AuthorizedProviderHttpTest {
             executor.shutdownNow()
         }
     }
+
+    private val binding = ProviderCredentialBinding("account", ProviderAuthModes.OPENAI_CHATGPT, 0)
 
     private fun request() = Request.Builder()
         .url(ProviderConnectionProfile.OPENAI_CODEX.inferenceUrl).build()

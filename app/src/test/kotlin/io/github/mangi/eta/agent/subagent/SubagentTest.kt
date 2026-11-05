@@ -87,6 +87,14 @@ class SubagentTest {
         assertTrue("write_file" in coderTools)
         assertTrue("edit_file" in coderTools)
         assertTrue("terminal" in coderTools)
+
+        // Cross-conversation messaging is parent-only: children must not message or wake other conversations.
+        assertFalse(SubagentProfile.CODER.isToolAllowed("conversation_list"))
+        assertFalse(SubagentProfile.CODER.isToolAllowed("conversation_send"))
+        assertTrue("conversation_list" in SubagentProfile.FORBIDDEN_TOOLS)
+        assertTrue("conversation_send" in SubagentProfile.FORBIDDEN_TOOLS)
+        val ephemeral = SubagentProfile.resolve(name = "ad-hoc-agent", catalog = SubagentProfile.BUILTIN_PROFILES)
+        assertFalse(ephemeral.isToolAllowed("conversation_send"))
     }
 
     @Test
@@ -302,6 +310,79 @@ class SubagentTest {
         val decoded = AgentRuntimeWire.eventFromBundle(bundle) as? AgentEvent.SubagentProgress
         assertEquals(event, decoded)
         assertEquals(snapshot, SubagentActivitySnapshot.decode(decoded?.snapshotJson))
+    }
+
+    @Test
+    fun oversizedSubagentSnapshotsStayDecodableAcrossProgressAndCompletion() {
+        val snapshot = SubagentActivitySnapshot(
+            subagentId = "sub_99",
+            subagentType = "explore",
+            description = "检查超长子代理过程",
+            prompt = "完整任务要求".repeat(4_000),
+            currentAction = "第 80 轮思考…",
+            steps = (1..80).map { index ->
+                SubagentStepSnapshot(
+                    id = "tool-$index",
+                    kind = SubagentStepSnapshot.KIND_TOOL,
+                    title = "第 $index 步",
+                    // Escaping makes serialized length much larger than source length.
+                    detail = "\"\\\n\t\u0001中文😀".repeat(300),
+                    toolName = "read_file",
+                )
+            },
+            output = "分析结果".repeat(4_000),
+        )
+        val original = snapshot.encode()
+        assertTrue(original.length > 16_000)
+        val progress = AgentEvent.SubagentProgress(2, "call_99", "sub_99", "explore", original)
+        val decoded = AgentRuntimeWire.eventFromBundle(AgentRuntimeWire.eventToBundle(progress))
+            as AgentEvent.SubagentProgress
+        assertTrue(decoded.snapshotJson.length <= 16_000)
+        val preview = requireNotNull(SubagentActivitySnapshot.decode(decoded.snapshotJson))
+        assertEquals(snapshot.subagentId, preview.subagentId)
+        assertEquals(snapshot.description, preview.description)
+        assertEquals(snapshot.currentAction, preview.currentAction)
+        assertEquals("tool-80", preview.steps.last().id)
+        assertTrue(preview.steps.last().detail.isNotEmpty())
+        assertTrue(preview.output.isNotEmpty())
+        assertEquals(48, preview.steps.size)
+        assertEquals(original, snapshot.encode())
+
+        val completed = snapshot.copy(status = SubagentActivitySnapshot.STATUS_COMPLETED)
+        val finished = AgentEvent.ToolFinished(
+            round = 2,
+            toolCallId = "call_99",
+            name = AgentSubagentToolCatalog.TOOL_NAME,
+            resultSummary = "已完成",
+            imageCount = 0,
+            imageBytes = 0,
+            success = true,
+            command = completed.encode(),
+        )
+        val decodedFinished = AgentRuntimeWire.eventFromBundle(AgentRuntimeWire.eventToBundle(finished))
+            as AgentEvent.ToolFinished
+        assertTrue(requireNotNull(decodedFinished.command).length <= 16_000)
+        assertEquals(SubagentActivitySnapshot.STATUS_COMPLETED,
+            requireNotNull(SubagentActivitySnapshot.decode(decodedFinished.command)).status)
+    }
+
+    @Test
+    fun boundedSnapshotRetainsSmallPayloadAndHandlesOversizedStepMetadata() {
+        val small = SubagentActivitySnapshot(subagentId = "sub_1", description = "任务")
+        assertEquals(small.encode(), small.encodeBounded(16_000))
+        val large = small.copy(steps = (1..100).map { index ->
+            SubagentStepSnapshot(
+                id = "step-$index" + "x".repeat(2_000),
+                kind = SubagentStepSnapshot.KIND_TOOL,
+                title = "标题".repeat(2_000),
+                toolName = "read_file".repeat(2_000),
+            )
+        })
+        val encoded = large.encodeBounded(16_000)
+        assertTrue(encoded.length <= 16_000)
+        val preview = requireNotNull(SubagentActivitySnapshot.decode(encoded))
+        assertEquals("sub_1", preview.subagentId)
+        assertTrue(preview.steps.last().id.startsWith("step-100"))
     }
 
     private fun JSONArray.toolNames(): Set<String> =

@@ -2,7 +2,6 @@ package io.github.mangi.eta.agent.subagent
 
 import io.github.mangi.eta.agent.model.AgentModelClient
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * 会话内 Subagent 实例上下文缓存，供主 Agent 通过 `resume` 续接已有的 Subagent。
@@ -16,10 +15,11 @@ internal object SubagentSessionStore {
         val profile: SubagentProfile,
         @Volatile var history: List<AgentModelClient.ConversationMessage> = emptyList(),
         val running: AtomicBoolean = AtomicBoolean(false),
+        val requestStatsBaseline: io.github.mangi.eta.local.subagentstats.SubagentRequestBaseline =
+            io.github.mangi.eta.local.subagentstats.SubagentRequestBaseline(),
     )
 
     private class ConversationBucket {
-        val sequence = AtomicInteger(0)
         val entries = object : LinkedHashMap<String, Entry>(8, 0.75f, true) {
             override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Entry>?): Boolean =
                 size > MAX_AGENTS_PER_CONVERSATION && eldest?.value?.running?.get() != true
@@ -30,12 +30,12 @@ internal object SubagentSessionStore {
     private val buckets = object : LinkedHashMap<String, ConversationBucket>(8, 0.75f, true) {
         override fun removeEldestEntry(
             eldest: MutableMap.MutableEntry<String, ConversationBucket>?,
-        ): Boolean = size > MAX_CONVERSATIONS
+        ): Boolean = size > MAX_CONVERSATIONS && eldest?.value?.entries?.values?.none { it.running.get() } == true
     }
 
     fun create(conversationKey: String, profile: SubagentProfile): Entry = synchronized(lock) {
         val bucket = buckets.getOrPut(conversationKey) { ConversationBucket() }
-        val id = "sub_${bucket.sequence.incrementAndGet()}"
+        val id = "sub_${java.util.UUID.randomUUID().toString().replace("-", "").take(20)}"
         val entry = Entry(subagentId = id, profile = profile, running = AtomicBoolean(true))
         bucket.entries[id] = entry
         entry
@@ -53,7 +53,7 @@ internal object SubagentSessionStore {
         synchronized(lock) {
             val entry = buckets[conversationKey]?.entries?.get(subagentId) ?: return
             entry.history = updatedHistory
-            entry.running.set(false)
+            // Execution ownership is released by the task's finalizer, not before tool cleanup.
         }
     }
 

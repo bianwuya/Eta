@@ -258,7 +258,8 @@ private fun SettingsPageContent(
 
     // prefs 绑定到 XposedService：service 到达时切换到 RemotePreferences（跨进程提交到
     // LSPosed 数据库）；未就绪时保持 null，UI 禁止修改。
-    var prefs by remember { mutableStateOf(Prefs.remotePreferencesForUi(EtaApp.serviceInstance)) }
+    // 初值不再同步取 RemotePreferences：首次取用是跨进程 binder 请求，留给下面监听器的后台解析。
+    var prefs by remember { mutableStateOf<SharedPreferences?>(null) }
     val agentPrefs = remember { Prefs.localAgentPreferences() }
     var powerAssistantTarget by remember(prefs) {
         mutableStateOf(prefs?.let(Prefs::powerAssistantTarget) ?: enhancementHistory.powerTarget())
@@ -278,14 +279,24 @@ private fun SettingsPageContent(
     DisposableEffect(Unit) {
         val listener = object : EtaApp.ServiceStateListener {
             override fun onServiceStateChanged(service: io.github.libxposed.service.XposedService?) {
-                prefs = Prefs.remotePreferencesForUi(service)
-                prefs?.let { connected ->
-                    enhancementHistory.captureConnected(connected)
-                    hasConnectedFramework = true
-                }
-                Prefs.reconcileAgentPreferences(service)
+                // 回调在主线程（notifyImmediately 直接内联派发）。RemotePreferences 首次取用是
+                // 跨进程 binder 请求，captureConnected 要遍历全部开关，reconcileAgentPreferences
+                // 另有本地同步 commit 加一次 binder commit，ensureDefaults 也会同步 commit 运行时
+                // 配置——都挪到 IO，只在解析完成后回主线程更新 UI 状态。
                 coroutineScope.launch {
-                    RuntimeConfigRepository.ensureDefaults(service)
+                    val connected = withContext(Dispatchers.IO) {
+                        Prefs.remotePreferencesForUi(service)
+                    }
+                    // 丢弃过期回调：期间可能已切换或断开，避免旧连接覆盖当前状态。
+                    if (service !== EtaApp.serviceInstance) return@launch
+                    prefs = connected
+                    if (connected == null) return@launch
+                    hasConnectedFramework = true
+                    withContext(Dispatchers.IO) {
+                        enhancementHistory.captureConnected(connected)
+                        Prefs.reconcileAgentPreferences(service)
+                        RuntimeConfigRepository.ensureDefaults(service)
+                    }
                 }
             }
         }
@@ -943,7 +954,7 @@ private fun SystemizerConfirmDialog(
 // ── 带图标的布尔开关 ─────────────────────────────────────────────────────────
 
 /**
- * 单个布尔开关：状态随 [prefs]/[key] 变化重读，切换时同步写入。
+ * 单个布尔开关：状态随 [prefs]/[key] 变化重读，切换时后台写入并等确认。
  *
  * 配置来源由调用方按能力边界传入。Hook 开关仍可能因 LSPosed 未连接而禁用；Agent
  * Runtime 开关始终使用 App 本地配置。
@@ -958,12 +969,15 @@ private fun SwitchPref(
     icon: ImageVector,
     iconTint: Color,
 ) {
-    val enabled = prefs != null
+    val scope = rememberCoroutineScope()
     val history = remember(context.applicationContext) { EnhancementSettingsHistory(context) }
     val default = Prefs.Keys.BOOLEAN_DEFAULTS[key] ?: true
     var checked by remember(prefs, key) {
         mutableStateOf(prefs?.getBoolean(key, default) ?: history.checked(key, default))
     }
+    // 写入确认前禁用，避免连点叠加多次 binder 提交。
+    var pending by remember(prefs, key) { mutableStateOf(false) }
+    val enabled = prefs != null && !pending
     DisposableEffect(prefs, key) {
         val targetPrefs = prefs ?: return@DisposableEffect onDispose {}
         val listener = SharedPreferences.OnSharedPreferenceChangeListener { changedPrefs, changedKey ->
@@ -979,21 +993,31 @@ private fun SwitchPref(
         summary = summary,
         checked = checked,
         onCheckedChange = { value ->
-            // 同步提交；RemotePreferences.commit() 失败（binder 提交失败）时回滚 UI 状态，
-            // 避免 UI 显示已切换而 hook 进程实际未收到。
+            // RemotePreferences.commit() 是同步 binder 提交，放到 IO；确认成功才更新开关状态，
+            // 失败保持原值并提示，语义与原先的同步写一致。
             val targetPrefs = prefs ?: return@SwitchPreference
-            if (putBooleanSync(targetPrefs, key, value)) {
-                checked = value
-                history.recordCommittedBoolean(key, value)
-                if (key in Prefs.Keys.LOCAL_AGENT_KEYS) {
-                    Prefs.reconcileAgentPreferences(EtaApp.serviceInstance)
+            if (pending) return@SwitchPreference
+            pending = true
+            scope.launch {
+                val committed = withContext(Dispatchers.IO) {
+                    putBooleanSync(targetPrefs, key, value)
                 }
-            } else {
-                Toast.makeText(
-                    context.applicationContext,
-                    context.getString(R.string.settings_write_failed),
-                    Toast.LENGTH_SHORT,
-                ).show()
+                pending = false
+                if (committed) {
+                    checked = value
+                    history.recordCommittedBoolean(key, value)
+                    if (key in Prefs.Keys.LOCAL_AGENT_KEYS) {
+                        withContext(Dispatchers.IO) {
+                            Prefs.reconcileAgentPreferences(EtaApp.serviceInstance)
+                        }
+                    }
+                } else {
+                    Toast.makeText(
+                        context.applicationContext,
+                        context.getString(R.string.settings_write_failed),
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                }
             }
         },
         startAction = {

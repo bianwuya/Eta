@@ -34,7 +34,9 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
         require(config.openAiEndpointMode == OpenAiEndpointMode.RESPONSES) {
             "当前 Provider 未配置为 Responses API"
         }
-        val body = buildRequestJson(config, request.messages, request.effectiveTools)
+        // 请求开始时解析一次账号绑定；本次请求的重试与 401 刷新都沿用它。
+        val accountBinding = request.accountBinding
+        val body = buildRequestJson(config, request.messages, request.effectiveTools, accountBinding?.credentialSlotId)
             .apply { OpenAiPromptCache.apply(this, request) }
             .toString()
             .toRequestBody(JSON_MEDIA_TYPE)
@@ -58,11 +60,12 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
         runController.throwIfCancelled()
         onEvent(ProviderEvent.RequestStarted)
         return AuthorizedProviderHttp.execute(
-            client = AgentHttpClient.modelClient(request.purpose),
+            client = AgentHttpClient.modelClient(request.purpose, request.forceHttp1),
             providerId = config.providerId,
             authMode = config.authMode,
             request = httpRequest,
             controller = runController,
+            binding = accountBinding,
         ) { response ->
             onEvent(ProviderEvent.ResponseHeaders(response.code))
             if (!response.isSuccessful) {
@@ -72,6 +75,7 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
                 stream = response.body.byteStream(),
                 runController = runController,
                 onEvent = onEvent,
+                accountScope = accountBinding?.credentialSlotId,
             )
             onEvent(ProviderEvent.Completed(assistant.optString("finish_reason").ifBlank { null }))
             ProviderResponse(assistant)
@@ -82,12 +86,14 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
         config: AgentModelClient.ModelConfig,
         messages: JSONArray,
         tools: JSONArray,
-    ): JSONObject = ResponsesRequestBuilder.build(config, messages, tools)
+        accountScope: String? = null,
+    ): JSONObject = ResponsesRequestBuilder.build(config, messages, tools, accountScope)
 
     internal fun readStreamingResponse(
         stream: java.io.InputStream?,
         runController: AgentRunController,
         onEvent: (ProviderEvent) -> Unit,
+        accountScope: String? = null,
     ): JSONObject {
         if (stream == null) error("模型接口未返回响应流")
         val streamedText = StringBuilder()
@@ -454,7 +460,7 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
             )
         }
         if (hasTerminalOutput) {
-            ResponsesEphemeralState.attachOutputItems(assistant, output)
+            ResponsesEphemeralState.attachOutputItems(assistant, output, accountScope)
         }
         return assistant
     }

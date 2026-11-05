@@ -420,11 +420,15 @@ private fun TopBarOverflowMenu(
 @Composable
 private fun titleForRoute(route: AppRoute?): String = when (route) {
     is AppRoute.Home, is AppRoute.Browser -> ""
+    is AppRoute.RichPreview -> "文件预览"
     is AppRoute.Terminal -> stringResource(R.string.route_terminal)
     is AppRoute.Tools -> stringResource(R.string.route_tools)
     is AppRoute.WebToolsSettings -> stringResource(R.string.web_tools_settings_title)
     is AppRoute.Skills -> stringResource(R.string.route_skills)
     is AppRoute.Subagents -> "Subagent"
+    is AppRoute.CompactionSettings -> "上下文压缩"
+    is AppRoute.SubagentStats -> "子代理请求统计"
+    is AppRoute.SubagentConversationStats -> "会话请求明细"
     is AppRoute.Characters -> "角色"
     is AppRoute.CharacterDetail -> "角色详情"
     is AppRoute.CharacterEditor -> "编辑角色"

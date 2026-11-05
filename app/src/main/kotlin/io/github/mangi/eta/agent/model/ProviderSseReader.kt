@@ -11,6 +11,7 @@ internal fun readProviderSse(
     runController: AgentRunController,
     onEvent: (event: String, data: String) -> Boolean,
 ) {
+    var sawData = false
     var event = ""
     val dataLines = mutableListOf<String>()
 
@@ -21,7 +22,14 @@ internal fun readProviderSse(
         dataLines.clear()
         if (payload.isBlank()) return true
         runController.throwIfCancelled()
-        return onEvent(name, payload)
+        if (!sawData) {
+            sawData = true
+            ModelDebugTrace.sse("sse_first_data")
+        }
+        if (payload.trim() == "[DONE]") ModelDebugTrace.sse("sse_done_marker")
+        return onEvent(name, payload).also { keepReading ->
+            if (!keepReading) ModelDebugTrace.sse("sse_handler_terminal")
+        }
     }
 
     BufferedReader(InputStreamReader(stream, Charsets.UTF_8)).use { reader ->
@@ -29,6 +37,7 @@ internal fun readProviderSse(
             runController.throwIfCancelled()
             val line = reader.readLine()
             if (line == null) {
+                ModelDebugTrace.sse("sse_eof")
                 try {
                     dispatch()
                 } catch (_: org.json.JSONException) {

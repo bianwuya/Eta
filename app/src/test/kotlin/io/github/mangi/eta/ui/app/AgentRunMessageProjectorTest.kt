@@ -17,6 +17,86 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AgentRunMessageProjectorTest {
+    @Test fun asynchronousProgressCannotRegressToLaunchOrPreviousSnapshot() {
+        val projector = AgentRunMessageProjector { 1000L }
+        val snapshot = io.github.mangi.eta.agent.subagent.SubagentActivitySnapshot(
+            subagentId = "child", updatedAt = 20, status = "completed", output = "verified")
+        val started = projector.startTool("run", AgentEvent.ToolStarted(1, "call", "subagent", "work"), emptyList())
+        val progressed = projector.updateSubagentProgress("run", AgentEvent.SubagentProgress(1, "call", "child", "coder", snapshot.encode()), started)
+        val finishedLaunch = projector.finishTool("run", AgentEvent.ToolFinished(1, "call", "subagent", "started", 0, 0, true,
+            snapshot.copy(updatedAt = 0, status = "running").encode()), progressed)
+        assertEquals("completed", io.github.mangi.eta.agent.subagent.SubagentActivitySnapshot.decode(
+            (finishedLaunch.single() as ToolActivityMessageUi).command)!!.status)
+        val stale = projector.updateSubagentProgress("run", AgentEvent.SubagentProgress(1, "call", "child", "coder",
+            snapshot.copy(updatedAt = 10, status = "running").encode()), finishedLaunch)
+        assertEquals(ToolActivityStatusUi.Success, (stale.single() as ToolActivityMessageUi).status)
+    }
+
+    @Test
+    fun failedResumeReplacesInitialRunningPreviewWithRealError() {
+        val projector = AgentRunMessageProjector { 1000L }
+        val preview = io.github.mangi.eta.agent.subagent.SubagentActivitySnapshot(
+            subagentId = "child", subagentType = "coder", description = "续接", prompt = "继续",
+            status = "running", currentAction = "正在启动…", updatedAt = 0)
+        val started = projector.startTool("run", AgentEvent.ToolStarted(1, "call", "subagent", "coder · 续接",
+            command = preview.encode()), emptyList())
+        val finished = projector.finishTool("run", AgentEvent.ToolFinished(1, "call", "subagent",
+            "失败 · Subagent child 当前正在运行中，无法并发续接 · code=SUBAGENT_ALREADY_RUNNING", 0, 0, false),
+            started)
+        val message = finished.single() as ToolActivityMessageUi
+        assertEquals(ToolActivityStatusUi.Failed, message.status)
+        val snapshot = io.github.mangi.eta.agent.subagent.SubagentActivitySnapshot.decode(message.command)!!
+        assertEquals(io.github.mangi.eta.agent.subagent.SubagentActivitySnapshot.STATUS_FAILED, snapshot.status)
+        assertTrue(snapshot.error!!.contains("无法并发续接"))
+        assertEquals("续接", snapshot.description)
+        assertEquals("child", snapshot.subagentId)
+    }
+
+    @Test
+    fun successfulAsyncLaunchKeepsRunningCardEvenWithoutProgressYet() {
+        val projector = AgentRunMessageProjector { 1000L }
+        val preview = io.github.mangi.eta.agent.subagent.SubagentActivitySnapshot(
+            subagentId = "child", subagentType = "coder", description = "启动", prompt = "开始",
+            status = "running", currentAction = "正在启动…", updatedAt = 0)
+        val started = projector.startTool("run", AgentEvent.ToolStarted(1, "call", "subagent", "coder · 启动",
+            command = preview.encode()), emptyList())
+        val launched = projector.finishTool("run", AgentEvent.ToolFinished(1, "call", "subagent",
+            "已启动 · queued，尚无最终摘要", 0, 0, true), started)
+        val message = launched.single() as ToolActivityMessageUi
+        assertEquals(ToolActivityStatusUi.Running, message.status)
+        val snapshot = io.github.mangi.eta.agent.subagent.SubagentActivitySnapshot.decode(message.command)!!
+        assertEquals("running", snapshot.status)
+    }
+
+    @Test
+    fun legacyArchiveWithoutSuccessFlagKeepsSuccessfulLaunchSnapshot() {
+        val projector = AgentRunMessageProjector { 1000L }
+        val preview = io.github.mangi.eta.agent.subagent.SubagentActivitySnapshot(
+            subagentId = "child", subagentType = "coder", description = "启动", prompt = "开始",
+            status = "running", currentAction = "正在启动…", updatedAt = 0)
+        val started = projector.startTool("run", AgentEvent.ToolStarted(1, "call", "subagent", "coder · 启动",
+            command = preview.encode()), emptyList())
+        // Old runtime/archived events omit success; success=null must not be rewritten to failed.
+        val merged = projector.finishTool("run", AgentEvent.ToolFinished(1, "call", "subagent",
+            "已启动 · queued，尚无最终摘要", 0, 0, null), started)
+        val message = merged.single() as ToolActivityMessageUi
+        assertEquals(ToolActivityStatusUi.Running, message.status)
+        assertEquals("running",
+            io.github.mangi.eta.agent.subagent.SubagentActivitySnapshot.decode(message.command)!!.status)
+    }
+
+    @Test
+    fun failedNonSubagentToolKeepsItsOwnCommand() {
+        val projector = AgentRunMessageProjector { 1000L }
+        val started = projector.startTool("run", AgentEvent.ToolStarted(1, "call", "terminal", "terminal",
+            command = "echo hello"), emptyList())
+        val failed = projector.finishTool("run", AgentEvent.ToolFinished(1, "call", "terminal",
+            "failed exit_code=1", 0, 0, false), started)
+        val message = failed.single() as ToolActivityMessageUi
+        assertEquals(ToolActivityStatusUi.Failed, message.status)
+        assertEquals("echo hello", message.command)
+    }
+
     @Test
     fun searchSuggestionsBindToExactTextBlockAndDoNotPersistIntoAnotherRun() {
         val projector = AgentRunMessageProjector { 1_000L }

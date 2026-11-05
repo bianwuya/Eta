@@ -36,6 +36,8 @@ import io.github.mangi.eta.core.AndroidAgentLogger
 import io.github.mangi.eta.core.safeLogType
 import io.github.mangi.eta.data.repository.AgentMemoryRepository
 import io.github.mangi.eta.data.repository.RuntimeConfigRepository
+import io.github.mangi.eta.local.conversationcommunication.ConversationMessagingPolicy
+import io.github.mangi.eta.local.conversationcommunication.ConversationMessagingToolCatalog
 import kotlinx.coroutines.runBlocking
 import org.json.JSONArray
 import org.json.JSONObject
@@ -57,6 +59,7 @@ internal class AgentRuntimeRunExecutor(
         AgentRuntimeWire.RunResult,
         List<AgentEvent>,
     ) -> Unit,
+    private val conversationMessaging: AgentRuntimeConversationMessaging? = null,
 ) {
     data class Outcome(
         val result: AgentRuntimeWire.RunResult,
@@ -72,6 +75,7 @@ internal class AgentRuntimeRunExecutor(
         session: AgentRuntimeSession,
         request: AgentRuntimeWire.RunRequest,
     ): Outcome {
+        io.github.mangi.eta.agent.model.ModelDebugTrace.initialize(appContext)
         val runController = session.controller
         val archivedEvents = AgentRunArchiveStore.createEventBuffer(request.handoff)
         var entrySurfaceGuard: EntrySurfaceGuard? = null
@@ -80,6 +84,7 @@ internal class AgentRuntimeRunExecutor(
         var guiRun: GuiControlCoordinator.RunControl? = null
         var browserBinding: AutoCloseable? = null
         var response: AgentModelClient.ModelResponse.Text? = null
+        var childTasks: SubagentExecutor? = null
         var cancelled = false
         var checkpointRecorder: AgentRunCheckpointRecorder? = null
         val timing = AgentRunTiming(AndroidAgentLogger)
@@ -112,6 +117,11 @@ internal class AgentRuntimeRunExecutor(
                 ?.let { AgentUiHandoffPayload.from(it.payload) }
             val conversationId = uiPayload?.conversationId
                 ?.takeIf { it.isNotBlank() }
+            // 由跨会话消息启动的 run 不再获得通信工具，避免会话间自动互唤。
+            val crossConversationOrigin =
+                request.origin == AgentRuntimeWire.RUN_ORIGIN_CONVERSATION_MESSAGE
+            val conversationTools = conversationMessaging
+                ?.takeIf { !crossConversationOrigin && request.operation == AgentRuntimeWire.OP_CHAT }
             val roleplayContext = conversationId?.let { id ->
                 runBlocking { RoleplayRunContext.resolve(appContext, id, contextWindow, memoryEnabled) }
             }
@@ -171,12 +181,15 @@ internal class AgentRuntimeRunExecutor(
                     entrySurfaceGuard, checkpointRecorder,
                 )
             }
-            val executor = AgentLocalTools(
+            fun localTools(
+                gui: GuiControlCoordinator.RunControl?,
+                conversationExecutor: AgentModelClient.ToolExecutor? = null,
+            ) = AgentLocalTools(
                 context = appContext,
                 logger = AndroidAgentLogger,
                 browserRunId = request.runId,
                 browserSession = BrowserSessionRegistry.get(browserKey),
-                guiControl = guiRun,
+                guiControl = gui,
                 browserToolsEnabled = {
                     request.config.browserTools && currentPermissions().browserTools
                 },
@@ -233,12 +246,14 @@ internal class AgentRuntimeRunExecutor(
                 skillIndexService = skillIndexService,
                 skillLoader = skillLoader,
                 skillResourceReader = skillResourceReader,
-                githubSkillSource = githubSkillSource,
+                githubSkillSource = if (gui != null) githubSkillSource else null,
                 skillPackageInstaller = skillPackageInstaller,
                 runAvailableSkillIds = skillContext.installedSkills.mapTo(mutableSetOf()) { it.id },
                 pendingSkillConflict = pendingSkillConflict,
                 virtualDisplayEnabled = { currentPermissions().virtualDisplay },
+                conversationMessaging = conversationExecutor,
             )
+            val executor = localTools(guiRun, conversationTools?.tool)
             val routingExecutor = RoutingToolExecutor(
                 local = executor,
                 mcp = McpToolExecutor(mcpSnapshot),
@@ -259,6 +274,16 @@ internal class AgentRuntimeRunExecutor(
             }
             val subagentExecutor = SubagentExecutor(
                 conversationKey = browserKey,
+                parentRunId = request.runId,
+                compactionTarget = { primary -> runBlocking { RuntimeConfigRepository.compactionTarget(primary) } },
+                requestStatsEpoch = {
+                    // Read in the actual runtime process at each attempt boundary, not a UI-only flag.
+                    val settings = runBlocking { io.github.mangi.eta.data.datastore.SettingsDataStore.subagentSettings() }
+                    settings.statsEpoch.takeIf { settings.collectRequestStats }
+                },
+                onRequestStat = { record ->
+                    io.github.mangi.eta.local.subagentstats.SubagentStatsStore.get(appContext).save(record)
+                },
                 parentController = runController,
                 configProvider = {
                     val rawSubagentConfig = runBlocking {
@@ -268,6 +293,8 @@ internal class AgentRuntimeRunExecutor(
                 },
                 capabilitiesProvider = { AgentToolCapabilities.capture(appContext) },
                 baseToolExecutor = routingExecutor,
+                childToolFactory = { RoutingToolExecutor(localTools(null), McpToolExecutor(mcpSnapshot)) },
+                detailStoreFactory = { io.github.mangi.eta.agent.subagent.SubagentDetailStore(appContext) },
                 skillContext = skillContext,
                 memoryContext = memoryContext,
                 mcpTools = mcpTools,
@@ -282,14 +309,25 @@ internal class AgentRuntimeRunExecutor(
                     )
                 },
             )
+            childTasks = subagentExecutor
             val runTools = JSONArray(mcpTools.toString()).also { tools ->
                 if (subagentAllowed()) AgentSubagentToolCatalog.appendSchemas(tools)
                 if (historyTool != null) tools.put(AgentConversationToolCatalog.schema())
+                if (conversationTools != null) ConversationMessagingToolCatalog.appendSchemas(tools)
                 if (characterMemoryTools != null && memoryEnabled) CharacterMemoryTools.appendSchemas(tools)
             }
             val runToolExecutor = AgentModelClient.ToolExecutor { call ->
-                if (call.name in AgentSubagentToolCatalog.names) {
-                    if (!subagentAllowed()) {
+                if (crossConversationOrigin && ConversationMessagingPolicy.isOriginBlockedTool(call.name)) {
+                    AgentModelClient.ToolResult(
+                        JSONObject()
+                            .put("ok", false)
+                            .put("code", "CONVERSATION_ORIGIN_BLOCKED")
+                            .put("message", "本运行由其他会话的消息启动，禁止据此执行提权、安装或安全设置操作；" +
+                                "需要时请让用户在当前会话直接授权")
+                            .toString(),
+                    )
+                } else if (call.name in AgentSubagentToolCatalog.names) {
+                    if (!subagentAllowed() && call.name != AgentSubagentToolCatalog.CONTROL_TOOL_NAME) {
                         AgentModelClient.ToolResult(
                             JSONObject()
                                 .put("ok", false)
@@ -297,6 +335,8 @@ internal class AgentRuntimeRunExecutor(
                                 .put("message", "Subagent 权限已关闭")
                                 .toString(),
                         )
+                    } else if (call.name == AgentSubagentToolCatalog.CONTROL_TOOL_NAME) {
+                        subagentExecutor.control(call)
                     } else if (call.name == AgentSubagentToolCatalog.PROFILE_TOOL_NAME) {
                         subagentExecutor.executeProfileManagement(call)
                     } else {
@@ -316,6 +356,8 @@ internal class AgentRuntimeRunExecutor(
             }
             val completedResponse = AgentModelClient.complete(
                 config = request.config,
+                compactionTarget = { runBlocking { RuntimeConfigRepository.compactionTarget(request.config) } },
+                coordination = subagentExecutor.coordination,
                 sessionId = request.effectiveModelSessionId,
                 operationId = request.runId,
                 initialUserMessageId = uiPayload?.promptMessageId(request.runId) ?: "user-${request.runId}",
@@ -345,6 +387,11 @@ internal class AgentRuntimeRunExecutor(
                 memoryContext = memoryContext,
                 additionalTools = runTools,
                 executionContext = executor.terminalExecutionContext,
+                toolFilter = if (crossConversationOrigin) {
+                    { tools -> ConversationMessagingPolicy.filterOriginRunTools(tools) }
+                } else {
+                    null
+                },
             ) { event ->
                 timing.accept(event)
                 acceptEvent(
@@ -414,6 +461,7 @@ internal class AgentRuntimeRunExecutor(
                 rewriteTargetMessageId = request.rewriteTargetMessageId,
             )
         } finally {
+            runCatching { childTasks?.close() }
             runCatching { toolsBinding?.close() }
             runCatching { toolExecutor?.close() }
             runCatching { guiRun?.close() }

@@ -47,6 +47,10 @@ internal fun ProviderConnectionFields(
     onLogin: () -> Unit,
     onDisconnect: () -> Unit,
     onCancel: () -> Unit,
+    onSelectAccount: (String) -> Unit = {},
+    onReloginAccount: (String) -> Unit = {},
+    onRenameAccount: (String, String) -> Unit = { _, _ -> },
+    onRemoveAccount: (String) -> Unit = {},
 ) {
     val context = LocalContext.current
     var apiKeyVisible by remember { mutableStateOf(false) }
@@ -85,6 +89,10 @@ internal fun ProviderConnectionFields(
             onLogin = onLogin,
             onDisconnect = onDisconnect,
             onCancel = onCancel,
+            onSelectAccount = onSelectAccount,
+            onReloginAccount = onReloginAccount,
+            onRenameAccount = onRenameAccount,
+            onRemoveAccount = onRemoveAccount,
         )
     } else {
         Column(modifier = Modifier.padding(16.dp)) {

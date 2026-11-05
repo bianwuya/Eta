@@ -13,6 +13,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
+import io.github.mangi.eta.local.longshot.colorOsLongshotTarget
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -228,9 +230,12 @@ private fun ProviderConfigTab(
         if (prompt != null && prompt.userCode == null) openBrowser()
     }
 
+    val listState = rememberLazyListState()
     LazyColumn(
+        state = listState,
         modifier = Modifier
             .fillMaxSize()
+            .colorOsLongshotTarget(listState)
             // 低层 MiuixScaffold 只负责把顶栏 Insets 传给调用方，输入法 Insets 由列表自行消费。
             .imePadding()
             .scrollEndHaptic()
@@ -263,6 +268,17 @@ private fun ProviderConfigTab(
                     },
                     onDisconnect = loginStore::disconnect,
                     onCancel = loginStore::cancel,
+                    onSelectAccount = loginStore::select,
+                    onReloginAccount = { accountId ->
+                        val validationError = validateProviderDraft(context, draft)
+                        if (validationError != null) {
+                            status = context.getString(R.string.provider_error, validationError)
+                        } else {
+                            loginStore.login(draft.toProvider(provider), reloginAccountId = accountId)
+                        }
+                    },
+                    onRenameAccount = loginStore::rename,
+                    onRemoveAccount = loginStore::remove,
                 )
                 BasicComponent(
                     title = stringResource(R.string.ui_test_connection_10b7d8),

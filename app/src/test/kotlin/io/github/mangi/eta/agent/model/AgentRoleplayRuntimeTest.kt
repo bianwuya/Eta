@@ -195,7 +195,7 @@ class AgentRoleplayRuntimeTest {
     fun roleplaySummarySeparatesStoryFromRealExecution() {
         val provider = provider { request ->
             assertEquals(ProviderRequestPurpose.COMPACTION, request.purpose)
-            assertTrue(request.messages.toString().contains("虚构剧情与真实设备操作分开记录"))
+            assertTrue(request.messages.toString().contains("剧情与真实设备执行结果必须分开"))
             reply("剧情：二人在塔下相识。现实：尚未执行设备操作。")
         }
         val messages = JSONArray().put(JSONObject().put("role", "system").put("content", "固定规则"))

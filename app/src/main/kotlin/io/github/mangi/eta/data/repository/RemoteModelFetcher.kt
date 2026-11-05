@@ -59,15 +59,17 @@ internal object RemoteModelFetcher {
             try {
                 controller.throwIfCancelled()
                 val profile = ProviderConnectionProfile.forAuthMode(provider.authMode)
+                // 本次目录读取只解析一次账号绑定：HTTP 请求与结尾的有效性检查必须是同一个账号槽。
                 val binding = profile?.let { credentials.binding(provider.id, provider.authMode) }
                 val fetched = when {
                     provider is GeminiProviderSetting -> GeminiModelCatalog.fetch(
                         provider, controller, maxBytes = MAX_CATALOG_BYTES,
                     ) { request, maxBytes ->
-                        executeJson(request, provider, controller, client, credentials, maxBytes)
+                        executeJson(request, provider, controller, client, credentials, binding = null, maxBytes = maxBytes)
                     }
-                    profile == null && provider is AnthropicProviderSetting -> fetchAnthropic(provider, controller, client, credentials)
-                    else -> fetchOpenAiCompatible(provider, controller, client, credentials)
+                    profile == null && provider is AnthropicProviderSetting ->
+                        fetchAnthropic(provider, controller, client, credentials)
+                    else -> fetchOpenAiCompatible(provider, controller, client, credentials, binding)
                 }
                 val models = if (profile == ProviderConnectionProfile.OPENAI_CODEX) fetched else fetched.filter(::isChatCapableModel)
                 controller.throwIfCancelled()
@@ -88,14 +90,14 @@ internal object RemoteModelFetcher {
     internal interface Credentials {
         fun binding(providerId: String, authMode: String): ProviderCredentialBinding
         fun isCurrent(binding: ProviderCredentialBinding): Boolean
-        fun accessToken(providerId: String, authMode: String, controller: AgentRunController, rejected: String?): String
+        fun accessToken(binding: ProviderCredentialBinding, controller: AgentRunController, rejected: String?): String
     }
 
     private object StoredCredentials : Credentials {
         override fun binding(providerId: String, authMode: String) = ProviderCredentialRepository.binding(providerId, authMode)
         override fun isCurrent(binding: ProviderCredentialBinding) = ProviderCredentialRepository.isCurrent(binding)
-        override fun accessToken(providerId: String, authMode: String, controller: AgentRunController, rejected: String?) =
-            ProviderCredentialRepository.accessToken(providerId, authMode, controller, rejected)
+        override fun accessToken(binding: ProviderCredentialBinding, controller: AgentRunController, rejected: String?) =
+            ProviderCredentialRepository.accessToken(binding, controller, rejected)
     }
 
     internal fun parseOpenAiModels(body: String): List<Model> =
@@ -137,6 +139,7 @@ internal object RemoteModelFetcher {
         controller: AgentRunController,
         client: OkHttpClient,
         credentials: Credentials,
+        binding: ProviderCredentialBinding?,
     ): List<Model> {
         val profile = ProviderConnectionProfile.forAuthMode(provider.authMode)
         val baseUrl = profile?.baseUrl ?: provider.baseUrl
@@ -157,7 +160,7 @@ internal object RemoteModelFetcher {
             )
             .get()
             .build()
-        val body = executeJson(request, provider, controller, client, credentials)
+        val body = executeJson(request, provider, controller, client, credentials, binding)
         return when (profile) {
             ProviderConnectionProfile.OPENAI_CODEX -> parseCodexModels(body)
             ProviderConnectionProfile.XAI_GROK -> parseGrokModels(body) { count ->
@@ -173,6 +176,7 @@ internal object RemoteModelFetcher {
         client: OkHttpClient,
         credentials: Credentials,
     ): List<Model> {
+        // Anthropic 走 API Key，没有账号槽可固定。
         val request = Request.Builder()
             .url(ProviderUrls.anthropicModelsUrl(provider.baseUrl))
             .headers(
@@ -189,7 +193,7 @@ internal object RemoteModelFetcher {
             )
             .get()
             .build()
-        return OfficialModelCatalog.enrich(provider, executeJson(request, provider, controller, client, credentials).let(::parseAnthropicModels))
+        return OfficialModelCatalog.enrich(provider, executeJson(request, provider, controller, client, credentials, binding = null).let(::parseAnthropicModels))
     }
 
     private fun executeJson(
@@ -198,6 +202,7 @@ internal object RemoteModelFetcher {
         controller: AgentRunController,
         client: OkHttpClient,
         credentials: Credentials,
+        binding: ProviderCredentialBinding?,
         maxBytes: Long = MAX_CATALOG_BYTES,
     ): String = AuthorizedProviderHttp.execute(
         client = client,
@@ -205,6 +210,8 @@ internal object RemoteModelFetcher {
         authMode = provider.authMode,
         request = request,
         controller = controller,
+        // 使用 fetchCatalog 已固定的绑定，401 刷新与结尾检查都不会换账号。
+        binding = binding,
         accessToken = credentials::accessToken,
     ) { response ->
         if (!response.isSuccessful) {

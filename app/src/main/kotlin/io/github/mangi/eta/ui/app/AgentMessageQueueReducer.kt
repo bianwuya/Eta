@@ -7,8 +7,8 @@ import io.github.mangi.eta.ui.model.QueuedMessageUi
  * 会话内排队发送（Queue）与插话发送（Interrupt）的纯状态转换器。
  *
  * - 排队发送追加到队尾，等待当前回合自然结束后按 FIFO 顺序自动发出。
- * - 插话发送（[QueuedMessageUi.immediateInterrupt]）置入队首并请求中止当前运行，
- *   待当前运行收尾落盘后立即优先发出，避免取消与新运行之间出现历史写入竞态。
+ * - 引导发送（[QueuedMessageUi.immediateInterrupt]）置入队首，由 Runtime 在 turn 边界接收。
+ *   接收确认前保留队列；未接收的消息在当前运行自然结束后发送，不取消模型请求。
  * - 用户主动点击停止按钮时保留队列不自动发出，防止想停下时后续排队指令继续跑起来。
  */
 internal object AgentMessageQueueReducer {
@@ -34,7 +34,7 @@ internal object AgentMessageQueueReducer {
     /**
      * 将队列中的指定消息提升为立即插话。
      *
-     * - 若当前仍在流式运行（非压缩）：将其移至队首并标记 [QueuedMessageUi.immediateInterrupt]，等待当前运行取消后自动发出。
+     * - 若当前仍在流式运行（非压缩）：将其移至队首并标记 [QueuedMessageUi.immediateInterrupt]，等待 Runtime 接收确认。
      * - 若当前已空闲：直接从队列弹出并返回，由调用方立即发起新运行。
      */
     fun promoteToInterrupt(

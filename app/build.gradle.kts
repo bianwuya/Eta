@@ -65,6 +65,9 @@ android {
             versionNameSuffix = "-debug" + buildMetadataSuffix
             isMinifyEnabled = false
             isPseudoLocalesEnabled = true
+            // Personal cloud builds use the existing release identity for both standard variants.
+            // PR verification has no signing Secrets and keeps the normal development certificate.
+            if (hasReleaseSigning) signingConfig = signingConfigs.getByName("release")
         }
         release {
             versionNameSuffix = buildMetadataSuffix
@@ -168,6 +171,7 @@ dependencies {
     implementation(libs.activity.compose)
     // 只使用 GFM 解析器；聊天渲染层由 ui/markdown 自建，按块冻结并接入逐字显现。
     implementation(libs.intellij.markdown)
+    implementation("androidx.webkit:webkit:1.12.1")
     implementation(libs.hidden.api.bypass)
 
     // DataStore：Provider / Model 结构化 JSON 与当前选中 ID 等键值

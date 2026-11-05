@@ -47,6 +47,7 @@ import io.github.mangi.eta.ui.model.ToolActivityMessageUi
 import io.github.mangi.eta.ui.model.ToolActivityStatusUi
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.preference.ArrowPreference
 import top.yukonga.miuix.kmp.overlay.OverlayBottomSheet
 import top.yukonga.miuix.kmp.squircle.squircleSurface
 import top.yukonga.miuix.kmp.theme.MiuixTheme
@@ -62,12 +63,15 @@ internal fun SubagentActivityRow(
     modifier: Modifier = Modifier,
 ) {
     var showInspector by rememberSaveable(message.id) { mutableStateOf(false) }
-    val running = message.status == ToolActivityStatusUi.Running
+    var showFullDetails by rememberSaveable(message.id) { mutableStateOf(false) }
+    val running = message.status == ToolActivityStatusUi.Running &&
+        snapshot.status in setOf("running", "queued", "pausing", "paused", "waiting_decision", "cancelling")
     val failed = message.status == ToolActivityStatusUi.Failed ||
-        snapshot.status == SubagentActivitySnapshot.STATUS_FAILED
+        snapshot.status in setOf("failed", "cancelled", "interrupted", "completed_previous_revision", "completed_with_unconsumed_guidance")
     val typeLabel = snapshot.subagentType.ifBlank { "subagent" }
     val taskTitle = snapshot.description.ifBlank { message.argumentsSummary.ifBlank { "Subagent" } }
     val subtitle = when {
+        message.status == ToolActivityStatusUi.Unknown -> "运行已中断；这是最后保留状态"
         running -> snapshot.currentAction.takeIf { it.isNotBlank() }
             ?: if (snapshot.toolStepCount > 0) "已执行 ${snapshot.toolStepCount} 步" else "正在运行…"
         failed -> snapshot.error?.lineSequence()?.firstOrNull()?.takeIf { it.isNotBlank() }
@@ -140,15 +144,23 @@ internal fun SubagentActivityRow(
     }
 
     OverlayBottomSheet(
-        show = showInspector,
+        show = showInspector && !showFullDetails,
         title = taskTitle,
         onDismissRequest = { showInspector = false },
     ) {
-        SubagentInspectorContent(
+        if (showInspector) SubagentInspectorContent(
             snapshot = snapshot,
             running = running,
             failed = failed,
+            onOpenDetails = { showFullDetails = true },
         )
+    }
+    OverlayBottomSheet(
+        show = showFullDetails,
+        title = "任务详情",
+        onDismissRequest = { showFullDetails = false },
+    ) {
+        if (showFullDetails) SubagentFullDetails(snapshot.detailId, allowDelete = !running)
     }
 }
 
@@ -191,12 +203,11 @@ private fun SubagentInspectorContent(
     snapshot: SubagentActivitySnapshot,
     running: Boolean,
     failed: Boolean,
+    onOpenDetails: () -> Unit,
 ) {
     val density = LocalDensity.current
     val maxSheetHeight = with(density) { LocalWindowInfo.current.containerSize.height.toDp() } * 0.76f
     var promptExpanded by rememberSaveable(snapshot.subagentId) { mutableStateOf(false) }
-    val pulse = rememberDrawPhasePulse(active = running)
-
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -206,43 +217,17 @@ private fun SubagentInspectorContent(
             .padding(bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        // 顶部状态与元信息横条：留白克制，只展示关键身份与实时状态
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(7.dp)
-                    .graphicsLayer { alpha = pulse?.value ?: 1f }
-                    .clip(CircleShape)
-                    .background(
-                        when {
-                            running -> MiuixTheme.colorScheme.primary
-                            failed -> StatusError
-                            else -> StatusSuccess
-                        },
-                    ),
-            )
-            SubagentTypeBadge(type = snapshot.subagentType.ifBlank { "subagent" }, active = running)
-            if (snapshot.subagentId.isNotBlank()) {
-                Text(
-                    text = snapshot.subagentId,
-                    style = MiuixTheme.textStyles.footnote2.copy(fontFamily = FontFamily.Monospace),
-                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary.copy(alpha = 0.75f),
-                )
-            }
-            if (snapshot.model.isNotBlank()) {
-                Text(
-                    text = "· ${snapshot.model}",
-                    style = MiuixTheme.textStyles.footnote2,
-                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary.copy(alpha = 0.75f),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f, fill = false),
-                )
-            }
+        Text(
+            text = when { running -> "进行中"; failed -> "执行失败"; else -> "已结束" },
+            style = MiuixTheme.textStyles.footnote2,
+            color = when { running -> MiuixTheme.colorScheme.primary; failed -> StatusError; else -> StatusSuccess },
+        )
+
+        if (snapshot.previewTruncated) Text("这是实时预览，内容已截短；不是模型收到的完整指令。", style = MiuixTheme.textStyles.footnote2)
+        if (snapshot.detailId.isNotBlank()) {
+            ArrowPreference(title = "保留详情", onClick = onOpenDetails)
+        } else if (snapshot.previewTruncated) {
+            Text("旧记录未保留全文，已丢内容无法恢复。", style = MiuixTheme.textStyles.footnote2)
         }
 
         // 任务指令（Prompt）：浅色容器，长文本默认收起，点按展开
@@ -427,7 +412,7 @@ private fun SubagentStepRow(
                         MiuixTheme.textStyles.footnote2
                     },
                     color = MiuixTheme.colorScheme.onSurfaceVariantSummary.copy(alpha = 0.85f),
-                    maxLines = 16,
+                    maxLines = Int.MAX_VALUE,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier
                         .fillMaxWidth()

@@ -18,6 +18,8 @@ internal data class AgentUiHandoffPayload(
         val index: Int,
         val text: String,
         val createdAt: Long,
+        val queueMessageId: String = "",
+        val images: List<String> = emptyList(),
     )
 
     fun toJson(): String =
@@ -68,11 +70,14 @@ internal data class AgentUiHandoffPayload(
 
         private fun JSONObject.toSupplement(defaultIndex: Int): Supplement? {
             val text = optString("text").trim()
-            if (text.isBlank()) return null
+            val images = optJSONArray("images")?.let { a -> (0 until a.length()).map { a.getString(it) } }.orEmpty()
+            if (text.isBlank() && images.isEmpty()) return null
             return Supplement(
                 index = optInt("index", defaultIndex),
                 text = text,
                 createdAt = optLong("createdAt"),
+                queueMessageId = optString("queueMessageId"),
+                images = images,
             )
         }
     }
@@ -82,4 +87,6 @@ internal data class AgentUiHandoffPayload(
             .put("index", index)
             .put("text", text)
             .put("createdAt", createdAt)
+            .put("queueMessageId", queueMessageId)
+            .put("images", JSONArray(images))
 }

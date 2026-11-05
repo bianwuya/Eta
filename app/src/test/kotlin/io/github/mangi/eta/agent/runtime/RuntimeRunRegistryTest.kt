@@ -21,6 +21,33 @@ import org.robolectric.annotation.Config
 @Config(sdk = [36], application = Application::class)
 class RuntimeRunRegistryTest {
     @Test
+    fun queuedSteeringKeepsTheRunAndDeduplicatesTheSameQueueMessage() {
+        val registry = RuntimeRunRegistry()
+        val run = registry.accept("steer", "conversation")
+        val cancelled = AtomicInteger()
+        run.session.controller.register { cancelled.incrementAndGet() }
+        val first = run.supplement("第一条", "queue-1")
+        val duplicate = run.supplement("第一条", "queue-1")
+        val second = run.supplement("第二条", "queue-2")
+        assertNotNull(first)
+        assertEquals(first, duplicate)
+        assertEquals(2, second!!.index)
+        assertEquals("queue-2", second.queueMessageId)
+        assertEquals(0, cancelled.get())
+        assertSame(run, registry.get("steer"))
+        assertEquals("第一条", run.session.controller.pollSteeringMessage())
+        assertEquals("第二条", run.session.controller.pollSteeringMessage())
+        assertEquals(null, run.session.controller.pollSteeringMessage())
+        val payload = AgentUiHandoffPayload.from(run.snapshotRequest().handoff!!.payload)
+        assertEquals(listOf("queue-1", "queue-2"), payload.supplements.map { it.queueMessageId })
+        assertEquals(null, run.session.controller.pollSteeringOrSeal())
+        assertEquals(null, run.supplement("太迟", "queue-3"))
+        // 回执丢失后重试一个已经接收的ID仍返回原确认，不再次注入。
+        assertEquals(first, run.supplement("第一条", "queue-1"))
+        assertEquals(0, cancelled.get())
+    }
+
+    @Test
     fun pendingRequestsCountTowardCapacityAndDuplicatesDoNotCreateAnotherRun() {
         val registry = RuntimeRunRegistry(capacity = 2)
         val a = registry.accept("a", "conversation-a")

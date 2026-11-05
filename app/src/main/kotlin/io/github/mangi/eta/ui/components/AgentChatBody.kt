@@ -31,6 +31,8 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.ui.platform.LocalScrollCaptureInProgress
+import io.github.mangi.eta.local.longshot.colorOsLongshotTarget
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -354,6 +356,7 @@ private fun AgentChatScaffold(
     modifier: Modifier = Modifier,
 ) {
     val surfaceColor = MiuixTheme.colorScheme.surface
+    val captureInProgress = LocalScrollCaptureInProgress.current
     val frostEnabled = hasMessages && LocalBlurEnabled.current && isRuntimeShaderSupported()
     val messageBackdrop = rememberLayerBackdrop {
         // Backdrop 必须包含不透明底色，否则文字边缘模糊到透明区域时会出现黑边。
@@ -371,39 +374,41 @@ private fun AgentChatScaffold(
             bottom = 0.dp,
         ),
         bottomBar = {
-            AgentChatBottomBar(
-                messageBackdrop = messageBackdrop.takeIf { frostEnabled },
-                input = input,
-                modelPickerState = modelPickerState,
-                isCompacting = isCompacting,
-                contextUsage = contextUsage,
-                showContextUsage = hasMessages,
-                isStreaming = isStreaming,
-                reasoningEffort = reasoningEffort,
-                availableReasoningEfforts = availableReasoningEfforts,
-                pendingImages = pendingImages,
-                pendingFileReferences = pendingFileReferences,
-                queuedMessages = queuedMessages,
-                inputSyncVersion = inputSyncVersion,
-                messageEdit = messageEdit,
-                onSubmit = onSubmit,
-                onInterruptAndSubmit = onInterruptAndSubmit,
-                onSteerQueuedMessage = onSteerQueuedMessage,
-                onRecallQueuedMessage = onRecallQueuedMessage,
-                onRemoveQueuedMessage = onRemoveQueuedMessage,
-                onReasoningEffortChange = onReasoningEffortChange,
-                onCompactContext = onCompactContext,
-                canCompactContext = canCompactContext,
-                onModelSelected = onModelSelected,
-                onStop = onStop,
-                onAttachImage = onAttachImage,
-                onRemoveImage = onRemoveImage,
-                onAttachFiles = onAttachFiles,
-                onAttachFolder = onAttachFolder,
-                onAttachFilePath = onAttachFilePath,
-                onRemoveFileReference = onRemoveFileReference,
-                onCancelMessageEdit = onCancelMessageEdit,
-            )
+            Box(Modifier.graphicsLayer { alpha = if (captureInProgress) 0f else 1f }) {
+                AgentChatBottomBar(
+                    messageBackdrop = messageBackdrop.takeIf { frostEnabled },
+                    input = input,
+                    modelPickerState = modelPickerState,
+                    isCompacting = isCompacting,
+                    contextUsage = contextUsage,
+                    showContextUsage = hasMessages,
+                    isStreaming = isStreaming,
+                    reasoningEffort = reasoningEffort,
+                    availableReasoningEfforts = availableReasoningEfforts,
+                    pendingImages = pendingImages,
+                    pendingFileReferences = pendingFileReferences,
+                    queuedMessages = queuedMessages,
+                    inputSyncVersion = inputSyncVersion,
+                    messageEdit = messageEdit,
+                    onSubmit = onSubmit,
+                    onInterruptAndSubmit = onInterruptAndSubmit,
+                    onSteerQueuedMessage = onSteerQueuedMessage,
+                    onRecallQueuedMessage = onRecallQueuedMessage,
+                    onRemoveQueuedMessage = onRemoveQueuedMessage,
+                    onReasoningEffortChange = onReasoningEffortChange,
+                    onCompactContext = onCompactContext,
+                    canCompactContext = canCompactContext,
+                    onModelSelected = onModelSelected,
+                    onStop = onStop,
+                    onAttachImage = onAttachImage,
+                    onRemoveImage = onRemoveImage,
+                    onAttachFiles = onAttachFiles,
+                    onAttachFolder = onAttachFolder,
+                    onAttachFilePath = onAttachFilePath,
+                    onRemoveFileReference = onRemoveFileReference,
+                    onCancelMessageEdit = onCancelMessageEdit,
+                )
+            }
         },
     ) { innerPadding ->
         val bottomPadding = innerPadding.calculateBottomPadding()
@@ -473,6 +478,7 @@ internal fun AgentConversationMessages(
     onHistoryViewportChanged: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
+    val scrollCaptureInProgress = LocalScrollCaptureInProgress.current
     // 上一版条目只作复用比对，不参与组合观察。
     val previousTimelineEntries = remember { arrayOf(emptyList<AgentTimelineEntry>()) }
     val timelineEntries = remember(visibleMessages) {
@@ -574,8 +580,8 @@ internal fun AgentConversationMessages(
         messageCount = visibleMessages.size,
         hasEarlier = hasEarlierMessages,
         loadState = historyLoadState,
-        enabled = !isStreaming && editTargetMessageId == null,
-        canReleasePages = !isTailRendering && !isBottomSettling,
+        enabled = !scrollCaptureInProgress && !isStreaming && editTargetMessageId == null,
+        canReleasePages = !scrollCaptureInProgress && !isTailRendering && !isBottomSettling,
         keepBottomAnchored = keepBottomAnchored,
         onBottomAnchorChanged = onBottomAnchorChanged,
         onLoadEarlier = onLoadEarlierMessages,
@@ -583,7 +589,7 @@ internal fun AgentConversationMessages(
     )
 
     val shouldFollowBottom by rememberUpdatedState(
-        resolveBottomFollowEnabled(
+        !scrollCaptureInProgress && resolveBottomFollowEnabled(
             isStreaming = isStreaming,
             keepBottomAnchored = keepBottomAnchored,
             isUserDragging = isUserDragging,
@@ -600,8 +606,9 @@ internal fun AgentConversationMessages(
         keepBottomAnchored,
         isUserDragging,
         isStreaming,
+        scrollCaptureInProgress,
     ) {
-        if (shouldRequestInitialBottom(
+        if (!scrollCaptureInProgress && shouldRequestInitialBottom(
                 isStreaming = isStreaming,
                 keepBottomAnchored = keepBottomAnchored,
                 isUserDragging = isUserDragging,
@@ -723,6 +730,7 @@ internal fun AgentConversationMessages(
             verticalArrangement = Arrangement.Top,
             modifier = Modifier
                 .fillMaxSize()
+                .colorOsLongshotTarget(scrollState, bottomInset = bottomInset)
                 .scrollEndHaptic()
                 .nestedScroll(historyPaging.scrollConnection)
                 .overScrollVertical(),
@@ -815,7 +823,7 @@ internal fun AgentConversationMessages(
         }
 
         AnimatedVisibility(
-            visible = !keepBottomAnchored && !isAtBottom,
+            visible = !scrollCaptureInProgress && !keepBottomAnchored && !isAtBottom,
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .padding(bottom = bottomInset + 12.dp),

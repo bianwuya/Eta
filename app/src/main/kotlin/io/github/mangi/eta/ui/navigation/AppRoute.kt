@@ -13,6 +13,9 @@ sealed interface AppRoute : NavKey {
     data class Browser(val sessionKey: String = BrowserSessionRegistry.MANUAL_SESSION_KEY) : AppRoute
 
     @Serializable
+    data class RichPreview(val reference: String) : AppRoute
+
+    @Serializable
     data object Terminal : AppRoute
 
     @Serializable
@@ -26,6 +29,15 @@ sealed interface AppRoute : NavKey {
 
     @Serializable
     data object Subagents : AppRoute
+
+    @Serializable
+    data object CompactionSettings : AppRoute
+
+    @Serializable
+    data object SubagentStats : AppRoute
+
+    @Serializable
+    data class SubagentConversationStats(val conversationId: String) : AppRoute
 
     @Serializable
     data object Characters : AppRoute

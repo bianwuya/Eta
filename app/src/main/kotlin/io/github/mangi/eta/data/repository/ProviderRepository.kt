@@ -30,6 +30,14 @@ import java.util.UUID
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.shareIn
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -46,12 +54,26 @@ internal object ProviderRepository {
         ProviderCredentialRepository.init(context)
     }
 
-    fun providersFlow(): Flow<List<ProviderSetting>> =
+    private var repositoryScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private var providerUpdates: SharedFlow<List<ProviderSetting>>? = null
+
+    /** Tests replace the Room database; a shared observer must not retain its closed predecessor. */
+    @Synchronized
+    internal fun resetObservationForTests() {
+        repositoryScope.cancel()
+        repositoryScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        providerUpdates = null
+    }
+    // Stable shared flow: recomposition must not restart Room + decode every model again.
+    // Room moves SQL off main, but downstream JSON decoding otherwise runs on the collector.
+    @Synchronized
+    fun providersFlow(): Flow<List<ProviderSetting>> = providerUpdates ?: run {
         dao().providersFlow().map { providers ->
-            providers
-                .map { it.toDomain() }
-                .sortedBy(ProviderSetting::sortOrder)
-        }
+            providers.map { it.toDomain() }.sortedBy(ProviderSetting::sortOrder)
+        }.flowOn(Dispatchers.Default).distinctUntilChanged()
+            .shareIn(repositoryScope, SharingStarted.WhileSubscribed(5_000), replay = 1)
+            .also { providerUpdates = it }
+    }
 
     fun settingsFlow(): Flow<Settings> =
         SettingsDataStore.settingsFlow()
@@ -59,16 +81,17 @@ internal object ProviderRepository {
     suspend fun settings(): Settings =
         SettingsDataStore.settings()
 
-    suspend fun allProviders(): List<ProviderSetting> =
-        dao().providers()
-            .map { it.toDomain() }
-            .sortedBy(ProviderSetting::sortOrder)
+    suspend fun allProviders(): List<ProviderSetting> = withContext(Dispatchers.Default) {
+        dao().providers().map { it.toDomain() }.sortedBy(ProviderSetting::sortOrder)
+    }
 
-    suspend fun providerById(id: String): ProviderSetting? =
+    suspend fun providerById(id: String): ProviderSetting? = withContext(Dispatchers.Default) {
         dao().providerById(id)?.toDomain()
+    }
 
-    suspend fun providerByModelId(modelId: String): ProviderSetting? =
+    suspend fun providerByModelId(modelId: String): ProviderSetting? = withContext(Dispatchers.Default) {
         dao().providerByModelId(modelId)?.toDomain()
+    }
 
     suspend fun addProvider(provider: ProviderSetting): ProviderSetting {
         val added = mutationMutex.withLock {

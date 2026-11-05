@@ -147,7 +147,7 @@ class GeminiModelCatalogHttpTest {
     private val noOAuth = object : RemoteModelFetcher.Credentials {
         override fun binding(providerId: String, authMode: String): ProviderCredentialBinding = error("不应读取 OAuth 账号")
         override fun isCurrent(binding: ProviderCredentialBinding): Boolean = error("不应读取 OAuth 账号")
-        override fun accessToken(providerId: String, authMode: String, controller: AgentRunController, rejected: String?): String =
+        override fun accessToken(binding: ProviderCredentialBinding, controller: AgentRunController, rejected: String?): String =
             error("不应读取 OAuth 令牌")
     }
 }
