@@ -65,9 +65,12 @@ internal fun SubagentActivityRow(
     var showInspector by rememberSaveable(message.id) { mutableStateOf(false) }
     var showFullDetails by rememberSaveable(message.id) { mutableStateOf(false) }
     val running = message.status == ToolActivityStatusUi.Running &&
-        snapshot.status in setOf("running", "queued", "pausing", "paused", "waiting_decision", "cancelling")
+        snapshot.status == SubagentActivitySnapshot.STATUS_RUNNING
     val failed = message.status == ToolActivityStatusUi.Failed ||
-        snapshot.status in setOf("failed", "cancelled", "interrupted", "completed_previous_revision", "completed_with_unconsumed_guidance")
+        snapshot.status in setOf(
+            SubagentActivitySnapshot.STATUS_FAILED,
+            SubagentActivitySnapshot.STATUS_CANCELLED,
+        )
     val typeLabel = snapshot.subagentType.ifBlank { "subagent" }
     val taskTitle = snapshot.description.ifBlank { message.argumentsSummary.ifBlank { "Subagent" } }
     val subtitle = when {

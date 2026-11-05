@@ -100,7 +100,6 @@ internal class AgentRunController {
     fun enqueueConversationMessage(input: ConversationInput): Boolean = lock.withLock {
         if (cancelled || !acceptingConversationMessages) return false
         conversationMessages.addLast(input)
-        pauseCondition.signalAll()
         true
     }
 
@@ -121,9 +120,6 @@ internal class AgentRunController {
         acceptingConversationMessages = false
         emptyList()
     }
-
-    val hasPendingConversationMessages: Boolean
-        get() = lock.withLock { conversationMessages.isNotEmpty() }
 
     /**
      * 暂停执行：后续 [throwIfCancelled] 调用会阻塞挂起，直到 [resume] 或 [cancel]。
@@ -174,32 +170,6 @@ internal class AgentRunController {
             binding.close()
         }
         throwIfCancelled()
-    }
-
-    private var activityVersion = 0L
-    fun signalActivity() { lock.withLock { activityVersion++; pauseCondition.signalAll() } }
-
-    /** The external predicate is evaluated outside our lock to avoid manager/controller inversion. */
-    fun awaitActivity(timeoutMs: Long, ready: () -> Boolean) {
-        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs)
-        while (true) {
-            val version = lock.withLock { activityVersion }
-            throwIfCancelled()
-            if (hasPendingSteering || hasPendingConversationMessages || ready()) return
-            lock.withLock {
-                val remaining = deadline - System.nanoTime()
-                if (remaining <= 0) return
-                if (version == activityVersion && steeringMessages.isEmpty() &&
-                    conversationMessages.isEmpty() && !cancelled
-                ) {
-                    try { pauseCondition.awaitNanos(remaining) }
-                    catch (_: InterruptedException) {
-                        Thread.currentThread().interrupt()
-                        throw AgentRunCancelledException()
-                    }
-                }
-            }
-        }
     }
 
     fun register(cancel: () -> Unit): ResourceBinding {

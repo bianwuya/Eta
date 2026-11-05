@@ -515,7 +515,7 @@ internal class AgentRunMessageProjector(
                     command = event.snapshotJson,
                     status = when (incoming?.status) {
                         "completed" -> ToolActivityStatusUi.Success
-                        "failed", "cancelled", "interrupted", "completed_previous_revision", "completed_with_unconsumed_guidance" -> ToolActivityStatusUi.Failed
+                        "failed", "cancelled", "interrupted" -> ToolActivityStatusUi.Failed
                         else -> ToolActivityStatusUi.Running
                     },
                 )
@@ -796,12 +796,8 @@ internal class AgentRunMessageProjector(
 }
 
 private const val MAX_TOOL_RESULT_PREVIEW_CHARS = 48
-private val ACTIVE_SUBAGENT_STATUSES = setOf(
-    "running", "queued", "pausing", "paused", "waiting_decision", "cancelling",
-)
-private val TERMINAL_SUBAGENT_STATUSES = setOf(
-    "failed", "cancelled", "interrupted", "completed_previous_revision", "completed_with_unconsumed_guidance",
-)
+private val ACTIVE_SUBAGENT_STATUSES = setOf("running")
+private val TERMINAL_SUBAGENT_STATUSES = setOf("failed", "cancelled", "interrupted")
 
 internal fun AgentTokenUsage.toUi(): TokenUsageUi =
     TokenUsageUi(

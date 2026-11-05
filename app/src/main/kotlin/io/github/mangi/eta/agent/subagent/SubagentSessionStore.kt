@@ -2,6 +2,7 @@ package io.github.mangi.eta.agent.subagent
 
 import io.github.mangi.eta.agent.model.AgentModelClient
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * 会话内 Subagent 实例上下文缓存，供主 Agent 通过 `resume` 续接已有的 Subagent。
@@ -20,6 +21,7 @@ internal object SubagentSessionStore {
     )
 
     private class ConversationBucket {
+        val sequence = AtomicInteger(0)
         val entries = object : LinkedHashMap<String, Entry>(8, 0.75f, true) {
             override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Entry>?): Boolean =
                 size > MAX_AGENTS_PER_CONVERSATION && eldest?.value?.running?.get() != true
@@ -35,7 +37,7 @@ internal object SubagentSessionStore {
 
     fun create(conversationKey: String, profile: SubagentProfile): Entry = synchronized(lock) {
         val bucket = buckets.getOrPut(conversationKey) { ConversationBucket() }
-        val id = "sub_${java.util.UUID.randomUUID().toString().replace("-", "").take(20)}"
+        val id = "sub_${bucket.sequence.incrementAndGet()}"
         val entry = Entry(subagentId = id, profile = profile, running = AtomicBoolean(true))
         bucket.entries[id] = entry
         entry
@@ -53,7 +55,7 @@ internal object SubagentSessionStore {
         synchronized(lock) {
             val entry = buckets[conversationKey]?.entries?.get(subagentId) ?: return
             entry.history = updatedHistory
-            // Execution ownership is released by the task's finalizer, not before tool cleanup.
+            entry.running.set(false)
         }
     }
 
