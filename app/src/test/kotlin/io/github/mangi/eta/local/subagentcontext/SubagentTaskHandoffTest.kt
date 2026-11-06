@@ -14,10 +14,9 @@ class SubagentTaskHandoffTest {
     private fun count(text: String, value: String) = text.windowed(value.length).count { it == value }
     private fun invalid(value: Any?) = assertThrows(IllegalArgumentException::class.java) { render(value) }
 
-    @Test fun absentNullAndEmptyObjectsPreserveTheLegacyPromptByteForByte() {
+    @Test fun absentAndEmptyObjectsPreserveTheLegacyPromptByteForByte() {
         val prompt = "  原始指令\n  code = 1\n\n"
-        for (handoff in listOf(null, JSONObject.NULL, JSONObject(), JSONObject().put("goal", "   "),
-            JSONObject().put("goal", JSONObject.NULL).put("user_constraints", JSONObject.NULL),
+        for (handoff in listOf(null, JSONObject(), JSONObject().put("goal", "   "),
             JSONObject().put("known_facts", values("", " \n ")))) {
             assertEquals(prompt, render(handoff, prompt))
         }
@@ -46,11 +45,18 @@ class SubagentTaskHandoffTest {
         assertTrue(result.contains("- same text"))
     }
 
-    @Test fun exactDuplicateGoalDoesNotRepeatThePromptButConstraintsAreNotRemoved() {
-        assertEquals("inspect", render(JSONObject().put("goal", " inspect ")))
-        val result = render(JSONObject().put("goal", "inspect").put("user_constraints", values("inspect")))
-        assertEquals(2, count(result, "inspect"))
-        assertTrue(result.contains("有效用户约束"))
+    @Test fun promptGoalAndConstraintsPreserveTheirDistinctSourcesEvenWhenTextMatches() {
+        val result = render(JSONObject().put("goal", " inspect ").put("user_constraints", values("inspect", "inspect")))
+        assertEquals(3, count(result, "inspect"))
+        assertTrue(result.contains("目标\ninspect"))
+        assertTrue(result.contains("有效用户约束\n- inspect"))
+    }
+
+    @Test fun duplicateGoalDoesNotBypassTheFullRenderedBlockLimit() {
+        val prompt = "x".repeat(SubagentTaskHandoff.MAX_HANDOFF_CHARS)
+        assertThrows(IllegalArgumentException::class.java) {
+            render(JSONObject().put("goal", prompt), prompt)
+        }
     }
 
     @Test fun multilineCodeInternalWhitespaceAndUnicodeAreNotRewritten() {
@@ -101,12 +107,21 @@ class SubagentTaskHandoffTest {
     }
 
     @Test fun malformedObjectFieldsAndArrayItemsAreNeverCoercedOrSilentlyIgnored() {
-        for (value in listOf("string", 1, true, JSONArray(),
+        for (value in listOf(JSONObject.NULL, "string", 1, true, JSONArray(),
             JSONObject().put("unknown", "guard"), JSONObject().put("goal", 1),
             JSONObject().put("goal", JSONObject()), JSONObject().put("known_facts", "not an array"),
             JSONObject().put("user_constraints", values(JSONObject.NULL)),
             JSONObject().put("user_constraints", values(42)),
             JSONObject().put("done_when", values(JSONObject())))) invalid(value)
+    }
+
+    @Test fun explicitNullFieldsViolateTheirDeclaredTypesRatherThanDroppingConstraints() {
+        for (field in listOf("goal", "known_facts", "user_constraints", "working_hypotheses", "investigation_leads", "done_when")) {
+            invalid(JSONObject().put(field, JSONObject.NULL))
+            // A wrong type must not make even another otherwise-valid constraint silently disappear.
+            if (field != "user_constraints") invalid(JSONObject().put(field, JSONObject.NULL)
+                .put("user_constraints", values("must stay intact")))
+        }
     }
 
     @Test fun rawArrayItemLimitIsEnforcedBeforeDeduplicationAndNoValuesAreTruncated() {
