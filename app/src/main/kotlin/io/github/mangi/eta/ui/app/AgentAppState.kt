@@ -394,6 +394,12 @@ internal class AgentAppState(
             activeRunIds = activeRunIds,
             locallyObservedRunIds = locallyObservedRunIds,
         )
+        val interruptedCheckpoints = withContext(Dispatchers.IO) {
+            plan.interrupted.map { checkpoint ->
+                checkpoint.copy(transcript = io.github.mangi.eta.agent.runtime.AgentSubagentCheckpoint.recover(
+                    appContext, checkpoint.runId, checkpoint.transcript))
+            }
+        }
         val knownRunIds = checkpoints.mapTo(mutableSetOf()) { it.runId }.apply {
             addAll(completedRuns.map { it.result.runId.ifBlank { it.handoff.id } })
             addAll(locallyObservedRunIds)
@@ -467,7 +473,7 @@ internal class AgentAppState(
                     stateChanged = true
                 }
 
-                plan.interrupted.forEach { checkpoint ->
+                interruptedCheckpoints.forEach { checkpoint ->
                     removeAfterSave += checkpoint.runId
                     stateChanged = restoreCheckpointTrace(
                         checkpoint = checkpoint,

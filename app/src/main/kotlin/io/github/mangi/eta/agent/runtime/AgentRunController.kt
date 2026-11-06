@@ -166,6 +166,14 @@ internal class AgentRunController {
         BoundaryInputs(steering, conversations, readyReports)
     }
 
+    /** Linearize the natural-wait group barrier with incoming guidance, without sealing input queues. */
+    fun atNaturalWait(sealGroups: () -> Unit): Boolean = lock.withLock {
+        if (cancelled) throw AgentRunCancelledException()
+        if (steeringMessages.isNotEmpty() || conversationMessages.isNotEmpty()) return false
+        sealGroups()
+        true
+    }
+
     /** Wait under the same lock as steering and wake notifications; never poll the model. */
     fun awaitWorkAvailable(isReady: () -> Boolean) = lock.withLock {
         while (!cancelled && (paused || (steeringMessages.isEmpty() && conversationMessages.isEmpty() && !isReady()))) {

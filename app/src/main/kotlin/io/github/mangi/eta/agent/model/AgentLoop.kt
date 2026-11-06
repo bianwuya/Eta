@@ -108,14 +108,7 @@ internal class AgentLoop(
                     appendPendingSteeringMessage()
                     appendConversationMessages(runController.pollConversationInputs())
                 } else {
-                    val boundary = runController.collectBoundaryInputs { yieldableSubagents.peekReports() }
-                    boundary.steering.forEach { supplement ->
-                        appendMessage(steeringMessage(supplement))
-                        context.userAppended()
-                        unconsumedNewInput = true
-                    }
-                    appendConversationMessages(boundary.conversations)
-                    appendSubagentReports(boundary.reports)
+                    appendChildBoundaryInputs()
                 }
             }
 
@@ -254,6 +247,21 @@ internal class AgentLoop(
 
             // A natural answer is not the run's terminal state while children are still active.
             if (purpose.allowsTools && yieldableSubagents?.hasPending() == true) {
+                // This is the only auto-seal boundary: a complete model turn with NO tools,
+                // after plan edits/new input have been offered, immediately before natural wait.
+                // Accepted batches, peeks and child completion never close group membership.
+                if (appendChildBoundaryInputs()) {
+                    round += 1
+                    continue
+                }
+                if (yieldableSubagents.hasOpenGroups() && providerResponse.stopReason != AssistantStopReason.END_TURN) {
+                    throw AgentModelFailure("SUBAGENT_GROUP_INCOMPLETE_PARENT_TURN", false,
+                        "主代理未自然结束，不能据截断或未知终态自动封口；本运行需核实后续接，子任务不自动重跑。")
+                }
+                if (!runController.atNaturalWait { yieldableSubagents.sealAtNaturalWait() }) {
+                    round += 1
+                    continue
+                }
                 awaitSubagentInput()
                 round += 1
                 continue
@@ -499,13 +507,29 @@ internal class AgentLoop(
     }
 
     /** Appending/checkpointing is confined to the single parent runner and a complete tool boundary. */
+    private fun appendChildBoundaryInputs(): Boolean {
+        val owner = yieldableSubagents ?: return false
+        val boundary = runController.collectBoundaryInputs { owner.peekReports() }
+        boundary.steering.forEach { supplement ->
+            appendMessage(steeringMessage(supplement))
+            context.userAppended()
+            unconsumedNewInput = true
+        }
+        val conversations = appendConversationMessages(boundary.conversations)
+        val reports = appendSubagentReports(boundary.reports)
+        return boundary.steering.isNotEmpty() || conversations || reports
+    }
+
     private fun appendSubagentReports(reports: List<YieldableSubagents.Report>): Boolean {
         val owner = yieldableSubagents ?: return false
         if (reports.isEmpty()) return false
         reports.forEach { report ->
-            planGate?.childReport(report.taskId, report.succeeded)
+            report.members.forEach { member ->
+                planGate?.childReport(member.taskId, member.succeeded &&
+                    member.taskStatus == io.github.mangi.eta.local.subagentcontext.SubagentTaskResult.Status.COMPLETED)
+            }
             appendMessage(JSONObject().put("role", "assistant").put("content", report.content)
-                .put("_eta_message_id", "subagent-report-${report.taskId}"))
+                .put("_eta_message_id", report.messageId))
         }
         unconsumedNewInput = true
         publishTranscript()
@@ -556,6 +580,8 @@ internal class AgentLoop(
             val invoke = {
                 if (roundCall.name == AgentSubagentToolCatalog.TOOL_NAME && yieldableSubagents != null) {
                     yieldableSubagents.launch(roundCall)
+                } else if (roundCall.name == AgentSubagentToolCatalog.SEAL_GROUP_TOOL_NAME && yieldableSubagents != null) {
+                    yieldableSubagents.sealGroup(roundCall)
                 } else {
                     toolExecutor.execute(roundCall)
                 }
