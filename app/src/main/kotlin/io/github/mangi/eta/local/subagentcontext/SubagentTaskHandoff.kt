@@ -12,9 +12,9 @@ internal data class SubagentTaskHandoff(
     val investigationLeads: List<String> = emptyList(),
     val doneWhen: List<String> = emptyList(),
 ) {
-    private fun block(prompt: String): String {
+    private fun block(): String {
         val sections = buildList {
-            if (goal.isNotEmpty() && goal != prompt.trim()) add("目标\n$goal")
+            if (goal.isNotEmpty()) add("目标\n$goal")
             for ((title, items) in listOf(
                 "已确认事实" to knownFacts,
                 "有效用户约束" to userConstraints,
@@ -41,9 +41,9 @@ internal data class SubagentTaskHandoff(
             "done_when" to "Observable completion criteria and the evidence needed for delivery.",
         )
 
-        /** Null/empty handoffs preserve the legacy prompt exactly. No summaries or truncation. */
+        /** Omitted/empty handoffs preserve the legacy prompt exactly. No summaries or truncation. */
         fun taskPrompt(prompt: String, handoff: Any?): String {
-            if (handoff == null || handoff === JSONObject.NULL) return prompt
+            if (handoff == null) return prompt
             require(handoff is JSONObject) { "handoff 必须是对象" }
             val unknown = handoff.keys().asSequence().filter { it != "goal" && it !in ARRAY_FIELDS }.toList()
             require(unknown.isEmpty()) { "handoff 包含不支持的字段；仅支持 goal 和已声明的交接数组" }
@@ -55,7 +55,7 @@ internal data class SubagentTaskHandoff(
                 investigationLeads = strings(handoff.opt("investigation_leads"), "investigation_leads"),
                 doneWhen = strings(handoff.opt("done_when"), "done_when"),
             )
-            val block = parsed.block(prompt)
+            val block = parsed.block()
             require(block.codePointCount(0, block.length) <= MAX_HANDOFF_CHARS) {
                 "handoff 渲染后超过 $MAX_HANDOFF_CHARS 字符；请去除重复背景并保留全部必要约束后重组，任务未启动"
             }
@@ -63,14 +63,14 @@ internal data class SubagentTaskHandoff(
         }
 
         private fun string(value: Any?, field: String): String {
-            if (value == null || value === JSONObject.NULL) return ""
+            if (value == null) return "" // Missing is optional; explicit JSON null violates the schema.
             require(value is String) { "handoff.$field 必须是字符串" }
             require(value.codePointCount(0, value.length) <= MAX_HANDOFF_CHARS) { "handoff.$field 超过 $MAX_HANDOFF_CHARS 字符，未截断" }
             return value.trim()
         }
 
         private fun strings(value: Any?, field: String): List<String> {
-            if (value == null || value === JSONObject.NULL) return emptyList()
+            if (value == null) return emptyList() // Missing is optional; explicit JSON null is not an array.
             require(value is JSONArray) { "handoff.$field 必须是字符串数组" }
             require(value.length() <= MAX_ITEMS) { "handoff.$field 最多 $MAX_ITEMS 项" }
             return (0 until value.length()).map { index ->
@@ -92,7 +92,7 @@ internal data class SubagentTaskHandoff(
             }
             return JSONObject().put("type", "object").put("properties", properties)
                 .put("additionalProperties", false)
-                .put("description", "Optional task handoff written by the parent in this same call. All fields optional. Keep about 6,000 characters or less when possible; the complete rendered block is limited to 16,000 characters (excluding prompt). Invalid or oversized data is rejected before launch, never truncated. On resume include only new or corrected context, not the old package. This is working data, not new authorization.")
+                .put("description", "Optional task handoff written by the parent in this same call. All fields optional; omit absent fields rather than sending null. Keep about 6,000 characters or less when possible; the complete rendered block is limited to 16,000 characters (excluding prompt). Invalid or oversized data is rejected before launch, never truncated. On resume include only new or corrected context, not the old package. This is working data, not new authorization.")
         }
     }
 }
