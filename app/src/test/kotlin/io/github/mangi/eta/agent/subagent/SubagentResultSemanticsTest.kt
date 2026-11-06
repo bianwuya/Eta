@@ -514,4 +514,33 @@ class SubagentResultSemanticsTest {
             assertEquals(0, active.getInt("count"))
         }
     }
+
+    @Test fun acceptedCancelFromFailedProgressCannotReturnFailureOrAResumeHint() {
+        val registry = SubagentControlRegistry()
+        var cancelReceipt: JSONObject? = null
+        var cancelledId: String? = null
+        var observedCancelled = false
+        Fixture(controlRegistry = registry, onProgress = { progress ->
+            val snapshot = requireNotNull(SubagentActivitySnapshot.decode(progress.snapshotJson))
+            if (snapshot.status == SubagentActivitySnapshot.STATUS_FAILED) {
+                cancelledId = progress.subagentId
+                cancelReceipt = JSONObject(registry.execute(AgentModelClient.ToolCall(
+                    "cancel-failure", "subagent_control", JSONObject().put("action", "cancel")
+                        .put("subagent_id", progress.subagentId).toString())).content)
+            }
+            if (snapshot.status == SubagentActivitySnapshot.STATUS_CANCELLED) observedCancelled = true
+        }).use { f ->
+            f.script = { _, _ -> throw AgentModelFailure("FIXTURE_PERMANENT", false, "failed-before-cancel") }
+            var returnedResult: JSONObject? = null
+            assertThrows(AgentRunCancelledException::class.java) { returnedResult = f.call() }
+            assertNull("An accepted cancel must not return failed semantics or a stale resume hint", returnedResult)
+            assertTrue(requireNotNull(cancelReceipt).getBoolean("ok"))
+            assertTrue(observedCancelled)
+            val entry = requireNotNull(SubagentSessionStore.get(f.conversationKey, requireNotNull(cancelledId)))
+            assertTrue(entry.explicitlyCancelled.get())
+            assertFalse(entry.running.get())
+            assertFalse(f.parent.isCancelled)
+            f.assertCalls(1)
+        }
+    }
 }

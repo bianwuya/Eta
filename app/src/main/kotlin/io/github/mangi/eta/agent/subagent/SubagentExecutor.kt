@@ -466,7 +466,7 @@ internal class SubagentExecutor(
             }
             publishSnapshot(force = true)
 
-            AgentModelClient.ToolResult(
+            val result = AgentModelClient.ToolResult(
                 content = SubagentTaskResult.runtimeFailure(errorMessage).attach(JSONObject()
                     .put("ok", false)
                     .put("code", if (cancelled) "SUBAGENT_CANCELLED" else "SUBAGENT_FAILED")
@@ -495,6 +495,14 @@ internal class SubagentExecutor(
                     ).toString(),
                 command = latestSnapshots[toolCall.id],
             )
+            try {
+                childController.throwIfCancelled()
+                controlRegistry?.finish(subagentId, toolCall.id, result) ?: result
+            } catch (cancelledAtPublication: AgentRunCancelledException) {
+                tracker.markCancelled(partial)
+                runCatching { publishSnapshot(force = true) }
+                throw cancelledAtPublication
+            }
         }
         } finally {
             runCatching { toolBinding?.close() }

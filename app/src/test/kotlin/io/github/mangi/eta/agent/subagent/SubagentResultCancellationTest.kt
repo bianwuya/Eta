@@ -52,6 +52,8 @@ class SubagentResultCancellationTest {
         val registry = SubagentControlRegistry()
         val child = AgentRunController()
         val workerDone = java.util.concurrent.CountDownLatch(1)
+        val callbackWaitPassed = java.util.concurrent.atomic.AtomicBoolean(false)
+        val workerFailure = java.util.concurrent.atomic.AtomicReference<Throwable?>()
         var worker: Thread? = null
         val cancellation = child.register {
             worker = Thread {
@@ -59,14 +61,18 @@ class SubagentResultCancellationTest {
                     assertThrows(AgentRunCancelledException::class.java) {
                         registry.finish("child", "call", AgentModelClient.ToolResult("late-success"))
                     }
+                } catch (failure: Throwable) {
+                    workerFailure.set(failure)
                 } finally { workerDone.countDown() }
             }.also(Thread::start)
-            assertTrue("cancel callback must not deadlock on result lock", workerDone.await(2, java.util.concurrent.TimeUnit.SECONDS))
+            callbackWaitPassed.set(workerDone.await(2, java.util.concurrent.TimeUnit.SECONDS))
         }
         val binding = registry.register("child", "test", "call", child)
         try {
             assertTrue(JSONObject(registry.execute(cancel()).content).getBoolean("ok"))
+            assertTrue("cancel callback must not deadlock on result lock", callbackWaitPassed.get())
             assertTrue(workerDone.await(2, java.util.concurrent.TimeUnit.SECONDS))
+            workerFailure.get()?.let { throw AssertionError("worker assertion failed", it) }
         } finally { worker?.join(3000); cancellation.close(); binding.close() }
     }
 }
