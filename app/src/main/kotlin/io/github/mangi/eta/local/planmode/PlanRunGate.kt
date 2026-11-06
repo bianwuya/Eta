@@ -155,7 +155,8 @@ internal class PlanRunGate(private val conversationId: String, private val runId
         // Keep its dependency waiting until the owner's typed final report arrives.
         val childTask = if (call.name == "subagent" && outcome != null && knownChildLaunch(outcome))
             outcome.optString("task_id").takeIf { it.isNotBlank() } else null
-        val success = childTask != null || terminalExitOk && outcome?.optBoolean("ok", false) == true && outcome.optString("status").lowercase() !in setOf("accepted", "started", "queued", "running", "pending", "unknown", "timed_out", "timeout", "cancelled", "failed", "error", "interrupted") &&
+        val semanticSuccess = call.name != "subagent" || io.github.mangi.eta.local.subagentcontext.SubagentTaskResult.succeeded(outcome)
+        val success = childTask != null || semanticSuccess && terminalExitOk && outcome?.optBoolean("ok", false) == true && outcome.optString("status").lowercase() !in setOf("accepted", "started", "queued", "running", "pending", "unknown", "timed_out", "timeout", "cancelled", "failed", "error", "interrupted") &&
             !outcome.optBoolean("timed_out", false) && call.name !in setOf("terminal_job", "terminal_daemon") &&
             outcome.optString("code") !in setOf("ACTION_OUTCOME_UNKNOWN", "DIRECTION_MISMATCH")
         val recorded = try { PlanModeStore.finishAction(runId, p.revision, selected.id, selected.nextAction, fingerprint, success, childTask) }

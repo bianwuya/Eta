@@ -25,6 +25,7 @@ internal object SubagentPromptPolicy {
             "已完成操作不因上下文缺项而重做，结果未知时先查证。关键阻塞在最终汇报中说明，不直接要求终端用户补背景。" +
             "最终汇报实际结论或产物、可核验证据和未完成事项；失败、部分完成或未验证结果如实区分，不把尝试当成功。" +
             "使用任务要求的语言和清晰、克制的 Markdown，不输出无关探索流水。")
+        add(SubagentTaskResult.INSTRUCTIONS)
         if (tools.any { it in FILE_TOOLS }) {
             add(buildString {
                 append("文件操作：")
