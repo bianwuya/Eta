@@ -12,6 +12,7 @@ import io.github.mangi.eta.agent.terminal.TerminalExecutionContext
 import io.github.mangi.eta.agent.tool.AgentToolCapabilities
 import io.github.mangi.eta.local.subagentdisplay.SubagentReadableText
 import io.github.mangi.eta.local.subagentcontext.SubagentTaskHandoff
+import io.github.mangi.eta.local.subagentcontext.AgentRunRole
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import org.json.JSONArray
@@ -320,6 +321,7 @@ internal class SubagentExecutor(
             onStarted(subagentId, latestSnapshots[toolCall.id].orEmpty())
             val response = AgentModelClient.complete(
                 config = subagentConfig,
+                runRole = AgentRunRole.SUBAGENT,
                 provider = io.github.mangi.eta.local.subagentstats.SubagentRequestStats.provider(
                     delegate = providerFactory(subagentConfig),
                     template = io.github.mangi.eta.local.subagentstats.SubagentRequestStat(
