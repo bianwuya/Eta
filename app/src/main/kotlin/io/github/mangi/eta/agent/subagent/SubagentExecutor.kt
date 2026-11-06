@@ -220,9 +220,11 @@ internal class SubagentExecutor(
         val detailId = toolCall.id
         val historyRecorder = detailStore?.let { SubagentHistoryRecorder(it, detailId) }
             .also { historyRecorderForFailure = it }
+        var historyIncomplete = false
         fun recordHistory(block: SubagentHistoryRecorder.() -> Unit) {
             if (historyRecorder == null) return
             runCatching { historyRecorder.block() }.onFailure {
+                historyIncomplete = true
                 io.github.mangi.eta.core.AndroidAgentLogger.warnThrottled("subagent_history_write_failed") {
                     "Subagent history storage failed: type=${it.javaClass.simpleName}"
                 }
@@ -240,6 +242,7 @@ internal class SubagentExecutor(
             snapshotSequence = maxOf(snapshotSequence + 1, System.currentTimeMillis())
             val full = source.copy(
                 detailId = detailId,
+                historyIncomplete = historyIncomplete,
                 updatedAt = snapshotSequence,
                 prompt = SubagentDisplayText.redact(source.prompt),
                 output = SubagentDisplayText.redact(source.output),

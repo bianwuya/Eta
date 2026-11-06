@@ -265,7 +265,9 @@ internal fun SubagentInspectorContent(
         }
         // This entry remains visible for running, failed and cancelled tasks, including old
         // snapshots with no detail ID. The destination explains unavailable records instead.
-        ArrowPreference(title = "历史记录", onClick = onOpenDetails)
+        ArrowPreference(title = "历史记录",
+            summary = if (snapshot.historyIncomplete) "部分记录保存失败，历史可能不完整" else null,
+            onClick = onOpenDetails)
         AnimatedVisibility(visible = showInformation) {
             Column(
                 modifier = Modifier

@@ -112,6 +112,19 @@ class SubagentInspectorInteractionTest {
     }
 
     @Test
+    fun partialHistoryFailureIsVisibleEvenWhenSomeMessagesExist() = withFixture { fixture ->
+        val id = "ui-history-partial"
+        val store = SubagentDetailStore(fixture.activity)
+        try {
+            store.save(id, SubagentActivitySnapshot(subagentId = "fixture", detailId = id, historyIncomplete = true))
+            putIndex(id, listOf(SubagentHistoryEntry("one", "已保存回复", "assistant", "success")))
+            fixture.setContent { SubagentFullDetails(id, allowDelete = false) }
+            fixture.awaitText("部分记录保存失败，历史可能不完整")
+            fixture.assertVisibleText("已保存回复")
+        } finally { runBlocking { store.clear(id) } }
+    }
+
+    @Test
     fun emptyIdAndMissingOrBrokenDataAreVisibleAndRetryable() = withFixture { fixture ->
         val id = mutableStateOf("")
         val broken = "ui-broken-history"

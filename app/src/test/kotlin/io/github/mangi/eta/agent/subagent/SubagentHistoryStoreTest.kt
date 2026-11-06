@@ -30,6 +30,18 @@ class SubagentHistoryStoreTest {
         while (true) append(store.page(id, "history-${entry.id}", page++) ?: break)
     }
 
+    @Test fun incompleteHistoryWarningSurvivesReopen() = runBlocking {
+        val context = RuntimeEnvironment.getApplication()
+        val store = SubagentDetailStore(context)
+        val id = "history-incomplete"
+        store.save(id, SubagentActivitySnapshot(subagentId = "fixture", detailId = id, historyIncomplete = true))
+        store.recordHistory(id, SubagentHistoryEntry("one", "已保存回复", "assistant", "success"), "available")
+        val reopened = SubagentDetailStore(context)
+        assertTrue(reopened.header(id)?.historyIncomplete == true)
+        assertEquals(1, reopened.history(id).size)
+        store.clear(id)
+    }
+
     @Test fun eventOrderRetryPartialToolResultAndReopen() = runBlocking {
         val context = RuntimeEnvironment.getApplication()
         val store = SubagentDetailStore(context)

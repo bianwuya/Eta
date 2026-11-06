@@ -56,6 +56,7 @@ internal fun SubagentFullDetails(id: String, allowDelete: Boolean) {
     val store = remember(id) { SubagentDetailStore(context) }
     val scope = rememberCoroutineScope()
     var steps by remember(id) { mutableStateOf<List<SubagentStepSnapshot>>(emptyList()) }
+    var historyIncomplete by remember(id) { mutableStateOf(false) }
     var history by remember(id) { mutableStateOf<List<SubagentHistoryEntry>>(emptyList()) }
     var selected by remember(id) { mutableStateOf<String?>(null) }
     var page by remember(id) { mutableIntStateOf(0) }
@@ -94,7 +95,7 @@ internal fun SubagentFullDetails(id: String, allowDelete: Boolean) {
                     val rows = if (reloadDirectory) store.steps(id) else null
                     val entries = if (reloadDirectory) store.history(id) else null
                     val content = field?.let { store.page(id, it, pageIndex) to store.hasNext(id, it, pageIndex) }
-                    Triple(rows, entries, content)
+                    LoadedSubagentDetails(header.historyIncomplete, rows, entries, content)
                 }
             }.let { result ->
                 exists = result != null
@@ -103,13 +104,14 @@ internal fun SubagentFullDetails(id: String, allowDelete: Boolean) {
                     history = emptyList()
                     loadedRefresh = -1
                 } else {
+                    historyIncomplete = result.historyIncomplete
                     if (reloadDirectory) {
-                        steps = requireNotNull(result.first)
-                        history = requireNotNull(result.second)
+                        steps = requireNotNull(result.steps)
+                        history = requireNotNull(result.history)
                         loadedRefresh = refresh
                     }
                     if (field != null) {
-                        val content = requireNotNull(result.third)
+                        val content = requireNotNull(result.content)
                         text = content.first
                         next = content.second
                     }
@@ -163,6 +165,12 @@ internal fun SubagentFullDetails(id: String, allowDelete: Boolean) {
                 error != null && !exists -> Unit
                 !exists -> ListEmptyState(title = "详情未保留、已丢失或已清理")
                 entry == null -> LazyColumn(Modifier.fillMaxWidth().overScrollVertical()) {
+                    if (historyIncomplete) {
+                        item(key = "history-incomplete") {
+                            Text("部分记录保存失败，历史可能不完整", Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
+                                style = MiuixTheme.textStyles.footnote2, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+                        }
+                    }
                     if (history.isEmpty()) {
                         item(key = "legacy-warning") {
                             Text("旧版记录不完整，仅显示已保留材料", Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
@@ -235,6 +243,13 @@ internal fun SubagentFullDetails(id: String, allowDelete: Boolean) {
         }
     }
 }
+
+private data class LoadedSubagentDetails(
+    val historyIncomplete: Boolean,
+    val steps: List<SubagentStepSnapshot>?,
+    val history: List<SubagentHistoryEntry>?,
+    val content: Pair<String?, Boolean>?,
+)
 
 private fun historySummary(entry: SubagentHistoryEntry): String {
     val kind = when (entry.kind) {

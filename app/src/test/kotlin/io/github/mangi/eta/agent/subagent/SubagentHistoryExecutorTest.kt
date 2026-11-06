@@ -44,7 +44,7 @@ class SubagentHistoryExecutorTest {
         )
         val call = AgentModelClient.ToolCall("history-config", "subagent", """{"prompt":"task","description":"test"}""")
         val result = executor.execute(1, call)
-        assertEquals("SUBAGENT_CONFIG_ERROR", JSONObject(result.content).getString("code"))
+        assertEquals(result.content, "SUBAGENT_CONFIG_ERROR", JSONObject(result.content).getString("code"))
         val reopened = SubagentDetailStore(context)
         assertEquals(call.id, reopened.header(call.id)?.detailId)
         val entry = reopened.history(call.id).single()

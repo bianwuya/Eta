@@ -78,6 +78,7 @@ internal data class SubagentActivitySnapshot(
     val compactionCount: Int? = null,
     val contextReading: SubagentContextReading? = null,
     val contextRequestState: String = REQUEST_UNKNOWN,
+    val historyIncomplete: Boolean = false,
 ) {
     val toolStepCount: Int
         get() = steps.count { it.kind == SubagentStepSnapshot.KIND_TOOL }
