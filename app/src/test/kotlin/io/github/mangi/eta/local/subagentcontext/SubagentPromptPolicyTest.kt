@@ -55,7 +55,13 @@ class SubagentPromptPolicyTest {
     @Test fun toolGuidanceUsesActuallyFilteredToolsNotBroadConfigurationSwitches() {
         val fileOnly=text(systems(AgentRunRole.SUBAGENT,setOf("read_file"))).joinToString("\n")
         assertTrue(fileOnly.contains("文件操作"));assertFalse(fileOnly.contains("终端操作"))
+        assertTrue(fileOnly.contains("准确路径直接读取"));assertFalse(fileOnly.contains("目录或检索工具"))
         assertFalse(fileOnly.contains("fetch_url"));assertFalse(fileOnly.contains("get_current_context"))
+        val writeOnly=text(systems(AgentRunRole.SUBAGENT,setOf("write_file"))).joinToString("\n")
+        assertTrue(writeOnly.contains("修改前保留已有工作"));assertFalse(writeOnly.contains("准确路径直接读取"))
+        assertFalse(writeOnly.contains("目录或检索工具"));assertFalse(writeOnly.contains("文本续读"))
+        val grepOnly=text(systems(AgentRunRole.SUBAGENT,setOf("grep_files"))).joinToString("\n")
+        assertTrue(grepOnly.contains("目录或检索工具"));assertFalse(grepOnly.contains("准确路径直接读取"))
         val terminal=text(systems(AgentRunRole.SUBAGENT,setOf("terminal"))).joinToString("\n")
         assertTrue(terminal.contains("终端操作"));assertFalse(terminal.contains("文件操作"))
         val web=text(systems(AgentRunRole.SUBAGENT,setOf("fetch_url"))).joinToString("\n")
@@ -103,26 +109,40 @@ class SubagentPromptPolicyTest {
             val serialized=requests.single().messages.toString()
             assertTrue(serialized.contains("围绕当前委派目标"));assertFalse(serialized.contains("observe_screen"))
             assertEquals("child-fixture",requests.single().config.model)
+            assertEquals(setOf("read_file"),(0 until requests.single().tools.length()).map {
+                requests.single().tools.getJSONObject(it).getJSONObject("function").getString("name")
+            }.toSet())
+            assertTrue(serialized.contains("准确路径直接读取"));assertFalse(serialized.contains("目录或检索工具"))
             assertFalse(serialized.contains("终端操作"))
         } finally { parent.cancel() }
     }
 
     @Test fun rootRebuildRetainsChildRoleAndDoesNotOverwriteTaskOrReintroducePrimaryGuidance() {
         var root=false;val requests=mutableListOf<ProviderRequest>()
-        val result=AgentModelClient.complete(config,"TASK_SURVIVES_ROOT",AgentModelClient.ToolExecutor { AgentModelClient.ToolResult("read result") },
-            provider=provider { request -> requests+=request.copy(messages=JSONArray(request.messages.toString()))
+        val result=AgentModelClient.complete(config.copy(deviceSensitiveReadTools=true),"TASK_SURVIVES_ROOT",AgentModelClient.ToolExecutor { AgentModelClient.ToolResult("read result") },
+            provider=provider { request -> requests+=request.copy(messages=JSONArray(request.messages.toString()),tools=JSONArray(request.tools.toString()))
                 if(requests.size==1) {root=true;tool()} else answer()
             },capabilitiesProvider={ AgentToolCapabilities(rootAvailable=root) },
-            toolFilter={ all -> JSONArray().also { kept -> (0 until all.length()).map(all::getJSONObject).filter { it.getJSONObject("function").getString("name") in setOf("terminal","read_file") }.forEach(kept::put) } },
-            runRole=AgentRunRole.SUBAGENT)
+            toolFilter={ all -> JSONArray().also { kept -> (0 until all.length()).map(all::getJSONObject).filter { it.getJSONObject("function").getString("name") in setOf("terminal","read_file","get_logcat") }.forEach(kept::put) } },
+            skillContext=skills,memoryContext=memory,runRole=AgentRunRole.SUBAGENT)
         assertEquals("done",result.content);assertEquals(2,requests.size)
+        fun tools(request: ProviderRequest)=(0 until request.tools.length()).map {
+            request.tools.getJSONObject(it).getJSONObject("function").getString("name")
+        }.toSet()
+        assertEquals(setOf("terminal","read_file"),tools(requests.first()))
+        assertEquals(setOf("terminal","read_file","get_logcat"),tools(requests.last()))
         for(request in requests) {
-            assertTrue(request.messages.toString().contains("围绕当前委派目标"))
             assertTrue(request.messages.toString().contains("TASK_SURVIVES_ROOT"))
-            assertFalse(request.messages.toString().contains("observe_screen"))
+            val system=text(request.messages).takeWhile { it != "TASK_SURVIVES_ROOT" }
+            val operational=system.single { it.contains("围绕当前委派目标") }
+            assertFalse(operational.contains("observe_screen"))
         }
-        assertFalse(requests.first().messages.toString().contains("Root 授权已确认"))
-        assertTrue(requests.last().messages.toString().contains("Root 授权已确认"))
+        val before=text(requests.first().messages)
+        val after=text(requests.last().messages)
+        assertFalse(before.single { it.contains("围绕当前委派目标") }.contains("Root 授权已确认"))
+        assertTrue(after.single { it.contains("围绕当前委派目标") }.contains("Root 授权已确认"))
+        assertEquals(before.single { it.contains("<memory_core>") },after.single { it.contains("<memory_core>") })
+        assertEquals(before.single { it.contains("id=fixture") },after.single { it.contains("id=fixture") })
     }
 
     @Test fun ordinaryToolRoundKeepsTheChildSystemPrefixByteIdentical() {

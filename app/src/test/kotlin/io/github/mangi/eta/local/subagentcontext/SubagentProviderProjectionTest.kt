@@ -33,14 +33,17 @@ class SubagentProviderProjectionTest {
         val wire=request.getJSONArray("messages")
         assertTrue(wire.getJSONObject(wire.length()-1).getString("content").contains("DYNAMIC_TASK_SENTINEL"))
         assertEquals("user",wire.getJSONObject(wire.length()-1).getString("role"))
-        assertFalse(wire.getJSONObject(0).getString("content").contains("DYNAMIC_TASK_SENTINEL"))
+        assertFalse((0 until wire.length()).map(wire::getJSONObject).filter { it.optString("role")=="system" }
+            .any { it.toString().contains("DYNAMIC_TASK_SENTINEL") })
         checkSchema(request.getJSONArray("tools").getJSONObject(0).getJSONObject("function").getJSONObject("parameters"))
     }
 
     @Test fun responsesUsesInstructionsForSystemButNotDynamicTask() {
         val request=ResponsesRequestBuilder.build(config,messages(),tools())
         assertFalse(request.getString("instructions").contains("DYNAMIC_TASK_SENTINEL"))
-        assertTrue(request.getJSONArray("input").toString().contains("DYNAMIC_TASK_SENTINEL"))
+        val input=request.getJSONArray("input")
+        val task=(0 until input.length()).map(input::getJSONObject).single { it.toString().contains("DYNAMIC_TASK_SENTINEL") }
+        assertEquals("message",task.getString("type"));assertEquals("user",task.getString("role"))
         checkSchema(request.getJSONArray("tools").getJSONObject(0).getJSONObject("parameters"))
         assertFalse(request.getJSONArray("tools").getJSONObject(0).getBoolean("strict"))
     }
@@ -48,7 +51,9 @@ class SubagentProviderProjectionTest {
     @Test fun geminiRetainsOptionalNestedSchemaWithoutPromotingTaskIntoSystemInstruction() {
         val request=GeminiInteractionsRequest.build(config.copy(providerType=ProviderTypes.GEMINI,reasoningEffort=io.github.mangi.eta.data.model.ReasoningEffort.DEFAULT),messages(),tools())
         assertFalse(request.getString("system_instruction").contains("DYNAMIC_TASK_SENTINEL"))
-        assertTrue(request.getJSONArray("input").toString().contains("DYNAMIC_TASK_SENTINEL"))
+        val input=request.getJSONArray("input")
+        val task=(0 until input.length()).map(input::getJSONObject).single { it.toString().contains("DYNAMIC_TASK_SENTINEL") }
+        assertEquals("user_input",task.getString("type"))
         checkSchema(request.getJSONArray("tools").getJSONObject(0).getJSONObject("parameters"))
     }
 
@@ -68,7 +73,9 @@ class SubagentProviderProjectionTest {
             AnthropicMessagesProvider.complete(ProviderRequest(local,messages(),tools()),AgentRunController())
             val request=JSONObject(captured.get())
             assertFalse(request.getJSONArray("system").toString().contains("DYNAMIC_TASK_SENTINEL"))
-            assertTrue(request.getJSONArray("messages").toString().contains("DYNAMIC_TASK_SENTINEL"))
+            val messages=request.getJSONArray("messages")
+            val task=(0 until messages.length()).map(messages::getJSONObject).single { it.toString().contains("DYNAMIC_TASK_SENTINEL") }
+            assertEquals("user",task.getString("role"))
             checkSchema(request.getJSONArray("tools").getJSONObject(0).getJSONObject("input_schema"))
         } finally {server.stop(0)}
     }

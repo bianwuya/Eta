@@ -26,10 +26,18 @@ internal object SubagentPromptPolicy {
             "最终汇报实际结论或产物、可核验证据和未完成事项；失败、部分完成或未验证结果如实区分，不把尝试当成功。" +
             "使用任务要求的语言和清晰、克制的 Markdown，不输出无关探索流水。")
         if (tools.any { it in FILE_TOOLS }) {
-            add("文件操作：准确路径直接读取；需要定位时用已公开的目录或检索工具，不连续猜名。" +
-                "文本续读使用返回的准确游标和版本；修改前保留已有工作，不把新文件不存在当作权限拒绝。" +
-                "文件工具按 environment 解析路径：Linux /workspace、/root 等用 environment=\"linux\"，Android宿主路径用 environment=\"android\"。" +
-                "共享挂载是同一个物理目录，切换环境而不重复复制。" + executionDescription)
+            add(buildString {
+                append("文件操作：")
+                if ("read_file" in tools) append("准确路径直接读取；文本续读使用返回的准确位置和版本。")
+                if (tools.any { it in setOf("list_directory", "glob_files", "grep_files") }) {
+                    append("需要定位时用已公开的目录或检索工具，不连续猜名。")
+                }
+                if ("write_file" in tools || "edit_file" in tools) append("修改前保留已有工作。")
+                append("不把新文件不存在当作权限拒绝。")
+                append("文件工具按 environment 解析路径：Linux /workspace、/root 等用 environment=\"linux\"，Android宿主路径用 environment=\"android\"。")
+                append("共享挂载是同一个物理目录，切换环境而不重复复制。")
+                append(executionDescription)
+            })
         }
         if ("terminal" in tools) {
             add("终端操作：$rootInstructions" +
