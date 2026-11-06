@@ -83,7 +83,17 @@ class RichWebViewPolicyTest {
                 assertNull(view.webViewClient.shouldInterceptRequest(view, request(url)))
                 assertEquals(403, view.webViewClient.shouldInterceptRequest(view, request(url, mainFrame = true))!!.statusCode)
             }
+            assertEquals(403, view.webViewClient.shouldInterceptRequest(view, request("data:text/html,<script>bad()</script>"))!!.statusCode)
+            assertEquals(403, view.webViewClient.shouldInterceptRequest(view, request("data:application/javascript,alert(1)"))!!.statusCode)
+            val doc = org.jsoup.Jsoup.parse(previewHtml("<h1>正文</h1>"))
+            val csp = doc.selectFirst("meta[http-equiv=Content-Security-Policy]")!!.attr("content")
+            assertTrue(csp.contains("font-src 'self' data:"))
+            assertTrue(csp.contains("frame-src 'none'"))
+            assertTrue(csp.contains("object-src 'none'"))
+        } finally { view.release() }
+    }
     @Test fun chromiumInternalMainDocumentIsAdmittedOncePerActualShow() {
+        assertEquals("data:text/html;charset=utf-8;base64,", INLINE_DOCUMENT_URL)
         val view = RichWebView(RuntimeEnvironment.getApplication(), false)
         val internal = request(INLINE_DOCUMENT_URL, mainFrame = true)
         try {
@@ -152,15 +162,6 @@ class RichWebViewPolicyTest {
         client.onReceivedHttpError(view, request(PREVIEW_URL, mainFrame = true), httpError)
         client.onReceivedError(view, request(PREVIEW_URL, mainFrame = true), PreviewTestWebResourceError())
         assertEquals(1, failures.size)
-    }
-            assertEquals(403, view.webViewClient.shouldInterceptRequest(view, request("data:text/html,<script>bad()</script>"))!!.statusCode)
-            assertEquals(403, view.webViewClient.shouldInterceptRequest(view, request("data:application/javascript,alert(1)"))!!.statusCode)
-            val doc = org.jsoup.Jsoup.parse(previewHtml("<h1>正文</h1>"))
-            val csp = doc.selectFirst("meta[http-equiv=Content-Security-Policy]")!!.attr("content")
-            assertTrue(csp.contains("font-src 'self' data:"))
-            assertTrue(csp.contains("frame-src 'none'"))
-            assertTrue(csp.contains("object-src 'none'"))
-        } finally { view.release() }
     }
     @Test fun mainFrameErrorsAreReportedButSubresourceErrorsAreNot() {
         var failures = 0

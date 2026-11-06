@@ -189,6 +189,7 @@ internal class RichWebView(context: Context, scripts: Boolean, onBlocked: () -> 
         removeAllViews()
         destroy()
     }
+}
 
 internal data class PreviewFailure(val stage: String, val code: Int? = null) {
     val summary: String get() = when (stage) {
@@ -209,7 +210,6 @@ internal fun isPreviewOrigin(uri: Uri): Boolean = uri.scheme == "https" && uri.h
     uri.port in setOf(-1, 443) && uri.userInfo == null
 
 internal fun isPreviewDocument(uri: Uri): Boolean = isPreviewOrigin(uri) && uri.path == "/content/document.html"
-}
 
 /**
  * WebView 在 onDraw 里回报内容高度，而容器高度又由这个值决定：任何 1px 的测量抖动都会变成
