@@ -98,7 +98,7 @@ internal object AgentRunCheckpointStore {
                         operation = stored.run.operation,
                         rewriteTargetMessageId = stored.run.rewriteTargetMessageId,
                         transcript = AgentSubagentCheckpoint.recover(context, stored.run.runId,
-                            AgentConversationCodec.decodeTranscript(stored.run.transcriptJson)),
+                            AgentConversationCodec.decodeTranscript(stored.run.transcriptJson), finalize = false),
                         handoff = AgentRuntimeWire.EntryHandoff(
                             id = stored.run.handoffId,
                             source = stored.run.handoffSource,
@@ -139,7 +139,8 @@ internal object AgentRunCheckpointStore {
                     handoff = checkpoint.handoff,
                     events = checkpoint.events,
                     result = AgentRuntimeWire.RunResult(runId = checkpoint.runId, ok = false, content = "",
-                        error = "运行已中断；子任务不会自动重跑。", transcript = checkpoint.transcript,
+                        error = "运行已中断；子任务不会自动重跑。",
+                        transcript = AgentSubagentCheckpoint.recover(context, checkpoint.runId, checkpoint.transcript),
                         contextSnapshot = checkpoint.contextSnapshot, operation = checkpoint.operation,
                         rewriteTargetMessageId = checkpoint.rewriteTargetMessageId),
                     createdAt = checkpoint.createdAt,

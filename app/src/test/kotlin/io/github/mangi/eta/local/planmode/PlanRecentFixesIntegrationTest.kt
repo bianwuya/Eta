@@ -58,7 +58,7 @@ class PlanRecentFixesIntegrationTest {
     private fun answer(text: String) = ProviderResponse(JSONObject().put("role", "assistant")
         .put("content", text).put("finish_reason", "stop"))
     private fun schema(name: String) = AgentToolSchema.function(name, "fixture", JSONObject().put("type", "object"))
-    private fun schemas() = JSONArray().put(AgentSubagentToolCatalog.schema()).put(schema("terminal"))
+    private fun schemas(groupsSupported: Boolean = false) = JSONArray().put(AgentSubagentToolCatalog.schema(groupsSupported = groupsSupported)).put(schema("terminal"))
         .put(schema("ask_user_questions")).also(PlanRunGate::schemas)
     private fun provider(script: (ProviderRequest, Int) -> ProviderResponse) = object : AgentProviderClient {
         override val id = "integration-fixture"
@@ -162,6 +162,38 @@ class PlanRecentFixesIntegrationTest {
                 .getString("prompt_cache_key") }.distinct().size)
             assertEquals("completed", PlanModeStore.current("integration-run")!!.steps.first { it.id == "independent" }.status)
         } finally { release.countDown(); controller.cancel(); owner.close(); runner.join(5000) }
+    }
+
+    @Test fun jointReportSettlesEachOriginalApprovedChildRatherThanGroupKey() {
+        val argsA = JSONObject(childArguments.toString()).put("group_key", "batch").put("description", "a")
+        val argsB = JSONObject(childArguments.toString()).put("group_key", "batch").put("description", "b")
+        approve(PlanStep("a", "A", actions = listOf(action("subagent", argsA))),
+            PlanStep("b", "B", actions = listOf(action("subagent", argsB))))
+        val owner = YieldableSubagents(controller, Persistence(), parentRunId = "integration-run") { call, started ->
+            started("child-${call.id}", "")
+            if (call.id == "launch-a") completedChild("a-complete") else {
+                val semantic = io.github.mangi.eta.local.subagentcontext.SubagentTaskResult.fromFinal(
+                    "task_status: partial\nsummary: b-partial\nevidence: fixture:2\nremaining: device verification\nnext_action: verify")
+                AgentModelClient.ToolResult(semantic.attach(JSONObject().put("ok", true).put("status", "completed")).toString())
+            }
+        }
+        val model = provider { _, round -> when (round) {
+            1 -> tools(begin("a"), call("launch-a", "subagent", argsA))
+            2 -> tools(begin("b"), call("launch-b", "subagent", argsB))
+            3 -> answer("no independent work remains")
+            4 -> answer("joint inspected")
+            else -> error("extra model call")
+        } }
+        try {
+            val response = AgentModelClient.complete(config, "goal", AgentModelClient.ToolExecutor { error("not delegated") },
+                provider = model, runController = controller, planGate = gate, yieldableSubagents = owner,
+                additionalTools = schemas(groupsSupported = true))
+            assertEquals(1, response.transcript.count { it.messageId.startsWith("subagent-report-group-") })
+            val plan = PlanModeStore.current("integration-run")!!
+            assertEquals("completed", plan.steps.first { it.id == "a" }.status)
+            assertNotEquals("completed", plan.steps.first { it.id == "b" }.status)
+            assertTrue(plan.steps.none { it.status == "waiting_child" })
+        } finally { controller.cancel(); owner.close() }
     }
 
     @Test fun unansweredQuestionWithYieldableOwnerBlocksSameBatchLaunchAndWriteButKeepsIndependentApproval() {

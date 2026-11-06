@@ -76,4 +76,32 @@ class YieldableSignedProviderTest {
         assertTrue(GeminiEphemeralState.hasPendingToolResponse(messages))
         assertTrue(AnthropicEphemeralState.hasPendingToolResponse(messages))
     }
+
+    @Test fun stableJointReportIdUsesExistingSignedRuntimeInputPathWithoutChangingToolPair() {
+        val child = signedAssistant()
+        GeminiEphemeralState.attachSteps(child, JSONArray().put(JSONObject().put("type", "function_call").put("id", "child").put("name", "subagent")))
+        val before = child.toString()
+        val result = io.github.mangi.eta.local.subagentcontext.SubagentTaskResult.fromFinal(
+            "task_status: completed\nsummary: grouped\nevidence: fixture:1\nremaining: -\nnext_action: -")
+        val group = io.github.mangi.eta.local.subagentcontext.SubagentTaskGroup
+        val joint = JSONObject().put("role", "assistant").put("_eta_message_id", group.messageId("parent", "batch"))
+            .put("content", group.report("parent", "batch", listOf(
+                io.github.mangi.eta.local.subagentcontext.SubagentTaskGroup.Member("task", "child", "sub", result, true, "completed"))))
+        val history = JSONArray().put(AgentConversationCodec.userTextMessage("goal")).put(child)
+            .put(JSONObject().put("role", "tool").put("tool_call_id", "child").put("content", "accepted")).put(joint)
+        assertTrue(SignedToolContext.hasPendingResponse(history))
+        val projected = AssistantScreenContextProjection.project(history)
+        assertEquals(before, child.toString()); assertEquals(before, projected.getJSONObject(1).toString())
+        assertEquals("user", projected.getJSONObject(3).getString("role"))
+        assertTrue(projected.getJSONObject(3).getBoolean("_eta_runtime_report"))
+        assertEquals("child", projected.getJSONObject(2).getString("tool_call_id"))
+        val method = AnthropicMessagesProvider::class.java.getDeclaredMethod("buildRequestJson",
+            AgentModelClient.ModelConfig::class.java, JSONArray::class.java, JSONArray::class.java).apply { isAccessible = true }
+        val body = method.invoke(AnthropicMessagesProvider, config, projected, JSONArray()) as JSONObject
+        val turns = body.getJSONArray("messages")
+        assertEquals("SIGNATURE", turns.getJSONObject(1).getJSONArray("content").getJSONObject(0).getString("signature"))
+        assertEquals("tool_result", turns.getJSONObject(2).getJSONArray("content").getJSONObject(0).getString("type"))
+        val gemini = GeminiInteractionHistory.input(projected).toString()
+        assertTrue(gemini.contains("function_result")); assertTrue(gemini.contains("full_report_ref:"))
+    }
 }

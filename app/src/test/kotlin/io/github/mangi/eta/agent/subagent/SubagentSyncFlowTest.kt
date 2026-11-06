@@ -20,7 +20,7 @@ class SubagentSyncFlowTest {
             tools.getJSONObject(index).getJSONObject("function").getString("name")
         }
         assertEquals(listOf(AgentSubagentToolCatalog.TOOL_NAME, AgentSubagentToolCatalog.PROFILE_TOOL_NAME, AgentSubagentToolCatalog.CONTROL_TOOL_NAME), names)
-        assertEquals(setOf("subagent", "subagent_profile", "subagent_control"), AgentSubagentToolCatalog.names)
+        assertEquals(setOf("subagent", "subagent_profile", "subagent_control", "subagent_seal_group"), AgentSubagentToolCatalog.names)
         assertTrue("subagent_control" in AgentSubagentToolCatalog.names)
         assertFalse("subagent_report" in AgentSubagentToolCatalog.names)
 

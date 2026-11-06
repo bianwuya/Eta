@@ -73,6 +73,7 @@ internal data class SubagentProfile(
             AgentSubagentToolCatalog.TOOL_NAME,
             AgentSubagentToolCatalog.PROFILE_TOOL_NAME,
             AgentSubagentToolCatalog.CONTROL_TOOL_NAME,
+            AgentSubagentToolCatalog.SEAL_GROUP_TOOL_NAME,
             // Cross-conversation messaging stays a parent-only capability; children must not message
             // other conversations or recursively wake each other.
             "conversation_list",

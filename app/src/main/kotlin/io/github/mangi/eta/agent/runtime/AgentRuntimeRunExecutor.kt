@@ -341,8 +341,9 @@ internal class AgentRuntimeRunExecutor(
                     )
                 },
             )
+            val supportsChildGroups = checkpointRecorder != null && request.operation == AgentRuntimeWire.OP_CHAT
             val runTools = JSONArray(mcpTools.toString()).also { tools ->
-                if (subagentAllowed()) AgentSubagentToolCatalog.appendSchemas(tools)
+                if (subagentAllowed()) AgentSubagentToolCatalog.appendSchemas(tools, groupsSupported = supportsChildGroups)
                 if (historyTool != null) tools.put(AgentConversationToolCatalog.schema())
                 if (conversationTools != null) ConversationMessagingToolCatalog.appendSchemas(tools)
                 if (characterMemoryTools != null && memoryEnabled) CharacterMemoryTools.appendSchemas(tools)
@@ -358,6 +359,9 @@ internal class AgentRuntimeRunExecutor(
                                 "需要时请让用户在当前会话直接授权")
                             .toString(),
                     )
+                } else if (call.name == AgentSubagentToolCatalog.SEAL_GROUP_TOOL_NAME) {
+                    childOwner?.sealGroup(call) ?: AgentModelClient.ToolResult(JSONObject().put("ok", false)
+                        .put("code", "SUBAGENT_GROUP_UNAVAILABLE").put("message", "当前运行不支持持久化关联组。").toString())
                 } else if (call.name == AgentSubagentToolCatalog.CONTROL_TOOL_NAME) {
                     // Disabling future delegation must not block the parent from stopping
                     // children that are already running in this run.
@@ -390,7 +394,7 @@ internal class AgentRuntimeRunExecutor(
             }
             // UI and archive-capable external handoffs have durable in-flight recovery. A caller
             // without a recoverable handoff retains the synchronous protocol.
-            if (checkpointRecorder != null && request.operation == AgentRuntimeWire.OP_CHAT) {
+            if (supportsChildGroups) {
                 val store = AgentSubagentCheckpoint(appContext, request.runId) { runController.isCancelled }
                 childCheckpoint = store
                 session.setChildRecovery { transcript -> AgentSubagentCheckpoint.recover(appContext, request.runId, transcript) }
@@ -398,6 +402,7 @@ internal class AgentRuntimeRunExecutor(
                     controller = runController,
                     persistence = store,
                     cancelChildren = childController::cancel,
+                    parentRunId = request.runId,
                     execute = { call, started ->
                         if (!subagentAllowed()) {
                             AgentModelClient.ToolResult(JSONObject().put("ok", false).put("code", "SUBAGENT_DISABLED")

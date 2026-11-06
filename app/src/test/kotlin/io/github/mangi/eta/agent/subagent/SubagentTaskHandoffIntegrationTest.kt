@@ -302,6 +302,19 @@ class SubagentTaskHandoffIntegrationTest {
         }
     }
 
+    @Test fun synchronousExecutorRejectsGroupBeforeCreatingSessionOrCallingProvider() {
+        val f = Fixture()
+        try {
+            val invocation = AgentModelClient.ToolCall("unsupported-group", "subagent", JSONObject()
+                .put("prompt", "inspect").put("description", "inspect").put("group_key", "batch").toString())
+            val response = f.executor.execute(1, invocation) { _, _ -> f.started.incrementAndGet() }
+            val result = JSONObject(response.content)
+            assertEquals("SUBAGENT_GROUP_UNAVAILABLE", result.getString("code"))
+            assertEquals(0, f.started.get()); assertEquals(0, f.factories.get()); assertTrue(f.requests.isEmpty())
+            assertEquals(0, f.tools.get())
+        } finally { f.parent.cancel() }
+    }
+
     @Test fun handoffSchemaRemainsOptionalAndDoesNotReplaceLegacyOrControlFields() {
         val fn=AgentSubagentToolCatalog.schema(SubagentProfile.BUILTIN_PROFILES).getJSONObject("function")
         val parameters=fn.getJSONObject("parameters")

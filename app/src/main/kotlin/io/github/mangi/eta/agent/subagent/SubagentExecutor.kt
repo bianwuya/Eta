@@ -58,6 +58,8 @@ internal class SubagentExecutor(
         parentController.throwIfCancelled()
         val args = runCatching { JSONObject(toolCall.argumentsJson) }.getOrNull()
             ?: return failureResult(toolCall, "INVALID_ARGUMENTS", "subagent 参数必须是合法的 JSON 对象")
+        if (args.has("group_key")) return failureResult(toolCall, "SUBAGENT_GROUP_UNAVAILABLE",
+            "当前调用没有持久化父运行 owner；未启动分组任务。请去除 group_key 使用原同步路径。")
 
         val prompt = args.optString("prompt").trim()
         val description = args.optString("description").trim()
