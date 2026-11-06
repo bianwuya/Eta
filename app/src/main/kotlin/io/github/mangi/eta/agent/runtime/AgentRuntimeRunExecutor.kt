@@ -94,6 +94,12 @@ internal class AgentRuntimeRunExecutor(
         val childCancellation = runController.registerChild(childController)
         val timing = AgentRunTiming(AndroidAgentLogger)
         var planGate: io.github.mangi.eta.local.planmode.PlanRunGate? = null
+        fun endPlan(completedRun: Boolean) {
+            if (planGate == null) return
+            runCatching { io.github.mangi.eta.local.planmode.PlanModeStore.end(request.runId, completedRun) }
+                .onFailure { AndroidAgentLogger.error("Plan run final state persistence failed: type=${it.safeLogType()}") }
+            io.github.mangi.eta.local.planmode.PlanModeStore.unlisten(request.runId)
+        }
 
         val result = try {
             val contextWindow = request.config.knownContextWindow
@@ -520,12 +526,7 @@ internal class AgentRuntimeRunExecutor(
                 rewriteTargetMessageId = request.rewriteTargetMessageId,
             )
         } finally {
-            if (planGate != null) {
-                planGate.end()
-                runCatching { io.github.mangi.eta.local.planmode.PlanModeStore.end(request.runId, completedRun = response != null && !cancelled) }
-                    .onFailure { AndroidAgentLogger.error("Plan run final state persistence failed: type=${it.safeLogType()}") }
-                io.github.mangi.eta.local.planmode.PlanModeStore.unlisten(request.runId)
-            }
+            planGate?.end()
             runCatching { childOwner?.close() }
             runCatching { childController.cancel() }
             childCancellation.close()
@@ -536,6 +537,7 @@ internal class AgentRuntimeRunExecutor(
         }
 
         if (cancelled && session.isTerminal) {
+            endPlan(completedRun = false)
             runCatching {
                 persistArtifacts(snapshotRequest(request), result, archivedEvents.orEmpty())
             }.onFailure { throwable ->
@@ -558,25 +560,29 @@ internal class AgentRuntimeRunExecutor(
                 )
                 request
             }
-        val committed = session.complete(result) {
+        var committedResult = result
+        val committed = session.complete(result) { resolved ->
+            committedResult = resolved
+            endPlan(completedRun = resolved.ok)
             runCatching { synchronized(this) { checkpointRecorder?.seal() } }
                 .onFailure { throwable ->
                     AndroidAgentLogger.error(
                         "Agent runtime checkpoint seal failed: type=${throwable.safeLogType()}"
                     )
                 }
-            runCatching { persistArtifacts(completedRequest, result, archivedEvents.orEmpty()) }
+            runCatching { persistArtifacts(completedRequest, resolved, archivedEvents.orEmpty()) }
                 .onFailure { throwable ->
                     AndroidAgentLogger.error(
                         "Agent runtime artifact persistence failed: type=${throwable.safeLogType()}"
                     )
                 }
         }
+        if (!committed) endPlan(completedRun = false)
         return Outcome(
-            result = result,
+            result = committedResult,
             entrySurfaceGuard = entrySurfaceGuard,
             completedRequest = completedRequest.takeIf { committed },
-            response = response.takeIf { committed },
+            response = response.takeIf { committed && committedResult.ok },
             shouldUpdateHost = committed,
         )
     }
@@ -589,9 +595,7 @@ internal class AgentRuntimeRunExecutor(
         entrySurfaceGuard: EntrySurfaceGuard?,
         checkpointRecorder: AgentRunCheckpointRecorder?,
     ) {
-        if (session.isTerminal || session.isCommitting) return
-        checkpointRecorder?.accept(event)
-        if (!session.emit(event)) return
+        if (!session.emit(event) { checkpointRecorder?.accept(event) }) return
         if (event !is AgentEvent.GuiControlChanged) archivedEvents?.add(event)
         if (event is AgentEvent.ModelRetryScheduled) {
             AndroidAgentLogger.warn("Agent runtime event: ${event.toLogLine()}")
