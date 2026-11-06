@@ -273,6 +273,9 @@ internal class AgentLoop(
 
             publishTranscript()
             if (purpose.allowsTools) context.compact(final = true)
+            // Cancellation can remove the last pending child between the transcript callback
+            // and hasPending(); never turn that terminal race into a successful answer.
+            runController.throwIfCancelled()
             onEvent(AgentEvent.RunFinished(round = round, contentChars = content.length))
             return Result(
                 content = content,

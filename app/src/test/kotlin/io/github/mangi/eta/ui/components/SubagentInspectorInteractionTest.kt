@@ -78,6 +78,9 @@ class SubagentInspectorInteractionTest {
 
         // The live inspector keeps only the newest twelve; the first item drops when a
         // new step arrives. Stable step IDs must keep the reader on the same item.
+        // ScrollToIndex semantics animates. Let that explicit user scroll settle before
+        // measuring whether an unrelated streaming update moves the idle reader.
+        fixture.advance(60)
         val anchoredTop = fixture.topOfText("步骤编号 5")
         snapshot.value = snapshot.value.copy(steps = steps.drop(1) + SubagentStepSnapshot(
             id = "new", kind = SubagentStepSnapshot.KIND_TOOL, title = "新增流式步骤"))
