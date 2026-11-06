@@ -5,6 +5,8 @@ import android.os.Looper
 import android.content.Context
 import android.view.WindowManager
 import androidx.compose.ui.platform.ComposeView
+import androidx.lifecycle.setViewTreeLifecycleOwner
+import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.agent.overlay.AgentOverlayPhase
 import io.github.mangi.eta.agent.overlay.AgentOverlayState
@@ -30,7 +32,10 @@ class AgentRuntimeScreenOnTest {
         try {
             val service = serviceController.get()
             val session = service.registerRun("active-run").session
-            val capsule = ComposeView(service)
+            val capsule = ComposeView(service).apply {
+                setViewTreeLifecycleOwner(service)
+                setViewTreeSavedStateRegistryOwner(service)
+            }
             val wm = service.getSystemService(Context.WINDOW_SERVICE) as WindowManager
             val params = WindowManager.LayoutParams().apply {
                 type = WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY

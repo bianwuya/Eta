@@ -31,6 +31,41 @@ import org.robolectric.annotation.Config
 @Config(sdk = [36])
 class AgentLocalToolsPermissionTest {
     @Test
+    fun accessibilityRejectionFromNewGuiGateInvalidatesObservationWithoutOwnershipChange() {
+        listOf("ACCESSIBILITY_UNAVAILABLE", "ACCESSIBILITY_PROTECTION_UNAVAILABLE", "ACCESSIBILITY_REPAIR_TIMEOUT")
+            .forEach { code ->
+                val coordinator = GuiControlCoordinator()
+                val control = coordinator.openRun("gui-test", AgentRunController())
+                var accessible = true
+                var observations = 0
+                tools(guiControl = control, beforeGuiAction = { _, _ ->
+                    if (accessible) ToolExecutionDecision.Allow
+                    else ToolExecutionDecision.Reject(code, "not performed")
+                }, screenObservationProvider = {
+                    observations++
+                    observation("before-disconnect", it.includeScreenshot)
+                }).use { tools ->
+                    fun call(name: String, args: String = "{}") = JSONObject(tools.execute(
+                        AgentModelClient.ToolCall(name, name, args)).content)
+                    assertTrue(call("observe_screen").getBoolean("ok"))
+                    val generation = control.withAction { it }
+                    accessible = false
+                    assertEquals(code, call("observe_screen").getString("code"))
+                    assertEquals(1, observations)
+                    accessible = true
+                    assertEquals(generation, control.withAction { it })
+                    assertEquals("gui-test", coordinator.state.value.ownerRunId)
+                    assertEquals("NO_OBSERVATION", call("tap",
+                        """{"x":10,"y":20,"coordinate_space":"screen"}""").getString("code"))
+                    assertEquals("NO_OBSERVATION", call("tap_element",
+                        """{"index":0,"observation_id":"before-disconnect"}""").getString("code"))
+                    assertTrue(call("observe_screen").getBoolean("ok"))
+                    assertEquals(2, observations)
+                }
+            }
+    }
+
+    @Test
     fun gesturesReconfirmPresentationAfterTheClearanceWaitBeforeInjection() {
         var confirmations = 0
         val image = AgentModelClient.ModelImage("data:image/webp;base64,AA==", "image/webp", 1,

@@ -53,28 +53,47 @@ internal object AgentOverlayClearance {
     fun <T> around(area: Rect, gesture: () -> T): T {
         val current = host ?: return gesture()
         if (Looper.myLooper() == Looper.getMainLooper()) return gesture()
+        val deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(MAX_WAIT_MS)
         val identity = current.presentationIdentity()
         val yielded = AtomicBoolean(false)
         val pending = AtomicBoolean(true)
         val failure = AtomicReference<Rejected?>()
         val ready = CountDownLatch(1)
-        current.post {
-            if (!pending.compareAndSet(true, false) || identity != current.presentationIdentity()) {
+        fun preparationIsCurrent(): Boolean {
+            if (!pending.get() || System.nanoTime() >= deadlineNanos) {
+                failure.set(Rejected("GUI_CLEARANCE_TIMEOUT", "未能及时确认操作提示让路，本次手势未执行"))
+                return false
+            }
+            if (identity != current.presentationIdentity()) {
                 failure.set(Rejected("GUI_PRESENTATION_STALE", "操作提示归属已变化，本次手势未执行"))
+                return false
+            }
+            return true
+        }
+        current.post {
+            try {
+                if (!preparationIsCurrent()) return@post
+                val bounds = current.capsuleTouchBounds()
+                // Bounds lookup may block past the worker's deadline. Recheck before each effect.
+                if (!preparationIsCurrent()) return@post
+                if (bounds != null && Rect.intersects(bounds, area)) {
+                    if (!preparationIsCurrent()) return@post
+                    current.cancelRestore()
+                    if (!preparationIsCurrent()) return@post
+                    if (current.yieldCapsule()) yielded.set(true)
+                    else failure.set(Rejected("GUI_PRESENTATION_FAILED", "操作提示让路失败，本次手势未执行"))
+                }
+            } finally {
                 ready.countDown()
-                return@post
             }
-            val bounds = current.capsuleTouchBounds()
-            if (bounds != null && Rect.intersects(bounds, area)) {
-                current.cancelRestore()
-                if (current.yieldCapsule()) yielded.set(true)
-                else failure.set(Rejected("GUI_PRESENTATION_FAILED", "操作提示让路失败，本次手势未执行"))
-            }
-            ready.countDown()
         }
         return try {
-            if (!ready.await(MAX_WAIT_MS, TimeUnit.MILLISECONDS)) {
+            val remainingNanos = (deadlineNanos - System.nanoTime()).coerceAtLeast(0L)
+            if (!ready.await(remainingNanos, TimeUnit.NANOSECONDS)) {
                 pending.set(false)
+                throw Rejected("GUI_CLEARANCE_TIMEOUT", "未能及时确认操作提示让路，本次手势未执行")
+            }
+            if (System.nanoTime() >= deadlineNanos) {
                 throw Rejected("GUI_CLEARANCE_TIMEOUT", "未能及时确认操作提示让路，本次手势未执行")
             }
             failure.get()?.let { throw it }

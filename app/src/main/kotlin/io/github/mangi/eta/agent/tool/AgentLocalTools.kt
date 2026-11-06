@@ -235,7 +235,7 @@ internal class AgentLocalTools(
             when (val decision = preparation) {
                 ToolExecutionDecision.Allow -> Unit
                 is ToolExecutionDecision.Reject -> {
-                    if (decision.code.startsWith("ACCESSIBILITY_")) publishedObservation.set(PublishedObservation())
+                    invalidateObservationOnRejection(decision)
                     return@runCatching textResult(
                         errorResult(
                             code = decision.code,
@@ -378,10 +378,15 @@ internal class AgentLocalTools(
                 (guiControl == null || (generation != null && guiControl.isActionCurrent(generation)))
         }
         val decision = beforeGuiAction(toolName, isCurrent)
+        if (decision is ToolExecutionDecision.Reject) invalidateObservationOnRejection(decision)
         if (runController.isCancelled) throw AgentRunCancelledException()
         return if (decision == ToolExecutionDecision.Allow && !isCurrent()) {
             ToolExecutionDecision.Reject("GUI_PRESENTATION_STALE", "手机操作权已变化，本次未执行；请重新观察")
         } else decision
+    }
+
+    private fun invalidateObservationOnRejection(decision: ToolExecutionDecision.Reject) {
+        if (decision.code.startsWith("ACCESSIBILITY_")) publishedObservation.set(PublishedObservation())
     }
 
     private fun deviceToolPermissionError(

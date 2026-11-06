@@ -8,6 +8,8 @@ import android.view.View
 import android.view.ViewGroup
 import androidx.compose.runtime.MutableState
 import androidx.compose.ui.platform.ComposeView
+import androidx.lifecycle.setViewTreeLifecycleOwner
+import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.agent.overlay.AgentOverlayPhase
 import io.github.mangi.eta.agent.overlay.AgentOverlayState
@@ -217,7 +219,10 @@ class AgentRuntimeGuiPresentationTest {
     }
 
     private fun AgentRuntimeService.attachTestCapsule(): Pair<ComposeView, WindowManager.LayoutParams> {
-        val view = ComposeView(this)
+        val view = ComposeView(this).apply {
+            setViewTreeLifecycleOwner(this@attachTestCapsule)
+            setViewTreeSavedStateRegistryOwner(this@attachTestCapsule)
+        }
         val params = WindowManager.LayoutParams().apply {
             width = 200
             height = 80

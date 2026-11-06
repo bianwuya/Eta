@@ -6,6 +6,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -17,6 +18,58 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [36])
 class AgentOverlayClearanceTest {
+    @Test
+    fun boundsLookupAlreadyRunningWhenDeadlineExpiresCannotPerformLateWindowEffects() {
+        val boundsEntered = CountDownLatch(1)
+        val releaseBounds = CountDownLatch(1)
+        val started = CountDownLatch(1)
+        val cancellations = AtomicInteger()
+        val yields = AtomicInteger()
+        val restores = AtomicInteger()
+        val gestures = AtomicInteger()
+        val host = object : AgentOverlayClearance.Host {
+            override fun capsuleTouchBounds(): Rect {
+                boundsEntered.countDown()
+                assertTrue(releaseBounds.await(3, TimeUnit.SECONDS))
+                return Rect(0, 0, 100, 100)
+            }
+            override fun yieldCapsule(): Boolean { yields.incrementAndGet(); return true }
+            override fun cancelRestore() { cancellations.incrementAndGet() }
+            override fun scheduleCapsuleRestore(delayMs: Long) { restores.incrementAndGet() }
+        }
+        val workers = Executors.newFixedThreadPool(2)
+        AgentOverlayClearance.attach(host)
+        try {
+            val result = workers.submit<String> {
+                started.countDown()
+                AgentOverlayClearance.around(Rect(1, 1, 2, 2)) {
+                    gestures.incrementAndGet()
+                    "must not inject"
+                }
+            }
+            // Main will block inside bounds. This worker releases it only AFTER around timed out.
+            val observedTimeout = workers.submit<String> {
+                try {
+                    assertTrue("callback must enter bounds before worker timeout", boundsEntered.await(1, TimeUnit.SECONDS))
+                    try { result.get(2, TimeUnit.SECONDS); error("blocked bounds must time out") }
+                    catch (failure: ExecutionException) { (failure.cause as AgentOverlayClearance.Rejected).code }
+                } finally { releaseBounds.countDown() }
+            }
+            assertTrue(started.await(1, TimeUnit.SECONDS))
+            val dispatchDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(1)
+            while (boundsEntered.count > 0 && System.nanoTime() < dispatchDeadline) {
+                shadowOf(Looper.getMainLooper()).idle()
+                Thread.yield()
+            }
+            assertEquals("GUI_CLEARANCE_TIMEOUT", observedTimeout.get(3, TimeUnit.SECONDS))
+            shadowOf(Looper.getMainLooper()).idle()
+            assertEquals(0, gestures.get())
+            assertEquals(0, cancellations.get())
+            assertEquals(0, yields.get())
+            assertEquals(0, restores.get())
+        } finally { releaseBounds.countDown(); AgentOverlayClearance.detach(host); workers.shutdownNow() }
+    }
+
     @Test
     fun timedOutMainCallbackCannotYieldOrRestoreALaterCapsule() {
         val host = Host()
