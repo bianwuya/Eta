@@ -78,10 +78,12 @@ class SubagentInspectorInteractionTest {
 
         // The live inspector keeps only the newest twelve; the first item drops when a
         // new step arrives. Stable step IDs must keep the reader on the same item.
+        val anchoredTop = fixture.topOfText("步骤编号 5")
         snapshot.value = snapshot.value.copy(steps = steps.drop(1) + SubagentStepSnapshot(
             id = "new", kind = SubagentStepSnapshot.KIND_TOOL, title = "新增流式步骤"))
         fixture.advance(10)
         fixture.assertVisibleText("步骤编号 5")
+        assertEquals("streaming must preserve the visible step position", anchoredTop, fixture.topOfText("步骤编号 5"), 2f)
         fixture.clickDescription("收起任务信息")
         fixture.advance(20)
         assertFalse(fixture.hasText("任务信息"))
@@ -270,6 +272,7 @@ class SubagentInspectorInteractionTest {
             }
             true
         }
+        fun topOfText(text: String): Float = nodes().first { it.hasText(text) }.boundsInRoot.top
         fun assertBefore(first: String, second: String) {
             val a = nodes().first { it.hasText(first) }.boundsInRoot
             val b = nodes().first { it.hasText(second) }.boundsInRoot
@@ -278,9 +281,12 @@ class SubagentInspectorInteractionTest {
         fun clickText(text: String) = click { it.hasText(text) }
         fun clickDescription(description: String) = click { it.hasDescription(description) }
         private fun click(matches: (SemanticsNode) -> Boolean) {
-            val node = nodes().firstOrNull { matches(it) && it.config.contains(SemanticsActions.OnClick) }
-                ?: error("clickable node not found")
-            assertTrue(node.config[SemanticsActions.OnClick].action?.invoke() == true)
+            val all = nodes()
+            val target = all.firstOrNull(matches) ?: error("node not found")
+            var node: SemanticsNode? = target
+            while (node != null && !node.config.contains(SemanticsActions.OnClick)) node = node.parent
+            val clickable = requireNotNull(node) { "clickable node not found for target" }
+            assertTrue(clickable.config[SemanticsActions.OnClick].action?.invoke() == true)
             advance(4)
         }
         fun scrollToIndex(index: Int) {
