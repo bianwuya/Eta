@@ -530,8 +530,8 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
             operation = run.request.operation, rewriteTargetMessageId = run.request.rewriteTargetMessageId,
         )
         dispatchResultIo {
-            run.session.complete(result) {
-                runCatching { persistRunArtifacts(run.snapshotRequest(), result, emptyList()) }
+            run.session.complete(result) { committedResult ->
+                runCatching { persistRunArtifacts(run.snapshotRequest(), committedResult, emptyList()) }
                     .onFailure { throwable ->
                         AndroidAgentLogger.error("Agent runtime preparation result persistence failed: type=${throwable.safeLogType()}")
                     }
@@ -996,14 +996,13 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         if (runId.isBlank()) return
         val run = runs.get(runId) ?: return
         if (run.preparing) {
-            run.session.controller.cancel()
+            if (!run.session.requestStop()) return
             failBeforeExecution(run, "已停止")
             recordStopIfLastActive(run)
             return
         }
         val session = run.session
-        if (!session.isTerminal) {
-            session.controller.cancel()
+        if (session.requestStop()) {
             run.overlayState = run.overlayState.copy(status = AgentOverlayStatus.Stopping)
             if (displayedRun === run && !guiControl.state.value.userPaused) state.value = run.overlayState
             updateKeepScreenOn()

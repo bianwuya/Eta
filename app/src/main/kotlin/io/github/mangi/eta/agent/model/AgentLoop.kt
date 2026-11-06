@@ -89,6 +89,7 @@ internal class AgentLoop(
 
     fun compactOnly(): Result {
         context.compact(force = true)
+        runController.throwIfCancelled()
         return Result("", "", emptySet())
     }
 
@@ -236,6 +237,9 @@ internal class AgentLoop(
             }
 
             publishTranscript()
+            // Transcript callbacks and cancelled child cleanup can race with this boundary.
+            // Do not rely on hasPending()/awaitWorkAvailable() to observe cancellation.
+            runController.throwIfCancelled()
             // An edit arriving while the model is thinking must reach it at a complete boundary.
             if (purpose.allowsTools) {
                 val update = planGate?.editedPlanMessage()
@@ -273,7 +277,9 @@ internal class AgentLoop(
 
             publishTranscript()
             if (purpose.allowsTools) context.compact(final = true)
+            runController.throwIfCancelled()
             onEvent(AgentEvent.RunFinished(round = round, contentChars = content.length))
+            runController.throwIfCancelled()
             return Result(
                 content = content,
                 reasoningContent = reasoningSnapshot(),

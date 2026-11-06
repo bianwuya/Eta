@@ -61,6 +61,7 @@ internal class AgentRuntimeSession(
         if (state == State.RUNNING) { persist(); latestContext = snapshot }
     }
     private var state = State.RUNNING
+    private var stopRequested = false
     private val replayEvents = mutableListOf<AgentEvent>()
     private val searchSuggestionsBudget = SearchSuggestionsBudget()
     private val subscribers = mutableListOf<Subscriber>()
@@ -88,6 +89,9 @@ internal class AgentRuntimeSession(
     fun emit(event: AgentEvent): Boolean =
         lock.withLock {
             if (state != State.RUNNING) return false
+            if (event is AgentEvent.RunFinished && (stopRequested || controller.isCancelled)) {
+                throw AgentRunCancelledException()
+            }
             if (event is AgentEvent.SearchSuggestions &&
                 !searchSuggestionsBudget.accept(event.round, event.index, event.html)) return false
             recordForReplay(event)
@@ -165,6 +169,17 @@ internal class AgentRuntimeSession(
         }
     }
 
+    /** Stop execution without publishing a result before tools and children have drained. */
+    fun requestStop(): Boolean {
+        lock.withLock {
+            if (state != State.RUNNING || stopRequested) return false
+            stopRequested = true
+        }
+        // Never invoke resource callbacks while holding the session lock.
+        controller.cancel()
+        return true
+    }
+
     /**
      * 先原子竞争 COMMITTING，再完成提交前副作用和结果发布。取消与替换不能越过提交胜者，
      * 因而不会出现“客户端收到取消、outbox 却留下成功结果”的分裂状态；耗时 I/O 也不持有锁。
@@ -172,21 +187,25 @@ internal class AgentRuntimeSession(
      */
     fun complete(
         result: AgentRuntimeWire.RunResult,
-        beforePublish: () -> Unit = {},
+        beforePublish: (AgentRuntimeWire.RunResult) -> Unit = {},
     ): Boolean {
-        lock.withLock {
+        val committedResult = lock.withLock {
             if (state != State.RUNNING) return false
             require(result.runId == runId) { "Result runId does not match the active session" }
             state = State.COMMITTING
+            if (result.ok && (stopRequested || controller.isCancelled)) {
+                result.copy(ok = false, content = "", error = "已停止")
+            } else result
         }
-        val commitFailure = runCatching(beforePublish).exceptionOrNull()
+        if (stopRequested) controller.cancel()
+        val commitFailure = runCatching { beforePublish(committedResult) }.exceptionOrNull()
         lock.withLock {
             state = State.TERMINAL
         }
         // 客户端收到结果即可续发；释放会话占用不能晚于结果，也不能持锁回调宿主。
-        beforeTerminalPublish(result)
+        beforeTerminalPublish(committedResult)
         lock.withLock {
-            subscribers.forEach { it.resultSink(result) }
+            subscribers.forEach { it.resultSink(committedResult) }
             subscribers.clear()
             replayEvents.clear()
             searchSuggestionsBudget.clear()
