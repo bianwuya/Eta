@@ -51,6 +51,34 @@ class YieldableSubagentCheckpointTest {
         assertEquals(old, AgentSubagentCheckpoint.recover(context, run, old))
     }
 
+    @Test fun semanticResultsAreAtomicWithFullReportsAndResumeTaskIdsRemainDistinct() {
+        val run = "semantic-recovery"
+        val store = AgentSubagentCheckpoint(context, run)
+        val statuses = listOf("blocked", "completed")
+        statuses.forEachIndexed { index, status ->
+            val id = "task-$index"
+            val remaining = if (status == "completed") "-" else "verify"
+            val semantic = io.github.mangi.eta.local.subagentcontext.SubagentTaskResult.fromFinal(
+                "task_status: $status\nsummary: result-$index\nevidence: Source:1\nremaining: $remaining\nnext_action: -")
+            store.started(id, "call-$index", index + 1, "same-resumed-child", "inspect", "accepted-$index")
+            val full = "full-report-$index " + "x".repeat(150_000)
+            assertTrue(store.finished(id, full, semantic))
+            assertFalse(store.finished(id, "late-duplicate", semantic))
+        }
+        val recovered = AgentSubagentCheckpoint.recover(context, run, emptyList())
+        assertEquals(listOf("subagent-report-task-0", "subagent-report-task-1"), recovered.map { it.messageId })
+        assertTrue(recovered.all { it.content.length > 150_000 })
+        assertEquals(recovered, AgentSubagentCheckpoint.recover(context, run, recovered))
+        val dao = EtaDatabase.get(context).runtimeRunDao()
+        val raw = runBlocking { dao.textChunks("runtime_subagent_tasks_v1", run, "tasks", Int.MAX_VALUE, 0).joinToString("") { it.content } }
+        val stored = org.json.JSONArray(raw)
+        statuses.forEachIndexed { index, status ->
+            assertEquals(status, stored.getJSONObject(index).getString("task_status"))
+            assertEquals(status, stored.getJSONObject(index).getJSONObject("result").getString("status"))
+            assertTrue(stored.getJSONObject(index).getString("report").contains("full-report-$index"))
+        }
+    }
+
     @Test fun transcriptWriteReportsMissingInFlightRowAndPreservesCommittedSnapshot() {
         val run = "missing-transcript-row"
         val request = AgentRuntimeWire.RunRequest(runId = run, prompt = "test", images = emptyList(),

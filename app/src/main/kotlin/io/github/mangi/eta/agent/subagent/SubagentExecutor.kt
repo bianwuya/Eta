@@ -13,6 +13,7 @@ import io.github.mangi.eta.agent.tool.AgentToolCapabilities
 import io.github.mangi.eta.local.subagentdisplay.SubagentReadableText
 import io.github.mangi.eta.local.subagentcontext.SubagentTaskHandoff
 import io.github.mangi.eta.local.subagentcontext.AgentRunRole
+import io.github.mangi.eta.local.subagentcontext.SubagentTaskResult
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import org.json.JSONArray
@@ -191,11 +192,12 @@ internal class SubagentExecutor(
                 ),
             )
             return AgentModelClient.ToolResult(
-                content = JSONObject()
+                content = SubagentTaskResult.runtimeFailure(message).attach(JSONObject()
                     .put("ok", false)
                     .put("code", "SUBAGENT_CONFIG_ERROR")
+                    .put("status", SubagentActivitySnapshot.STATUS_FAILED)
                     .put("message", message)
-                    .toString(),
+                    ).toString(),
                 command = latestSnapshots[toolCall.id],
             )
         }
@@ -319,11 +321,23 @@ internal class SubagentExecutor(
             childController.throwIfCancelled()
             AgentModelClient.validateConfig(subagentConfig)
             onStarted(subagentId, latestSnapshots[toolCall.id].orEmpty())
+            var finalStopReason = io.github.mangi.eta.agent.model.AssistantStopReason.UNKNOWN
+            val delegate = providerFactory(subagentConfig)
+            val resultProvider = object : io.github.mangi.eta.agent.model.AgentProviderClient by delegate {
+                override fun complete(
+                    request: io.github.mangi.eta.agent.model.ProviderRequest,
+                    runController: AgentRunController,
+                    onEvent: (io.github.mangi.eta.agent.model.ProviderEvent) -> Unit,
+                ): io.github.mangi.eta.agent.model.ProviderResponse =
+                    delegate.complete(request, runController, onEvent).also {
+                        if (request.purpose == io.github.mangi.eta.agent.model.ProviderRequestPurpose.CHAT) finalStopReason = it.stopReason
+                    }
+            }
             val response = AgentModelClient.complete(
                 config = subagentConfig,
                 runRole = AgentRunRole.SUBAGENT,
                 provider = io.github.mangi.eta.local.subagentstats.SubagentRequestStats.provider(
-                    delegate = providerFactory(subagentConfig),
+                    delegate = resultProvider,
                     template = io.github.mangi.eta.local.subagentstats.SubagentRequestStat(
                         conversationId = conversationKey,
                         subagentId = subagentId,
@@ -393,9 +407,12 @@ internal class SubagentExecutor(
             SubagentSessionStore.complete(conversationKey, subagentId, updatedHistory)
             tracker.markCompleted(response.content)
             publishSnapshot(force = true)
+            childController.throwIfCancelled()
+            val taskResult = SubagentTaskResult.fromFinal(response.content,
+                finalStopReason == io.github.mangi.eta.agent.model.AssistantStopReason.END_TURN)
 
-            AgentModelClient.ToolResult(
-                content = JSONObject()
+            val result = AgentModelClient.ToolResult(
+                content = taskResult.attach(JSONObject()
                     .put("ok", true)
                     .put("subagent_id", subagentId)
                     .put("subagent_type", profile.name)
@@ -408,9 +425,10 @@ internal class SubagentExecutor(
                         "resume_hint",
                         "如需在此 Subagent 已有上下文基础上继续追问或深挖，可调用 subagent(resume=\"$subagentId\", prompt=\"...\", description=\"...\")。",
                     )
-                    .toString(),
+                    ).toString(),
                 command = latestSnapshots[toolCall.id],
             )
+            controlRegistry?.finish(subagentId, toolCall.id, result) ?: result
         } catch (throwable: Throwable) {
             val partial = (throwable as? AgentModelExecutionException)?.let { ex ->
                 val partialHistory = SubagentContinuation.history(
@@ -448,8 +466,8 @@ internal class SubagentExecutor(
             }
             publishSnapshot(force = true)
 
-            AgentModelClient.ToolResult(
-                content = JSONObject()
+            val result = AgentModelClient.ToolResult(
+                content = SubagentTaskResult.runtimeFailure(errorMessage).attach(JSONObject()
                     .put("ok", false)
                     .put("code", if (cancelled) "SUBAGENT_CANCELLED" else "SUBAGENT_FAILED")
                     .put("subagent_id", subagentId)
@@ -474,9 +492,17 @@ internal class SubagentExecutor(
                             )
                         }
                     }
-                    .toString(),
+                    ).toString(),
                 command = latestSnapshots[toolCall.id],
             )
+            try {
+                childController.throwIfCancelled()
+                controlRegistry?.finish(subagentId, toolCall.id, result) ?: result
+            } catch (cancelledAtPublication: AgentRunCancelledException) {
+                tracker.markCancelled(partial)
+                runCatching { publishSnapshot(force = true) }
+                throw cancelledAtPublication
+            }
         }
         } finally {
             runCatching { toolBinding?.close() }
@@ -619,11 +645,12 @@ internal class SubagentExecutor(
         code: String,
         message: String,
     ): AgentModelClient.ToolResult = AgentModelClient.ToolResult(
-        content = JSONObject()
+        content = SubagentTaskResult.runtimeFailure(message).attach(JSONObject()
             .put("ok", false)
             .put("code", code)
+            .put("status", SubagentActivitySnapshot.STATUS_FAILED)
             .put("message", message)
-            .toString(),
+            ).toString(),
         command = SubagentActivitySnapshot.failureFromArguments(toolCall.argumentsJson, message).encode()
             .also { latestSnapshots[toolCall.id] = it },
     )

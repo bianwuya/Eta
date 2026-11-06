@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.room.withTransaction
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.agent.subagent.YieldableSubagents
+import io.github.mangi.eta.local.subagentcontext.SubagentTaskResult
 import io.github.mangi.eta.data.db.EtaDatabase
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
@@ -27,8 +28,11 @@ internal class AgentSubagentCheckpoint(
             .put("prompt", prompt).put("state", "running")) }
     }
 
+    override fun finished(taskId: String, report: String): Boolean =
+        finished(taskId, report, SubagentTaskResult.fromEnvelope(null))
+
     @Synchronized
-    override fun finished(taskId: String, report: String): Boolean {
+    override fun finished(taskId: String, report: String, result: SubagentTaskResult): Boolean {
         // Stop sets the controller flag before it cancels children. This guard closes the gap
         // before interrupted() reaches the database; a completed record wins only before stop.
         if (stopped || parentCancelled()) return false
@@ -37,6 +41,7 @@ internal class AgentSubagentCheckpoint(
             val task = find(tasks, taskId) ?: error("子代理启动记录不存在")
             if (task.optString("state") == "running") {
                 task.put("state", "finished").put("report", report)
+                    .put("task_status", result.status.wire).put("result", result.json())
                 committed = true
             }
         }

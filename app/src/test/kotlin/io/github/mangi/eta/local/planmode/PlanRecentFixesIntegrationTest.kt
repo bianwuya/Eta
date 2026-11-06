@@ -68,6 +68,12 @@ class PlanRecentFixesIntegrationTest {
             script(request, rounds.incrementAndGet())
     }
     private fun action(name: String, args: JSONObject) = PlanAction(name, PlanRunGate.canonical(args))
+    private fun completedChild(marker: String): AgentModelClient.ToolResult {
+        val semantic = io.github.mangi.eta.local.subagentcontext.SubagentTaskResult.fromFinal(
+            "task_status: completed\nsummary: $marker\nevidence: fixture:1\nremaining: -\nnext_action: -")
+        return AgentModelClient.ToolResult(semantic.attach(JSONObject().put("ok", true)
+            .put("status", "completed").put("summary", marker)).toString())
+    }
     private fun approve(vararg steps: PlanStep) {
         val plan = PlanModeStore.propose("integration-chat", "integration-run", "Integration", "Exact approved actions", steps.toList())
         assertTrue(PlanModeStore.approve(plan.planId, plan.revision))
@@ -102,7 +108,7 @@ class PlanRecentFixesIntegrationTest {
         val owner = YieldableSubagents(controller, persistence) { _, started ->
             launches.incrementAndGet(); started("child-1", "")
             check(release.await(5, TimeUnit.SECONDS))
-            AgentModelClient.ToolResult("""{"ok":true,"status":"completed","summary":"complete-child-report"}""")
+            completedChild("complete-child-report")
         }
         val model = provider { request, round ->
             snapshots += request.copy(messages = JSONArray(request.messages.toString()), tools = JSONArray(request.tools.toString()))
@@ -250,7 +256,7 @@ class PlanRecentFixesIntegrationTest {
         val writes = AtomicInteger()
         val owner = YieldableSubagents(controller, persistence) { _, started ->
             started("child-1", ""); check(release.await(5, TimeUnit.SECONDS))
-            AgentModelClient.ToolResult("""{"ok":true,"status":"completed","summary":"verified-child-report"}""")
+            completedChild("verified-child-report")
         }
         val model = provider { request, round ->
             when (round) {
@@ -290,7 +296,7 @@ class PlanRecentFixesIntegrationTest {
         val writes = AtomicInteger()
         val owner = YieldableSubagents(controller, persistence) { _, started ->
             started("same-step-child", ""); check(release.await(5, TimeUnit.SECONDS))
-            AgentModelClient.ToolResult("""{"ok":true,"status":"completed","summary":"same-step-report"}""")
+            completedChild("same-step-report")
         }
         val model = provider { request, round ->
             when (round) {
