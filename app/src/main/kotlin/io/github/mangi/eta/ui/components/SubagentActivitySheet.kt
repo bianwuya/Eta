@@ -16,7 +16,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
@@ -213,6 +215,7 @@ internal fun SubagentInspectorContent(
     running: Boolean,
     failed: Boolean,
     onOpenDetails: () -> Unit,
+    stepsState: LazyListState = rememberLazyListState(),
 ) {
     val density = LocalDensity.current
     val maxSheetHeight = with(density) { LocalWindowInfo.current.containerSize.height.toDp() } * 0.76f
@@ -296,6 +299,7 @@ internal fun SubagentInspectorContent(
             }
         }
         LazyColumn(
+            state = stepsState,
             modifier = Modifier.fillMaxWidth().weight(1f, fill = false),
         ) {
             // Reuse the main chat timeline, composing only visible execution steps.

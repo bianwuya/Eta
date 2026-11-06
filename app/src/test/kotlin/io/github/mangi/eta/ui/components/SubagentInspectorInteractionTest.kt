@@ -8,6 +8,7 @@ import android.view.ViewGroup
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.runtime.BroadcastFrameClock
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Recomposer
@@ -60,9 +61,10 @@ class SubagentInspectorInteractionTest {
         }
         val snapshot = mutableStateOf(SubagentActivitySnapshot(subagentId = "child-scroll", detailId = "detail-scroll",
             steps = steps, prompt = "任务指令测试"))
+        val stepsState = LazyListState()
         fixture.setContent {
             Box(Modifier.height(500.dp)) {
-                SubagentInspectorContent(snapshot.value, running = true, failed = false, onOpenDetails = {})
+                SubagentInspectorContent(snapshot.value, running = true, failed = false, onOpenDetails = {}, stepsState = stepsState)
             }
         }
         fixture.advance(10)
@@ -78,15 +80,24 @@ class SubagentInspectorInteractionTest {
 
         // The live inspector keeps only the newest twelve; the first item drops when a
         // new step arrives. Stable step IDs must keep the reader on the same item.
-        // ScrollToIndex semantics animates. Let that explicit user scroll settle before
-        // measuring whether an unrelated streaming update moves the idle reader.
+        // Opening the information panel changes the viewport. Scroll in that final
+        // viewport so the first visible item survives removal of the oldest entry.
+        fixture.scrollToIndex(5)
         fixture.advance(60)
+        assertTrue("fixture must anchor to a surviving item: ${stepsState.layoutInfo.visibleItemsInfo}",
+            stepsState.firstVisibleItemIndex > 0)
+        assertFalse("explicit fixture scroll must finish before the update", stepsState.isScrollInProgress)
+        val firstKey = stepsState.layoutInfo.visibleItemsInfo.first().key
+        val firstOffset = stepsState.firstVisibleItemScrollOffset
         val anchoredTop = fixture.topOfText("步骤编号 5")
         val beforeUpdate = fixture.scrollMetrics("步骤编号 5")
         snapshot.value = snapshot.value.copy(steps = steps.drop(1) + SubagentStepSnapshot(
             id = "new", kind = SubagentStepSnapshot.KIND_TOOL, title = "新增流式步骤",
             toolName = "read_file", status = SubagentStepSnapshot.STATUS_SUCCESS))
         fixture.advance(10)
+        assertEquals("streaming must retain the same surviving first key", firstKey,
+            stepsState.layoutInfo.visibleItemsInfo.first().key)
+        assertEquals("streaming must retain the scroll offset", firstOffset, stepsState.firstVisibleItemScrollOffset)
         fixture.assertVisibleText("步骤编号 5")
         assertEquals("streaming must preserve the visible step position; before=$beforeUpdate; " +
             "after=${fixture.scrollMetrics("步骤编号 5")}", anchoredTop, fixture.topOfText("步骤编号 5"), 2f)
