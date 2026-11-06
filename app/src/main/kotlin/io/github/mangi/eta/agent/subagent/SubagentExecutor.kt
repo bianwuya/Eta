@@ -158,6 +158,7 @@ internal class SubagentExecutor(
         var ownedTools: AgentModelClient.ToolExecutor? = null
         var toolBinding: AgentRunController.ResourceBinding? = null
         var detailStoreForCleanup: SubagentDetailStore? = null
+        var historyRecorderForFailure: SubagentHistoryRecorder? = null
         try {
         val resolvedConfig = runCatching { configProvider() }.getOrElse { throwable ->
             if (throwable is AgentRunCancelledException || throwable is java.util.concurrent.CancellationException) throw throwable
@@ -166,9 +167,20 @@ internal class SubagentExecutor(
             val previousReading = entry.lastContext?.reading?.copy(previousInvocation = true, modelChanged = null)
             SubagentSessionStore.releaseRunning(conversationKey, subagentId)
             val message = throwable.message ?: "无法加载 Subagent 模型配置"
-            // No request was made; retain an explicitly historical reading on failed resume.
+            // 启动失败必须是真实失败状态，不能停留在合成卡片初始的“正在启动”。
+            val failedStore = runCatching { detailStoreFactory?.invoke() }.getOrNull()
+                .also { detailStoreForCleanup = it }
             val failed = SubagentActivitySnapshot.failureFromArguments(toolCall.argumentsJson, message)
-                .copy(subagentId = subagentId, compactionCount = previousCompactions, contextReading = previousReading)
+                .copy(subagentId = subagentId, compactionCount = previousCompactions, contextReading = previousReading,
+                    detailId = if (failedStore != null) toolCall.id else "")
+            runCatching {
+                failedStore?.save(toolCall.id, failed)
+                failedStore?.let { SubagentHistoryRecorder(it, toolCall.id).finish("failed", message) }
+            }.onFailure {
+                io.github.mangi.eta.core.AndroidAgentLogger.warnThrottled("subagent_history_write_failed") {
+                    "Subagent history storage failed: type=${it.javaClass.simpleName}"
+                }
+            }
             latestSnapshots[toolCall.id] = failed.encode()
             onProgress(
                 AgentEvent.SubagentProgress(
@@ -206,6 +218,16 @@ internal class SubagentExecutor(
 
         val detailStore = detailStoreFactory?.invoke().also { detailStoreForCleanup = it }
         val detailId = toolCall.id
+        val historyRecorder = detailStore?.let { SubagentHistoryRecorder(it, detailId) }
+            .also { historyRecorderForFailure = it }
+        fun recordHistory(block: SubagentHistoryRecorder.() -> Unit) {
+            if (historyRecorder == null) return
+            runCatching { historyRecorder.block() }.onFailure {
+                io.github.mangi.eta.core.AndroidAgentLogger.warnThrottled("subagent_history_write_failed") {
+                    "Subagent history storage failed: type=${it.javaClass.simpleName}"
+                }
+            }
+        }
         var lastEmitNanos = 0L
         var snapshotSequence = 0L
         val publicationLock = Any()
@@ -213,6 +235,7 @@ internal class SubagentExecutor(
             val now = nanoTime()
             if (!force && now - lastEmitNanos < PROGRESS_THROTTLE_NANOS) return
             lastEmitNanos = now
+            recordHistory { checkpoint() }
             val source = tracker.snapshot()
             snapshotSequence = maxOf(snapshotSequence + 1, System.currentTimeMillis())
             val full = source.copy(
@@ -292,6 +315,7 @@ internal class SubagentExecutor(
                 }
                 runCatching { detailStore?.capture(detailId, stepId, "${subCall.name}\n$safeArguments\n[执行中]") }
                 tools.execute(subCall).also { result ->
+                    recordHistory { onToolResult(subCall, result) }
                     val safeResult = if (result.sensitive || io.github.mangi.eta.agent.model.AgentSensitiveToolPolicy.isSensitive(subCall.name)) {
                         "[敏感工具结果不保存]"
                     } else {
@@ -369,7 +393,9 @@ internal class SubagentExecutor(
                 sessionId = "$conversationKey-$subagentId",
                 operationId = "${toolCall.id}-$subagentId",
                 toolFilter = profile::filterTools,
+                onTranscript = { transcript -> recordHistory { onTranscript(transcript) } },
                 onEvent = { childEvent ->
+                    recordHistory { onEvent(childEvent) }
                     val force = tracker.onChildEvent(childEvent)
                     publishSnapshot(force = force)
                 },
@@ -383,6 +409,7 @@ internal class SubagentExecutor(
                 response.contextSnapshot,
             )
             tracker.markCompleted(response.content)
+            recordHistory { finish("completed", "子任务已完成。", response.content) }
             SubagentSessionStore.complete(conversationKey, subagentId, updatedHistory)
             publishSnapshot(force = true)
 
@@ -424,6 +451,7 @@ internal class SubagentExecutor(
             } else {
                 tracker.markFailed(errorMessage, partial)
             }
+            recordHistory { finish(if (cancelled) "cancelled" else "failed", errorMessage) }
             // Commit measurement state before allowing another invocation of the same child.
             if (partialHistory != null) {
                 SubagentSessionStore.complete(conversationKey, subagentId, partialHistory)
@@ -467,6 +495,14 @@ internal class SubagentExecutor(
                 command = latestSnapshots[toolCall.id],
             )
         }
+        } catch (failure: Throwable) {
+            val cancelled = parentController.isCancelled || childController.isCancelled ||
+                failure is AgentRunCancelledException || failure is java.util.concurrent.CancellationException
+            runCatching {
+                historyRecorderForFailure?.finish(if (cancelled) "cancelled" else "failed",
+                    if (cancelled) "已停止" else failure.message ?: failure.javaClass.simpleName)
+            }
+            throw failure
         } finally {
             runCatching { toolBinding?.close() }
             (ownedTools as? AutoCloseable)?.let { runCatching { it.close() } }
