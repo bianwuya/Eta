@@ -57,14 +57,13 @@ class AgentTlsDisconnectTest {
     @Test
     fun permanentCauseTypesWinOverEofAndClosureAtAnyDepth() {
         for (permanent in listOf(
-            CertificateException("untrusted issuer"),
-            CertPathValidatorException("invalid path"),
-            CertPathBuilderException("invalid path"),
-            SSLPeerUnverifiedException("identity mismatch"),
-            SSLProtocolException("invalid TLS record"),
-            ProtocolException("invalid negotiation"),
+            CertificateException("untrusted issuer", EOFException("connection closed")),
+            CertPathValidatorException("invalid path", EOFException("connection closed")),
+            CertPathBuilderException("invalid path", EOFException("connection closed")),
+            SSLPeerUnverifiedException("identity mismatch").apply { initCause(EOFException("connection closed")) },
+            SSLProtocolException("invalid TLS record").apply { initCause(EOFException("connection closed")) },
+            ProtocolException("invalid negotiation").apply { initCause(EOFException("connection closed")) },
         )) {
-            permanent.initCause(EOFException("connection closed"))
             assertNull(AgentModelFailure.transport(handshake("connection closed", permanent)))
             assertNull(AgentModelFailure.transport(SSLException("connection closed", EOFException().apply { initCause(permanent) })))
         }
