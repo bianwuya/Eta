@@ -100,6 +100,27 @@ class AgentRuntimeStopBoundaryTest {
         assertEquals(result, results.single())
     }
 
+    @Test fun rejectedFinishedEventNeverRunsItsCheckpointCallback() {
+        val session = AgentRuntimeSession("event-persist")
+        var persisted = false
+        assertTrue(session.requestStop())
+        assertThrows(AgentRunCancelledException::class.java) {
+            session.emit(AgentEvent.RunFinished(1, 4)) { persisted = true }
+        }
+        assertFalse(persisted)
+    }
+
+    @Test fun failedEventCheckpointDoesNotPublishOrReplayAnUncommittedEvent() {
+        val live = mutableListOf<AgentEvent>()
+        val session = AgentRuntimeSession("event-failed", eventSink = live::add)
+        assertThrows(IllegalStateException::class.java) {
+            session.emit(AgentEvent.RunFinished(1, 4)) { error("fixture write failure") }
+        }
+        assertTrue(live.isEmpty())
+        val replay = mutableListOf<AgentEvent>()
+        assertTrue(session.attach(replay::add, {})); assertTrue(replay.isEmpty())
+    }
+
     @Test fun racingStopAndCompletionPublishAndPersistTheSameSingleWinner() {
         repeat(50) { index ->
             val results = Collections.synchronizedList(mutableListOf<AgentRuntimeWire.RunResult>())

@@ -52,6 +52,46 @@ class AgentCancellationBoundaryTest {
         assertCancelled(failure)
     }
 
+    @Test fun cancellationDuringFinalCompactionCannotReturnSuccess() = finalCompactionBoundary(cancel = true)
+
+    @Test fun nonCancellationFinalCompactionFailureStillDeliversTheFullAnswer() = finalCompactionBoundary(cancel = false)
+
+    private fun finalCompactionBoundary(cancel: Boolean) {
+        val controller = AgentRunController()
+        val events = mutableListOf<AgentEvent>()
+        val summaries = AtomicInteger()
+        val history = (1..8).flatMap { turn -> listOf(
+            AgentModelClient.ConversationMessage("user", "previous task $turn"),
+            AgentModelClient.ConversationMessage("assistant", "verified fact $turn ".repeat(2200)),
+        ) }
+        val model = object : AgentProviderClient {
+            override val id = "final-compaction-cancel-fixture"
+            override val capabilities = ProviderCapabilities(EndpointKind.CHAT_COMPLETIONS, true, true, false, false, false, false)
+            override fun complete(request: ProviderRequest, runController: AgentRunController, onEvent: (ProviderEvent) -> Unit): ProviderResponse {
+                if (request.purpose == ProviderRequestPurpose.COMPACTION) {
+                    summaries.incrementAndGet()
+                    if (cancel) controller.cancel()
+                    throw AgentModelFailure("FIXTURE_SUMMARY_FAILURE", false, "fixture summary failure")
+                }
+                onEvent(ProviderEvent.Usage(io.github.mangi.eta.agent.runtime.AgentTokenUsage(inputTokens = 45_000)))
+                return answer()
+            }
+        }
+        fun complete() = AgentModelClient.complete(config.copy(contextWindow = 50_000), "inspect", { error("no tools") },
+            provider = model, history = history, runController = controller, onEvent = events::add)
+        if (cancel) {
+            assertCancelled(assertThrows(AgentModelExecutionException::class.java) { complete() })
+            assertEquals(0, events.count { it is AgentEvent.RunFinished })
+        } else {
+            val result = complete()
+            assertEquals("natural answer", result.content)
+            assertEquals("natural answer", result.contextSnapshot!!.messages.last().content)
+            assertTrue(events.any { it is AgentEvent.ContextCompaction && it.reasonCode == "FIXTURE_SUMMARY_FAILURE" })
+            assertEquals(1, events.count { it is AgentEvent.RunFinished })
+        }
+        assertEquals("fixture must actually enter final compaction", 1, summaries.get())
+    }
+
     @Test fun completedModelCallDoesNotSealControllerForLaterCleanupOrReuse() {
         val controller = AgentRunController()
         val cleanup = AtomicInteger()

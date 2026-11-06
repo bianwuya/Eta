@@ -595,9 +595,7 @@ internal class AgentRuntimeRunExecutor(
         entrySurfaceGuard: EntrySurfaceGuard?,
         checkpointRecorder: AgentRunCheckpointRecorder?,
     ) {
-        if (session.isTerminal || session.isCommitting) return
-        checkpointRecorder?.accept(event)
-        if (!session.emit(event)) return
+        if (!session.emit(event) { checkpointRecorder?.accept(event) }) return
         if (event !is AgentEvent.GuiControlChanged) archivedEvents?.add(event)
         if (event is AgentEvent.ModelRetryScheduled) {
             AndroidAgentLogger.warn("Agent runtime event: ${event.toLogLine()}")

@@ -15,17 +15,33 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [36], application = Application::class)
 class AgentRuntimeServiceStopTest {
-    private fun register(service: AgentRuntimeService, results: MutableList<AgentRuntimeWire.RunResult>): RuntimeRunRegistry.Run {
+    private fun register(service: AgentRuntimeService, results: MutableList<AgentRuntimeWire.RunResult>, prepared: Boolean = true): RuntimeRunRegistry.Run {
         val registry = AgentRuntimeService::class.java.getDeclaredField("runs").apply { isAccessible = true }.get(service) as RuntimeRunRegistry
         val request = AgentRuntimeWire.RunRequest("service-stop", "inspect",
             AgentModelClient.ModelConfig(baseUrl = "https://example.invalid", apiKey = "fixture", model = "fixture", systemPrompt = ""), emptyList())
         lateinit var session: AgentRuntimeSession
         session = AgentRuntimeSession(request.runId, resultSink = results::add,
             beforeTerminalPublish = { registry.finish(request.runId, session) })
-        return (registry.admit(request) { RuntimeRunRegistry.Run(request, session) } as RuntimeRunRegistry.Admission.Accepted).run.also { it.prepared(request) }
+        return (registry.admit(request) { RuntimeRunRegistry.Run(request, session) } as RuntimeRunRegistry.Admission.Accepted).run.also { if (prepared) it.prepared(request) }
     }
     private fun stop(service: AgentRuntimeService, run: RuntimeRunRegistry.Run) {
         AgentRuntimeService::class.java.getDeclaredMethod("cancelRun", String::class.java).apply { isAccessible = true }.invoke(service, run.runId)
+    }
+
+    @Test fun preparingServiceStopUsesTheSameStopClaimAndPublishesOnlyOnce() {
+        val host = Robolectric.buildService(AgentRuntimeService::class.java).create()
+        try {
+            val results = java.util.Collections.synchronizedList(mutableListOf<AgentRuntimeWire.RunResult>())
+            val run = register(host.get(), results, prepared = false)
+            val delivered = CountDownLatch(1)
+            assertTrue(run.session.attach({}, { delivered.countDown() }))
+            stop(host.get(), run)
+            assertTrue(delivered.await(10, TimeUnit.SECONDS))
+            assertTrue(run.session.controller.isCancelled)
+            assertFalse(results.single().ok); assertEquals("已停止", results.single().error)
+            assertFalse(run.session.complete(AgentRuntimeWire.RunResult(run.runId, true, "late")))
+            assertEquals(1, results.size)
+        } finally { host.destroy() }
     }
 
     @Test fun normalServiceStopResolvesALateSuccessAsStoppedWithoutEarlyPublication() {

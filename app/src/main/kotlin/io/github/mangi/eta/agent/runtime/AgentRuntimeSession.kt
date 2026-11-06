@@ -86,7 +86,8 @@ internal class AgentRuntimeSession(
     val isCommitting: Boolean
         get() = lock.withLock { state == State.COMMITTING }
 
-    fun emit(event: AgentEvent): Boolean =
+    /** Checkpoint and publication share the stop/terminal admission boundary. */
+    fun emit(event: AgentEvent, beforePublish: () -> Unit = {}): Boolean =
         lock.withLock {
             if (state != State.RUNNING) return false
             if (event is AgentEvent.RunFinished && (stopRequested || controller.isCancelled)) {
@@ -94,6 +95,7 @@ internal class AgentRuntimeSession(
             }
             if (event is AgentEvent.SearchSuggestions &&
                 !searchSuggestionsBudget.accept(event.round, event.index, event.html)) return false
+            beforePublish()
             recordForReplay(event)
             subscribers.forEach { it.eventSink(event) }
             true
