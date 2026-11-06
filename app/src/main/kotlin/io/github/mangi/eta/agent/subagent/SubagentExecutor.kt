@@ -11,6 +11,7 @@ import io.github.mangi.eta.agent.skill.SkillContext
 import io.github.mangi.eta.agent.terminal.TerminalExecutionContext
 import io.github.mangi.eta.agent.tool.AgentToolCapabilities
 import io.github.mangi.eta.local.subagentdisplay.SubagentReadableText
+import io.github.mangi.eta.local.subagentcontext.SubagentTaskHandoff
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import org.json.JSONArray
@@ -65,6 +66,14 @@ internal class SubagentExecutor(
         }
         if (description.isEmpty()) {
             return failureResult(toolCall, "INVALID_ARGUMENTS", "description 不能为空")
+        }
+
+        // Validate the complete task before creating an entry or claiming a resumed one.
+        // A rejected handoff must not launch a partial task or leave a session running.
+        val taskPrompt = try {
+            SubagentTaskHandoff.taskPrompt(prompt, args.opt("handoff"))
+        } catch (failure: IllegalArgumentException) {
+            return failureResult(toolCall, "INVALID_HANDOFF", failure.message ?: "handoff 参数无效")
         }
 
         val resumeId = args.optString("resume").trim()
@@ -125,6 +134,7 @@ internal class SubagentExecutor(
                 entry = entry,
                 priorHistory = priorHistory,
                 prompt = prompt,
+                taskPrompt = taskPrompt,
                 description = description,
                 isResume = isResume,
                 onStarted = onStarted,
@@ -143,6 +153,7 @@ internal class SubagentExecutor(
         entry: SubagentSessionStore.Entry,
         priorHistory: List<AgentModelClient.ConversationMessage>,
         prompt: String,
+        taskPrompt: String,
         description: String,
         isResume: Boolean,
         onStarted: (String, String) -> Unit,
@@ -352,7 +363,7 @@ internal class SubagentExecutor(
                         )
                     }
                 },
-                prompt = prompt,
+                prompt = taskPrompt,
                 toolExecutor = childToolExecutor,
                 history = priorHistory,
                 runController = childController,
@@ -373,7 +384,7 @@ internal class SubagentExecutor(
             childController.throwIfCancelled()
             val updatedHistory = SubagentContinuation.history(
                 priorHistory,
-                prompt,
+                taskPrompt,
                 response.transcript,
                 response.contextSnapshot,
             )
@@ -402,7 +413,7 @@ internal class SubagentExecutor(
             val partial = (throwable as? AgentModelExecutionException)?.let { ex ->
                 val partialHistory = SubagentContinuation.history(
                     priorHistory,
-                    prompt,
+                    taskPrompt,
                     ex.transcript,
                     ex.contextSnapshot,
                 )
