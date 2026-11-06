@@ -81,6 +81,7 @@ class SubagentResultSemanticsTest {
                     apiKey = "fixture",
                     model = "result-semantics-fixture",
                     systemPrompt = "",
+                    terminalTools = true,
                     autoCompactionEnabled = false,
                 )
             },
