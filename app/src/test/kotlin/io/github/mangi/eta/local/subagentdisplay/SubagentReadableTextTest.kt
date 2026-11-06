@@ -1,5 +1,7 @@
 package io.github.mangi.eta.local.subagentdisplay
 
+import io.github.mangi.eta.agent.subagent.SubagentActivitySnapshot
+import io.github.mangi.eta.agent.subagent.SubagentContextReading
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -104,6 +106,38 @@ class SubagentReadableTextTest {
         assertEquals("模型名称未知", SubagentReadableText.modelName(""))
         assertEquals("模型名称未知", SubagentReadableText.modelName("gpt-6.1-"))
         assertEquals("模型名称未知", SubagentReadableText.modelName("A".repeat(101)))
+    }
+
+    @Test fun snapshotLabelsReportFailureCompactionAndResumeWithoutClaimingCurrentUse() {
+        val reading = SubagentContextReading(87_400, at = 1_700_000_000_000L,
+            attempt = SubagentContextReading.ATTEMPT_FAILED)
+        val failed = SubagentActivitySnapshot(contextTokens = 87_400, contextWindow = 500_000,
+            compactionCount = 0, contextReading = reading, contextRequestState = SubagentActivitySnapshot.REQUEST_FAILED)
+        assertEquals("上下文(最近) 8.7万 / 50万 · 压缩 0 次 · 本次请求失败", SubagentReadableText.contextSummary(failed))
+        val failedExplanation = SubagentReadableText.contextExplanation(failed)
+        assertTrue(failedExplanation.contains("87400 Token"))
+        assertTrue(failedExplanation.contains("模型用量上报"))
+        assertTrue(failedExplanation.contains("失败的请求尝试"))
+        assertTrue(failedExplanation.contains("本次模型请求失败"))
+        assertTrue(failedExplanation.contains("不能视为成功请求的用量"))
+
+        val old = failed.copy(contextTokens = null,
+            contextReading = reading.copy(beforeCompaction = true, previousInvocation = true, modelChanged = true))
+        val summary = SubagentReadableText.contextSummary(old)
+        val explanation = SubagentReadableText.contextExplanation(old)
+        assertTrue(summary.contains("8.7万（上次·压缩前·模型或服务商已变）"))
+        assertFalse(summary.contains(" / 50万"))
+        assertTrue(explanation.contains("上一次执行"))
+        assertTrue(explanation.contains("压缩前"))
+        assertTrue(explanation.contains("模型或服务商与上次不同"))
+        assertTrue(explanation.contains("不是本次请求用量"))
+
+        val noUsage = SubagentActivitySnapshot(contextWindow = 500_000)
+        assertTrue(SubagentReadableText.contextSummary(noUsage).contains("待上报"))
+        assertTrue(SubagentReadableText.contextExplanation(noUsage).contains("尚无有效上下文上报"))
+        val legacy = noUsage.copy(contextTokens = 12_345)
+        assertTrue(SubagentReadableText.contextExplanation(legacy).contains("旧版快照"))
+        assertTrue(SubagentReadableText.contextExplanation(legacy).contains("来源、时间和尝试状态未知"))
     }
 
     @Test fun usageKeepsZeroAndUnknownSeparateAndUsesCompactUnits() {
