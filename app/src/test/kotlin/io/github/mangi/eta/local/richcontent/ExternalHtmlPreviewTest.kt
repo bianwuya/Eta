@@ -30,6 +30,9 @@ class ExternalHtmlPreviewTest {
     private val uri get() = Uri.parse("content://${externalHtmlAuthority(context)}/html/preview.html")
 
     @Before fun clearPreviewCache() {
+        // AndroidX retains its authority cache while Robolectric gives each method a new root.
+        val cache = org.robolectric.util.ReflectionHelpers.getStaticField<MutableMap<String, Any>>(FileProvider::class.java, "sCache")
+        cache.clear()
         File(context.cacheDir, "external-html-preview").deleteRecursively()
     }
 
