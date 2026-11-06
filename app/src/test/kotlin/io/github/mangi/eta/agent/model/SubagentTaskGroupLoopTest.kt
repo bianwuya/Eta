@@ -18,7 +18,7 @@ import org.junit.Test
 
 class SubagentTaskGroupLoopTest {
     private val config = AgentModelClient.ModelConfig(providerId = "fixture", baseUrl = "https://example.invalid",
-        apiKey = "fixture", model = "fixture", systemPrompt = "stable-system")
+        apiKey = "fixture", model = "gpt-fixture", systemPrompt = "stable-system")
     private open class Storage : YieldableSubagents.Persistence {
         val finished = java.util.concurrent.LinkedBlockingQueue<String>()
         val sealed = CountDownLatch(1)
