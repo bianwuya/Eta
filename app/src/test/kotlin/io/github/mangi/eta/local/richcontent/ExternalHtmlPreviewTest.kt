@@ -41,7 +41,11 @@ class ExternalHtmlPreviewTest {
                 exported = true
                 applicationInfo = ApplicationInfo().apply { this.packageName = packageName }
             }
-            handleAllWebDataURI = browser
+            filter = android.content.IntentFilter(Intent.ACTION_VIEW).apply {
+                addCategory(Intent.CATEGORY_BROWSABLE)
+                addDataScheme("https")
+                if (!browser) addDataAuthority("example.org", null)
+            }
         }
         val pm = shadowOf(context.packageManager)
         pm.addResolveInfoForIntent(

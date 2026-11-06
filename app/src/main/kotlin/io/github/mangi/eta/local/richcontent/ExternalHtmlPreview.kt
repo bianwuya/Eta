@@ -64,8 +64,12 @@ private fun browserIntent() = Intent(Intent.ACTION_VIEW, Uri.parse("https://exam
 
 @Suppress("DEPRECATION")
 private fun defaultBrowserPackage(context: Context): String? = context.packageManager
-    .resolveActivity(browserIntent(), PackageManager.MATCH_DEFAULT_ONLY)
-    ?.takeIf { it.handleAllWebDataURI }?.activityInfo?.packageName
+    .resolveActivity(browserIntent(), PackageManager.MATCH_DEFAULT_ONLY or PackageManager.GET_RESOLVED_FILTER)
+    ?.takeIf { isGeneralBrowser(it) }?.activityInfo?.packageName
+
+private fun isGeneralBrowser(info: android.content.pm.ResolveInfo): Boolean = info.filter?.let {
+    it.hasDataScheme("https") && it.countDataAuthorities() == 0
+} == true
 
 @Suppress("DEPRECATION")
 internal fun externalHtmlPreviewIntent(
@@ -91,8 +95,8 @@ internal fun externalHtmlPreviewIntent(
     // BROWSABLE alone also matches deep-link apps; require a general HTTPS browser handler.
     val browsers = pm.queryIntentActivities(
         browserIntent(),
-        PackageManager.MATCH_DEFAULT_ONLY,
-    ).filter { it.handleAllWebDataURI }.map { it.activityInfo.packageName }.toSet()
+        PackageManager.MATCH_DEFAULT_ONLY or PackageManager.GET_RESOLVED_FILTER,
+    ).filter { isGeneralBrowser(it) }.map { it.activityInfo.packageName }.toSet()
     val candidates = browsers.intersect(htmlHandlers).sorted()
     check(candidates.isNotEmpty()) { "没有支持本地 HTML 的浏览器，请安装或启用浏览器" }
     if (candidates.size == 1) {
@@ -111,7 +115,7 @@ internal fun externalHtmlPreviewIntent(
 class ExternalHtmlPreviewProvider : FileProvider() {
     override fun openFile(uri: Uri, mode: String): ParcelFileDescriptor {
         if (mode != "r") throw FileNotFoundException("HTML preview is read-only")
-        return super.openFile(uri, mode)
+        return super.openFile(uri, mode) ?: throw FileNotFoundException("HTML preview is unavailable")
     }
 
     override fun delete(uri: Uri, selection: String?, selectionArgs: Array<out String>?): Int =
