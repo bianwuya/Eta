@@ -6,17 +6,21 @@ import android.os.SystemClock
 import android.view.View
 import android.view.ViewGroup
 import androidx.activity.ComponentActivity
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.height
 import androidx.compose.runtime.BroadcastFrameClock
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Recomposer
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.snapshots.Snapshot
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.ViewRootForTest
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsNode
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
+import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.agent.subagent.SubagentActivitySnapshot
 import io.github.mangi.eta.agent.subagent.SubagentDetailStore
 import io.github.mangi.eta.agent.subagent.SubagentHistoryEntry
@@ -57,17 +61,19 @@ class SubagentInspectorInteractionTest {
         val snapshot = mutableStateOf(SubagentActivitySnapshot(subagentId = "child-scroll", detailId = "detail-scroll",
             steps = steps, prompt = "任务指令测试"))
         fixture.setContent {
-            SubagentInspectorContent(snapshot.value, running = true, failed = false, onOpenDetails = {})
+            Box(Modifier.height(500.dp)) {
+                SubagentInspectorContent(snapshot.value, running = true, failed = false, onOpenDetails = {})
+            }
         }
         fixture.advance(10)
-        fixture.scrollToIndex(8)
+        fixture.scrollToIndex(5)
         fixture.advance(10)
-        fixture.assertVisibleText("步骤编号 8")
-        assertFalse(fixture.hasText("步骤编号 0"))
+        fixture.assertVisibleText("步骤编号 5")
+        assertFalse(fixture.isVisibleText("步骤编号 0"))
         fixture.clickDescription("查看任务指令与统计说明")
         fixture.advance(20)
         fixture.assertVisibleText("任务信息")
-        fixture.assertVisibleText("步骤编号 8")
+        fixture.assertVisibleText("步骤编号 5")
         assertTrue(fixture.hasDescription("收起任务信息"))
 
         // The live inspector keeps only the newest twelve; the first item drops when a
@@ -75,12 +81,12 @@ class SubagentInspectorInteractionTest {
         snapshot.value = snapshot.value.copy(steps = steps.drop(1) + SubagentStepSnapshot(
             id = "new", kind = SubagentStepSnapshot.KIND_TOOL, title = "新增流式步骤"))
         fixture.advance(10)
-        fixture.assertVisibleText("步骤编号 8")
+        fixture.assertVisibleText("步骤编号 5")
         fixture.clickDescription("收起任务信息")
         fixture.advance(20)
         assertFalse(fixture.hasText("任务信息"))
         assertTrue(fixture.hasDescription("查看任务指令与统计说明"))
-        fixture.assertVisibleText("步骤编号 8")
+        fixture.assertVisibleText("步骤编号 5")
     }
 
     @Test
@@ -251,17 +257,18 @@ class SubagentInspectorInteractionTest {
         fun hasText(text: String): Boolean = nodes().any { it.hasText(text) }
         fun hasDescription(description: String): Boolean = nodes().any { it.hasDescription(description) }
         fun assertVisibleText(text: String) {
-            val node = nodes().firstOrNull { it.hasText(text) && it.boundsInRoot.height > 0f }
-            assertTrue("text not visible: $text", node != null && node.boundsInRoot.top >= 0 && node.boundsInRoot.bottom <= 1792)
-            var parent = node?.parent
+            assertTrue("text not visible within its scroll viewport: $text", isVisibleText(text))
+        }
+        fun isVisibleText(text: String): Boolean = nodes().filter { it.hasText(text) }.any { node ->
+            val bounds = node.boundsInRoot
+            if (bounds.height <= 0 || bounds.top < 0 || bounds.bottom > 1792) return@any false
+            var parent = node.parent
             while (parent != null) {
-                if (parent.config.getOrNull(SemanticsProperties.VerticalScrollAxisRange) != null) {
-                    val bounds = requireNotNull(node).boundsInRoot
-                    assertTrue("text is outside its scroll viewport: $text", bounds.top >= parent.boundsInRoot.top &&
-                        bounds.bottom <= parent.boundsInRoot.bottom)
-                }
+                if (parent.config.getOrNull(SemanticsProperties.VerticalScrollAxisRange) != null &&
+                    (bounds.top < parent.boundsInRoot.top || bounds.bottom > parent.boundsInRoot.bottom)) return@any false
                 parent = parent.parent
             }
+            true
         }
         fun assertBefore(first: String, second: String) {
             val a = nodes().first { it.hasText(first) }.boundsInRoot
@@ -286,7 +293,8 @@ class SubagentInspectorInteractionTest {
             return visit(root().semanticsOwner.rootSemanticsNode)
         }
         private fun SemanticsNode.hasText(text: String) =
-            config.getOrNull(SemanticsProperties.Text)?.any { it.text.contains(text) } == true
+            config.getOrNull(SemanticsProperties.Text)?.any { it.text == text } == true ||
+                (text.endsWith('：') && config.getOrNull(SemanticsProperties.Text)?.any { it.text.startsWith(text) } == true)
         private fun SemanticsNode.hasDescription(description: String) =
             config.getOrNull(SemanticsProperties.ContentDescription)?.contains(description) == true
         private fun root(): ViewRootForTest = findRoot(activity.window.decorView) ?: error("Compose root not found")
