@@ -16,11 +16,11 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [33], application = android.app.Application::class)
 class RichWebViewPolicyTest {
-    private fun request(url: String, verb: String = "GET", mainFrame: Boolean = false) = object : WebResourceRequest {
+    private fun request(url: String, verb: String = "GET", mainFrame: Boolean = false, gesture: Boolean = false) = object : WebResourceRequest {
         override fun getUrl() = Uri.parse(url)
         override fun isForMainFrame() = mainFrame
         override fun isRedirect() = false
-        override fun hasGesture() = false
+        override fun hasGesture() = gesture
         override fun getMethod() = verb
         override fun getRequestHeaders() = emptyMap<String, String>()
     }
@@ -83,6 +83,76 @@ class RichWebViewPolicyTest {
                 assertNull(view.webViewClient.shouldInterceptRequest(view, request(url)))
                 assertEquals(403, view.webViewClient.shouldInterceptRequest(view, request(url, mainFrame = true))!!.statusCode)
             }
+    @Test fun chromiumInternalMainDocumentIsAdmittedOncePerActualShow() {
+        val view = RichWebView(RuntimeEnvironment.getApplication(), false)
+        val internal = request(INLINE_DOCUMENT_URL, mainFrame = true)
+        try {
+            assertEquals(403, view.webViewClient.shouldInterceptRequest(view, internal)!!.statusCode)
+            val html = previewHtml("<h1>正文</h1>")
+            assertTrue(view.show(html))
+            assertNull(view.webViewClient.shouldInterceptRequest(view, internal))
+            assertEquals(403, view.webViewClient.shouldInterceptRequest(view, internal)!!.statusCode)
+            assertFalse(view.show(html))
+            assertEquals(403, view.webViewClient.shouldInterceptRequest(view, internal)!!.statusCode)
+            assertTrue(view.show(previewHtml("<h1>更新</h1>")))
+            assertNull(view.webViewClient.shouldInterceptRequest(view, internal))
+        } finally { view.release() }
+    }
+    @Test fun onlyExactInternalRequestConsumesTheOneShotAdmission() {
+        val view = RichWebView(RuntimeEnvironment.getApplication(), true)
+        try {
+            view.show(previewHtml("<p>正文</p>"))
+            val rejected = listOf(
+                request(INLINE_DOCUMENT_URL),
+                request(INLINE_DOCUMENT_URL, "POST", true),
+                request(INLINE_DOCUMENT_URL, mainFrame = true, gesture = true),
+                request(INLINE_DOCUMENT_URL + "PGgxPmJhZDwvaDE+", mainFrame = true),
+                request(INLINE_DOCUMENT_URL + "#bad", mainFrame = true),
+                request("data:text/plain,", mainFrame = true),
+            )
+            rejected.forEach { assertEquals(403, view.webViewClient.shouldInterceptRequest(view, it)!!.statusCode) }
+            assertTrue(view.webViewClient.shouldOverrideUrlLoading(view, request(INLINE_DOCUMENT_URL, mainFrame = true)))
+            assertNull(view.webViewClient.shouldInterceptRequest(view, request(INLINE_DOCUMENT_URL, mainFrame = true)))
+        } finally { view.release() }
+    }
+    @Test fun pageFinishedAndFailureRevokeUnconsumedInlineAdmission() {
+        val view = RichWebView(RuntimeEnvironment.getApplication(), false)
+        try {
+            val client = view.webViewClient
+            view.show(previewHtml("<p>正文</p>"))
+            client.onPageFinished(view, PREVIEW_URL)
+            assertEquals(403, client.shouldInterceptRequest(view, request(INLINE_DOCUMENT_URL, mainFrame = true))!!.statusCode)
+            view.show(previewHtml("<p>更新</p>"))
+            client.onReceivedError(view, request(PREVIEW_URL, mainFrame = true), PreviewTestWebResourceError())
+            assertEquals(403, client.shouldInterceptRequest(view, request(INLINE_DOCUMENT_URL, mainFrame = true))!!.statusCode)
+        } finally { view.release() }
+    }
+    @Test fun originAndNavigationUseTheSameHttpsBoundary() {
+        val view = RichWebView(RuntimeEnvironment.getApplication(), true)
+        try {
+            val client = view.webViewClient
+            listOf("http://$PREVIEW_HOST/content/document.html", "https://$PREVIEW_HOST:8443/content/document.html",
+                "https://user@$PREVIEW_HOST/content/document.html").forEach { url ->
+                assertEquals(403, client.shouldInterceptRequest(view, request(url, mainFrame = true))!!.statusCode)
+                assertTrue(client.shouldOverrideUrlLoading(view, request(url, mainFrame = true)))
+            }
+            assertFalse(client.shouldOverrideUrlLoading(view, request(PREVIEW_URL + "#section", mainFrame = true)))
+            assertEquals(200, client.shouldInterceptRequest(view, request("https://$PREVIEW_HOST:443/content/document.html"))!!.statusCode)
+        } finally { view.release() }
+    }
+    @Test fun errorDetailsRetainOnlyStageAndCodeAndLateCallbacksAreIgnored() {
+        val failures = mutableListOf<PreviewFailure>()
+        val view = RichWebView(RuntimeEnvironment.getApplication(), false, onFailed = { failures += it })
+        val client = view.webViewClient
+        val httpError = WebResourceResponse("text/plain", "UTF-8", 403, "Blocked", emptyMap(), ByteArrayInputStream(byteArrayOf()))
+        client.onReceivedHttpError(view, request(PREVIEW_URL, mainFrame = true), httpError)
+        assertEquals(listOf(PreviewFailure("http", 403)), failures)
+        assertTrue(failures.single().summary.contains("403"))
+        view.release()
+        client.onReceivedHttpError(view, request(PREVIEW_URL, mainFrame = true), httpError)
+        client.onReceivedError(view, request(PREVIEW_URL, mainFrame = true), PreviewTestWebResourceError())
+        assertEquals(1, failures.size)
+    }
             assertEquals(403, view.webViewClient.shouldInterceptRequest(view, request("data:text/html,<script>bad()</script>"))!!.statusCode)
             assertEquals(403, view.webViewClient.shouldInterceptRequest(view, request("data:application/javascript,alert(1)"))!!.statusCode)
             val doc = org.jsoup.Jsoup.parse(previewHtml("<h1>正文</h1>"))

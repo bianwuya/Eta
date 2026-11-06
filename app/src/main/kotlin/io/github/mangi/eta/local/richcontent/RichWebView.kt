@@ -14,13 +14,15 @@ import androidx.webkit.WebViewAssetLoader
 import java.io.ByteArrayInputStream
 import java.io.File
 import java.net.URLConnection
+import java.util.concurrent.atomic.AtomicBoolean
 
 internal const val PREVIEW_HOST = "eta-local-preview.invalid"
 internal const val PREVIEW_URL = "https://$PREVIEW_HOST/content/document.html"
+internal const val INLINE_DOCUMENT_URL = "data:text/html;charset=utf-8;base64,"
 
 /** Private virtual origin, no remote fallback and no native bridge. Never uses Agent browser sessions. */
 @SuppressLint("SetJavaScriptEnabled")
-internal class RichWebView(context: Context, scripts: Boolean, onBlocked: () -> Unit = {}, onFailed: () -> Unit = {}, onUserLink: ((Uri) -> Unit)? = null) : WebView(context) {
+internal class RichWebView(context: Context, scripts: Boolean, onBlocked: () -> Unit = {}, onFailed: (PreviewFailure) -> Unit = {}, onUserLink: ((Uri) -> Unit)? = null) : WebView(context) {
     @Volatile var page: String = ""
     @Volatile var resourceRoot: File? = null
     var onHeightChanged: ((Int) -> Unit)? = null
@@ -31,6 +33,7 @@ internal class RichWebView(context: Context, scripts: Boolean, onBlocked: () -> 
     private var scrollRestored = false
     private var loadedOnce = false
     private var released = false
+    private val pendingInlineDocument = AtomicBoolean(false)
     private var pending = false
     private var lastHeight = 0
     private val reportHeight = Runnable {
@@ -68,9 +71,13 @@ internal class RichWebView(context: Context, scripts: Boolean, onBlocked: () -> 
         webViewClient = object : WebViewClient() {
             override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
                 val uri = request.url
+                // Chromium also intercepts loadDataWithBaseURL's internal data: main request.
+                // Admit only the one app-initiated load, not later page-created data navigation.
+                if (request.isForMainFrame && request.method == "GET" && !request.hasGesture() &&
+                    uri.toString() == INLINE_DOCUMENT_URL && pendingInlineDocument.compareAndSet(true, false)) return null
                 // Self-contained image/font data never needs a network or file loader.
                 if (!request.isForMainFrame && request.method == "GET" && isEmbeddedPreviewResource(uri.toString())) return null
-                if (request.method != "GET" || uri.scheme != "https" || uri.host != PREVIEW_HOST) {
+                if (request.method != "GET" || !isPreviewOrigin(uri)) {
                     post { if (!released) onBlocked() }
                     return denied()
                 }
@@ -97,8 +104,8 @@ internal class RichWebView(context: Context, scripts: Boolean, onBlocked: () -> 
             }
             // Even a user click cannot silently launch another app or navigate to credentials.
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
-                if (request.url.host == PREVIEW_HOST && request.url.path == "/content/document.html") return false
-                if (request.hasGesture() && onUserLink != null && request.url.scheme in setOf("https", "http", "mailto")) {
+                if (isPreviewDocument(request.url)) return false
+                if (request.isForMainFrame && request.hasGesture() && onUserLink != null && request.url.scheme in setOf("https", "http", "mailto")) {
                     onUserLink(request.url)
                     return true
                 }
@@ -107,17 +114,25 @@ internal class RichWebView(context: Context, scripts: Boolean, onBlocked: () -> 
             }
             override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
                 // A failed font/image must not replace an otherwise usable document.
-                if (request.isForMainFrame && !released) onFailed()
+                if (request.isForMainFrame && !released) {
+                    pendingInlineDocument.set(false)
+                    reportFailure(PreviewFailure("load", error.errorCode), onFailed)
+                }
             }
             override fun onReceivedHttpError(view: WebView, request: WebResourceRequest, errorResponse: WebResourceResponse) {
-                if (request.isForMainFrame && !released) onFailed()
+                if (request.isForMainFrame && !released) {
+                    pendingInlineDocument.set(false)
+                    reportFailure(PreviewFailure("http", errorResponse.statusCode), onFailed)
+                }
             }
             override fun onRenderProcessGone(view: WebView, detail: android.webkit.RenderProcessGoneDetail): Boolean {
-                post { if (!released) onFailed() }
+                pendingInlineDocument.set(false)
+                post { if (!released) reportFailure(PreviewFailure(if (detail.didCrash()) "renderer_crash" else "renderer_exit"), onFailed) }
                 return true
             }
             override fun onPageFinished(view: WebView, url: String?) {
                 if (url != PREVIEW_URL) return
+                pendingInlineDocument.set(false)
                 val target = pendingScrollRestore(initialScrollY, scrollRestored) ?: return
                 if (released) return
                 scrollRestored = true
@@ -142,7 +157,13 @@ internal class RichWebView(context: Context, scripts: Boolean, onBlocked: () -> 
         // The HTML is already in memory: load it directly instead of making the
         // main document depend on an intercepted synthetic HTTPS navigation.
         // Keep the same private HTTPS origin for CSP and relative local resources.
-        loadDataWithBaseURL(PREVIEW_URL, html, "text/html", "UTF-8", null)
+        pendingInlineDocument.set(true)
+        try {
+            loadDataWithBaseURL(PREVIEW_URL, html, "text/html", "UTF-8", null)
+        } catch (e: RuntimeException) {
+            pendingInlineDocument.set(false)
+            throw e
+        }
         return true
     }
 
@@ -159,6 +180,7 @@ internal class RichWebView(context: Context, scripts: Boolean, onBlocked: () -> 
     fun release() {
         if (released) return
         released = true
+        pendingInlineDocument.set(false)
         removeCallbacks(reportHeight)
         onHeightChanged = null
         onScrollYChanged = null
@@ -167,6 +189,26 @@ internal class RichWebView(context: Context, scripts: Boolean, onBlocked: () -> 
         removeAllViews()
         destroy()
     }
+
+internal data class PreviewFailure(val stage: String, val code: Int? = null) {
+    val summary: String get() = when (stage) {
+        "http" -> "本地文档加载失败（HTTP $code）"
+        "load" -> "WebView 加载失败（错误码 $code）"
+        "renderer_crash" -> "网页渲染进程异常退出"
+        else -> "网页渲染进程已被系统结束"
+    }
+}
+
+private fun reportFailure(failure: PreviewFailure, callback: (PreviewFailure) -> Unit) {
+    // Fixed stage/code only: never log a file path, document body, or data URL.
+    android.util.Log.w("EtaRichPreview", "stage=${failure.stage} code=${failure.code}")
+    callback(failure)
+}
+
+internal fun isPreviewOrigin(uri: Uri): Boolean = uri.scheme == "https" && uri.host == PREVIEW_HOST &&
+    uri.port in setOf(-1, 443) && uri.userInfo == null
+
+internal fun isPreviewDocument(uri: Uri): Boolean = isPreviewOrigin(uri) && uri.path == "/content/document.html"
 }
 
 /**

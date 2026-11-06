@@ -46,7 +46,7 @@ internal fun RichPreviewScreen(reference: String, onBack: () -> Unit) {
     var showSource by rememberSaveable(reference) { mutableStateOf(false) }
     var scripts by rememberSaveable(reference) { mutableStateOf(false) }
     var blocked by remember(generation, scripts) { mutableStateOf(false) }
-    var rendererFailed by remember(reference, generation, scripts) { mutableStateOf(false) }
+    var rendererFailure by remember(reference, generation, scripts) { mutableStateOf<PreviewFailure?>(null) }
     // 滚动位置放在普通持有者里：滚动时只写这一个 int，不触发重组，也不重建 WebView。
     // 用 Saver 交给 rememberSaveable 保存同一个值，深浅色/旋转变更后仍能回到原处。
     val scrollY = rememberSaveable(
@@ -108,7 +108,7 @@ internal fun RichPreviewScreen(reference: String, onBack: () -> Unit) {
                         items(chunks) { chunk -> Text(chunk, fontFamily = FontFamily.Monospace, modifier = Modifier.fillMaxWidth()) }
                     }
                 }
-                rendererFailed -> BasicComponent(title = "网页加载或渲染失败", summary = "可以查看源码或点击刷新重试。")
+                rendererFailure != null -> BasicComponent(title = "网页加载或渲染失败", summary = "${rendererFailure?.summary}。可以查看源码或点击刷新重试。")
                 else -> {
                     Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.SpaceBetween) {
                         Text(if (scripts) "交互预览 · 禁止联网" else "静态预览 · 禁止联网", style = MiuixTheme.textStyles.footnote2, modifier = Modifier.weight(1f).padding(8.dp))
@@ -129,7 +129,7 @@ internal fun RichPreviewScreen(reference: String, onBack: () -> Unit) {
                     }
                     if (html != null) key(reference, generation, scripts, html) {
                         AndroidView(
-                            factory = { ctx -> RichWebView(ctx, scripts, onBlocked = { blocked = true }, onFailed = { rendererFailed = true }).apply {
+                            factory = { ctx -> RichWebView(ctx, scripts, onBlocked = { blocked = true }, onFailed = { rendererFailure = it }).apply {
                                 resourceRoot = if (reference.startsWith("content://")) null else runCatching { LocalPreviewFiles.file(ctx, reference).parentFile }.getOrNull()
                                 onScrollYChanged = { y -> scrollY[0] = y }
                                 show(requireNotNull(html), restoreScrollY = scrollY[0])
