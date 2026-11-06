@@ -29,6 +29,13 @@ class ExternalHtmlPreviewTest {
     private val context get() = RuntimeEnvironment.getApplication()
     private val uri get() = Uri.parse("content://${externalHtmlAuthority(context)}/html/preview.html")
 
+    private fun provider(): ExternalHtmlPreviewProvider =
+        Robolectric.buildContentProvider(ExternalHtmlPreviewProvider::class.java).create(
+            context.packageManager.getProviderInfo(
+                ComponentName(context, ExternalHtmlPreviewProvider::class.java), PackageManager.GET_META_DATA,
+            ),
+        ).get()
+
     @Before fun clearPreviewCache() {
         // AndroidX retains its authority cache while Robolectric gives each method a new root.
         val cache = org.robolectric.util.ReflectionHelpers.getStaticField<MutableMap<String, Any>>(FileProvider::class.java, "sCache")
@@ -84,8 +91,7 @@ class ExternalHtmlPreviewTest {
         val shared = copyExternalHtmlPreview(context, original.path)
         assertEquals("content", shared.scheme)
         assertEquals(externalHtmlAuthority(context), shared.authority)
-        val provider = Robolectric.buildContentProvider(ExternalHtmlPreviewProvider::class.java)
-            .create(externalHtmlAuthority(context)).get()
+        val provider = provider()
         provider.openFile(shared, "r").use { descriptor ->
             android.os.ParcelFileDescriptor.AutoCloseInputStream(descriptor).use {
                 assertArrayEquals(original.readBytes(), it.readBytes())
@@ -103,8 +109,7 @@ class ExternalHtmlPreviewTest {
 
     @Test fun providerRejectsAllWriteModesAndDelete() {
         val shared = copyExternalHtmlPreview(context, LocalPreviewFiles.saveCode(context, "<p>one</p>").path)
-        val provider = Robolectric.buildContentProvider(ExternalHtmlPreviewProvider::class.java)
-            .create(externalHtmlAuthority(context)).get()
+        val provider = provider()
         listOf("w", "wt", "wa", "rw", "rwt").forEach { mode ->
             assertThrows(FileNotFoundException::class.java) { provider.openFile(shared, mode) }
         }
