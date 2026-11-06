@@ -296,6 +296,8 @@ internal class AgentRuntimeRunExecutor(
                 request.config.subagentTools && currentPermissions().subagentTools
             }
             val controlRegistry = SubagentControlRegistry()
+            val supportsChildGroups = checkpointRecorder != null && request.operation == AgentRuntimeWire.OP_CHAT
+            val groupStore = if (supportsChildGroups) AgentSubagentCheckpoint(appContext, request.runId) { runController.isCancelled } else null
             val subagentExecutor = SubagentExecutor(
                 conversationKey = browserKey,
                 parentRunId = request.runId,
@@ -310,6 +312,10 @@ internal class AgentRuntimeRunExecutor(
                 },
                 parentController = childController,
                 controlRegistry = controlRegistry,
+                mailboxStorage = groupStore,
+                mailboxToolGate = { call, delegate ->
+                    if (planGate == null) delegate() else planGate.executeChild(call, delegate)
+                },
                 configProvider = {
                     val rawSubagentConfig = runBlocking {
                         RuntimeConfigRepository.subagentRuntimeConfig(request.config)
@@ -341,7 +347,6 @@ internal class AgentRuntimeRunExecutor(
                     )
                 },
             )
-            val supportsChildGroups = checkpointRecorder != null && request.operation == AgentRuntimeWire.OP_CHAT
             val runTools = JSONArray(mcpTools.toString()).also { tools ->
                 if (subagentAllowed()) AgentSubagentToolCatalog.appendSchemas(tools, groupsSupported = supportsChildGroups)
                 if (historyTool != null) tools.put(AgentConversationToolCatalog.schema())
@@ -395,7 +400,7 @@ internal class AgentRuntimeRunExecutor(
             // UI and archive-capable external handoffs have durable in-flight recovery. A caller
             // without a recoverable handoff retains the synchronous protocol.
             if (supportsChildGroups) {
-                val store = AgentSubagentCheckpoint(appContext, request.runId) { runController.isCancelled }
+                val store = checkNotNull(groupStore)
                 childCheckpoint = store
                 session.setChildRecovery { transcript -> AgentSubagentCheckpoint.recover(appContext, request.runId, transcript) }
                 childOwner = io.github.mangi.eta.agent.subagent.YieldableSubagents(
@@ -403,12 +408,18 @@ internal class AgentRuntimeRunExecutor(
                     persistence = store,
                     cancelChildren = childController::cancel,
                     parentRunId = request.runId,
+                    executeGrouped = { call, invocation, started ->
+                        if (!subagentAllowed()) {
+                            AgentModelClient.ToolResult(JSONObject().put("ok", false).put("code", "SUBAGENT_DISABLED")
+                                .put("message", "Subagent 权限已关闭").toString())
+                        } else subagentExecutor.execute(call.round, call, invocation, started)
+                    },
                     execute = { call, started ->
                         if (!subagentAllowed()) {
                             AgentModelClient.ToolResult(JSONObject().put("ok", false).put("code", "SUBAGENT_DISABLED")
                                 .put("message", "Subagent 权限已关闭").toString())
                         } else {
-                            subagentExecutor.execute(call.round, call, started)
+                            subagentExecutor.execute(call.round, call, onStarted = started)
                         }
                     },
                 )

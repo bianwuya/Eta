@@ -6,6 +6,7 @@ import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.agent.subagent.YieldableSubagents
 import io.github.mangi.eta.local.subagentcontext.SubagentTaskResult
 import io.github.mangi.eta.local.subagentcontext.SubagentTaskGroup
+import io.github.mangi.eta.local.subagentcontext.SubagentMailbox
 import io.github.mangi.eta.data.db.RuntimeRunDao
 import io.github.mangi.eta.data.db.EtaDatabase
 import kotlinx.coroutines.Dispatchers
@@ -18,9 +19,62 @@ internal class AgentSubagentCheckpoint(
     context: Context,
     private val runId: String,
     private val parentCancelled: () -> Boolean = { false },
-) : YieldableSubagents.Persistence {
+) : YieldableSubagents.Persistence, SubagentMailbox.Storage {
     private val db = EtaDatabase.get(context.applicationContext)
     private var stopped = false
+    private val closedMailboxes = mutableSetOf<String>()
+    private val mailboxActivity = mutableMapOf<String, () -> Boolean>()
+
+    @Synchronized
+    override fun bind(identity: SubagentMailbox.Identity, allowed: Boolean, isActive: () -> Boolean) {
+        if (stopped || parentCancelled()) throw AgentRunCancelledException()
+        check(identity.invocation.scope.parentRunId == runId)
+        update { records ->
+            val task = find(records, identity.invocation.taskId) ?: error("Mailbox invocation was not reserved")
+            check(task.getString("group_key") == identity.invocation.scope.groupKey && task.getString("state") == "reserved")
+            check(!task.has("subagent_id")) { "Mailbox invocation already bound" }
+            task.put("subagent_id", identity.subagentId).put("mailbox_allowed", allowed)
+        }
+        mailboxActivity[identity.invocation.taskId] = isActive
+    }
+
+    @Synchronized
+    override fun close(identity: SubagentMailbox.Identity) {
+        check(identity.invocation.scope.parentRunId == runId)
+        closedMailboxes += identity.invocation.taskId
+        mailboxActivity.remove(identity.invocation.taskId)
+        update { records ->
+            val task = find(records, identity.invocation.taskId) ?: return@update
+            check(task.getString("group_key") == identity.invocation.scope.groupKey &&
+                task.optString("subagent_id") == identity.subagentId)
+            task.put("mailbox_closed", true)
+        }
+    }
+
+    @Synchronized
+    override fun access(operation: (SubagentMailbox.State) -> JSONObject): JSONObject = runBlocking(Dispatchers.IO) {
+        db.withTransaction {
+            val dao = db.runtimeRunDao()
+            val records = read(dao, runId)
+            val raw = dao.textChunks(SubagentMailbox.TABLE, runId, "messages", Int.MAX_VALUE, 0).joinToString("") { it.content }
+            val messages = if (raw.isEmpty()) JSONArray() else JSONArray(raw)
+            val before = messages.toString()
+            val members = tasks(records).filter { it.has("group_key") }.map { task ->
+                SubagentMailbox.Member(task.getString("task_id"), task.optString("subagent_id"),
+                    task.getString("tool_call_id"), task.getString("group_key"),
+                    if ((task.optBoolean("mailbox_closed") || task.getString("task_id") in closedMailboxes ||
+                            mailboxActivity[task.getString("task_id")]?.invoke() == false) &&
+                        task.getString("state") != "finished") "terminal" else task.getString("state"),
+                    task.optBoolean("mailbox_allowed", false))
+            }
+            val result = operation(SubagentMailbox.State(runId, members, messages, stopped || parentCancelled()))
+            if (messages.toString() != before) {
+                if (stopped || parentCancelled()) throw AgentRunCancelledException()
+                putText(dao, SubagentMailbox.TABLE, runId, "messages", messages.toString())
+            }
+            result
+        }
+    }
 
     @Synchronized
     override fun reserveGroupMember(taskId: String, toolCallId: String, round: Int, prompt: String, groupKey: String) {
@@ -42,6 +96,7 @@ internal class AgentSubagentCheckpoint(
         update { records ->
             val task = find(records, taskId) ?: JSONObject().put("task_id", taskId).also { records.put(it) }
             check(task.optString("state") in setOf("", "reserved"))
+            check(!task.has("mailbox_allowed") || task.getString("subagent_id") == subagentId)
             task.put("subagent_id", subagentId).put("tool_call_id", toolCallId).put("round", round)
                 .put("accepted", accepted).put("prompt", prompt).put("state", "running")
         }
@@ -236,7 +291,11 @@ internal class AgentSubagentCheckpoint(
             }
 
         fun remove(context: Context, runId: String) = runBlocking(Dispatchers.IO) {
-            EtaDatabase.get(context.applicationContext).runtimeRunDao().deleteLocalTextOwner(TABLE, runId)
+            val db = EtaDatabase.get(context.applicationContext)
+            db.withTransaction {
+                db.runtimeRunDao().deleteLocalTextOwner(TABLE, runId)
+                db.runtimeRunDao().deleteLocalTextOwner(SubagentMailbox.TABLE, runId)
+            }
         }
     }
 }

@@ -14,6 +14,7 @@ import io.github.mangi.eta.local.subagentdisplay.SubagentReadableText
 import io.github.mangi.eta.local.subagentcontext.SubagentTaskHandoff
 import io.github.mangi.eta.local.subagentcontext.AgentRunRole
 import io.github.mangi.eta.local.subagentcontext.SubagentTaskResult
+import io.github.mangi.eta.local.subagentcontext.SubagentMailbox
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import org.json.JSONArray
@@ -43,6 +44,8 @@ internal class SubagentExecutor(
     private val childToolFactory: ((AgentRunController) -> AgentModelClient.ToolExecutor)? = null,
     private val detailStoreFactory: (() -> SubagentDetailStore)? = null,
     private val controlRegistry: SubagentControlRegistry? = null,
+    private val mailboxStorage: SubagentMailbox.Storage? = null,
+    private val mailboxToolGate: ((AgentModelClient.ToolCall, () -> AgentModelClient.ToolResult) -> AgentModelClient.ToolResult)? = null,
     private val providerFactory: (AgentModelClient.ModelConfig) -> io.github.mangi.eta.agent.model.AgentProviderClient =
         io.github.mangi.eta.agent.model.ProviderClientFactory::getClient,
 ) {
@@ -53,6 +56,7 @@ internal class SubagentExecutor(
     fun execute(
         parentRound: Int,
         toolCall: AgentModelClient.ToolCall,
+        mailboxInvocation: SubagentMailbox.Invocation? = null,
         onStarted: (String, String) -> Unit = { _, _ -> },
     ): AgentModelClient.ToolResult {
         parentController.throwIfCancelled()
@@ -60,6 +64,9 @@ internal class SubagentExecutor(
             ?: return failureResult(toolCall, "INVALID_ARGUMENTS", "subagent 参数必须是合法的 JSON 对象")
         if (args.has("group_key")) return failureResult(toolCall, "SUBAGENT_GROUP_UNAVAILABLE",
             "当前调用没有持久化父运行 owner；未启动分组任务。请去除 group_key 使用原同步路径。")
+        if (mailboxInvocation != null && (mailboxStorage == null || parentRunId.isBlank() ||
+                mailboxInvocation.scope.parentRunId != parentRunId))
+            return failureResult(toolCall, "MAILBOX_UNAUTHORIZED", "Mailbox requires a trusted durable parent owner")
 
         val prompt = args.optString("prompt").trim()
         val description = args.optString("description").trim()
@@ -141,6 +148,7 @@ internal class SubagentExecutor(
                 taskPrompt = taskPrompt,
                 description = description,
                 isResume = isResume,
+                mailboxInvocation = mailboxInvocation,
                 onStarted = onStarted,
             )
         } catch (failure: Exception) {
@@ -160,6 +168,7 @@ internal class SubagentExecutor(
         taskPrompt: String,
         description: String,
         isResume: Boolean,
+        mailboxInvocation: SubagentMailbox.Invocation?,
         onStarted: (String, String) -> Unit,
     ): AgentModelClient.ToolResult {
         val profile = entry.profile
@@ -172,9 +181,47 @@ internal class SubagentExecutor(
         )
         var ownedTools: AgentModelClient.ToolExecutor? = null
         var toolBinding: AgentRunController.ResourceBinding? = null
+        var mailboxBinding: AgentRunController.ResourceBinding? = null
+        var mailboxIdentity: SubagentMailbox.Identity? = null
+        val mailboxActive = java.util.concurrent.atomic.AtomicBoolean(true)
+        var mailboxCloseAttempted = false
+        var mailboxCloseFailure: Exception? = null
+        fun closeMailbox() {
+            mailboxActive.set(false)
+            if (mailboxCloseAttempted) return
+            mailboxCloseAttempted = true
+            mailboxBinding?.close()
+            try {
+                mailboxIdentity?.let { checkNotNull(mailboxStorage).close(it) }
+            } catch (failure: Exception) {
+                mailboxCloseFailure = failure
+            }
+        }
+        fun withMailboxCleanup(result: AgentModelClient.ToolResult): AgentModelClient.ToolResult {
+            closeMailbox()
+            val failure = mailboxCloseFailure ?: return result
+            return result.copy(content = JSONObject(result.content).put("cleanup_failure", JSONObject()
+                .put("code", "MAILBOX_CLOSE_FAILED").put("exception_type", failure.javaClass.simpleName)
+                .put("message", "Mailbox close persistence failed; original execution outcome is preserved. Do not replay completed work.")
+                .put("outcome_preserved", true)).toString())
+        }
         var detailStoreForCleanup: SubagentDetailStore? = null
         try {
+        val mailbox = mailboxInvocation?.let { invocation ->
+            val identity = SubagentMailbox.Identity(invocation, subagentId)
+            val storage = checkNotNull(mailboxStorage)
+            storage.bind(identity, profile.isToolAllowed(SubagentMailbox.TOOL_NAME)) {
+                mailboxActive.get() && !entry.explicitlyCancelled.get() && !childController.isCancelled && !parentController.isCancelled
+            }
+            mailboxIdentity = identity
+            mailboxBinding = childController.register { storage.close(identity) }
+            // The ordinary executor already observes pause. Do not block on pause while holding a DB transaction.
+            SubagentMailbox(identity, storage) {
+                if (childController.isCancelled || parentController.isCancelled) throw AgentRunCancelledException()
+            }
+        }
         val resolvedConfig = runCatching { configProvider() }.getOrElse { throwable ->
+            mailboxActive.set(false)
             if (throwable is AgentRunCancelledException || throwable is java.util.concurrent.CancellationException) throw throwable
             if (parentController.isCancelled || childController.isCancelled) throw AgentRunCancelledException()
             val previousCompactions = entry.compactionCount.get()
@@ -193,7 +240,7 @@ internal class SubagentExecutor(
                     snapshotJson = failed.encode(),
                 ),
             )
-            return AgentModelClient.ToolResult(
+            return withMailboxCleanup(AgentModelClient.ToolResult(
                 content = SubagentTaskResult.runtimeFailure(message).attach(JSONObject()
                     .put("ok", false)
                     .put("code", "SUBAGENT_CONFIG_ERROR")
@@ -201,7 +248,7 @@ internal class SubagentExecutor(
                     .put("message", message)
                     ).toString(),
                 command = latestSnapshots[toolCall.id],
-            )
+            ))
         }
         val modelLabel = resolvedConfig.modelDisplayName.ifBlank { resolvedConfig.model }
         val tracker = StepTracker(
@@ -302,7 +349,14 @@ internal class SubagentExecutor(
                     SubagentDisplayText.redact(subCall.argumentsJson)
                 }
                 runCatching { detailStore?.capture(detailId, stepId, "${subCall.name}\n$safeArguments\n[执行中]") }
-                tools.execute(subCall).also { result ->
+                val result = if (subCall.name == SubagentMailbox.TOOL_NAME) {
+                    val readOrStore = {
+                        mailbox?.execute(subCall) ?: AgentModelClient.ToolResult(JSONObject().put("ok", false)
+                            .put("code", "MAILBOX_UNAVAILABLE").put("message", "No explicit runtime group; mailbox is unavailable").toString())
+                    }
+                    mailboxToolGate?.invoke(subCall, readOrStore) ?: readOrStore()
+                } else tools.execute(subCall)
+                result.also { result ->
                     val safeResult = if (result.sensitive || io.github.mangi.eta.agent.model.AgentSensitiveToolPolicy.isSensitive(subCall.name)) {
                         "[敏感工具结果不保存]"
                     } else {
@@ -387,7 +441,9 @@ internal class SubagentExecutor(
                 runController = childController,
                 skillContext = skillContext,
                 memoryContext = memoryContext,
-                additionalTools = profile.filterTools(mcpTools),
+                additionalTools = profile.filterTools(JSONArray(mcpTools.toString()).also { extra ->
+                    if (mailbox != null) extra.put(SubagentMailbox.schema())
+                }),
                 executionContext = executionContext,
                 capabilitiesProvider = capabilitiesProvider,
                 sessionId = "$conversationKey-$subagentId",
@@ -398,6 +454,7 @@ internal class SubagentExecutor(
                     publishSnapshot(force = force)
                 },
             )
+            mailboxActive.set(false)
             // A child stopped while the model returned must not publish a successful completion.
             childController.throwIfCancelled()
             val updatedHistory = SubagentContinuation.history(
@@ -430,8 +487,11 @@ internal class SubagentExecutor(
                     ).toString(),
                 command = latestSnapshots[toolCall.id],
             )
-            controlRegistry?.finish(subagentId, toolCall.id, result) ?: result
+            val finalized = withMailboxCleanup(result)
+            childController.throwIfCancelled()
+            controlRegistry?.finish(subagentId, toolCall.id, finalized) ?: finalized
         } catch (throwable: Throwable) {
+            mailboxActive.set(false)
             val partial = (throwable as? AgentModelExecutionException)?.let { ex ->
                 val partialHistory = SubagentContinuation.history(
                     priorHistory,
@@ -498,8 +558,9 @@ internal class SubagentExecutor(
                 command = latestSnapshots[toolCall.id],
             )
             try {
+                val finalized = withMailboxCleanup(result)
                 childController.throwIfCancelled()
-                controlRegistry?.finish(subagentId, toolCall.id, result) ?: result
+                controlRegistry?.finish(subagentId, toolCall.id, finalized) ?: finalized
             } catch (cancelledAtPublication: AgentRunCancelledException) {
                 tracker.markCancelled(partial)
                 runCatching { publishSnapshot(force = true) }
@@ -507,11 +568,16 @@ internal class SubagentExecutor(
             }
         }
         } finally {
-            runCatching { toolBinding?.close() }
-            (ownedTools as? AutoCloseable)?.let { runCatching { it.close() } }
-            runCatching { kotlinx.coroutines.runBlocking { detailStoreForCleanup?.prune() } }
-            runCatching { controlBinding?.close() }
-            runCatching { controllerBinding.close() }
+            try {
+                // Fallback for startup/cancellation exits. Never replace an already selected outcome.
+                closeMailbox()
+            } finally {
+                runCatching { toolBinding?.close() }
+                (ownedTools as? AutoCloseable)?.let { runCatching { it.close() } }
+                runCatching { kotlinx.coroutines.runBlocking { detailStoreForCleanup?.prune() } }
+                runCatching { controlBinding?.close() }
+                runCatching { controllerBinding.close() }
+            }
         }
     }
 
