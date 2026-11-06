@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
@@ -227,6 +228,18 @@ internal fun SubagentInspectorContent(
             "step:${step.id.length}:${step.id}:$occurrence"
         }
     }
+    val stepsState = rememberLazyListState()
+    val previousStepKeys = remember(snapshot.subagentId) { arrayOf(stepKeys) }
+    if (previousStepKeys[0] != stepKeys) {
+        val anchor = stepsState.layoutInfo.visibleItemsInfo.firstOrNull()
+        val nextIndex = anchor?.let { stepKeys.indexOf(it.key) } ?: -1
+        // The preview drops old entries as new ones arrive. Keep an idle reader on
+        // the same surviving item, rather than inheriting the old numeric index.
+        if (nextIndex >= 0 && !stepsState.isScrollInProgress) {
+            stepsState.requestScrollToItem(nextIndex, stepsState.firstVisibleItemScrollOffset)
+        }
+        previousStepKeys[0] = stepKeys
+    }
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -296,6 +309,7 @@ internal fun SubagentInspectorContent(
             }
         }
         LazyColumn(
+            state = stepsState,
             modifier = Modifier.fillMaxWidth().weight(1f, fill = false),
         ) {
             // Reuse the main chat timeline, composing only visible execution steps.
