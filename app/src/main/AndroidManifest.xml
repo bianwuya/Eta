@@ -51,6 +51,15 @@
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
         </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="https" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="content" android:mimeType="text/html" />
+        </intent>
     </queries>
 
     <application
@@ -197,6 +206,16 @@
                 <action android:name="android.service.notification.NotificationListenerService" />
             </intent-filter>
         </service>
+
+        <provider
+            android:name=".local.richcontent.ExternalHtmlPreviewProvider"
+            android:authorities="${applicationId}.external-html"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/external_html_paths" />
+        </provider>
 
         <provider
             android:name=".agent.accessibility.AgentAccessibilityHealthProvider"

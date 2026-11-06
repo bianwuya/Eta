@@ -65,7 +65,7 @@ private fun LocalFileCard(reference: String) {
     ) {
         BasicComponent(
             title = percentName(reference),
-            summary = "点击预览 HTML · 本地文件",
+            summary = "在浏览器中查看 HTML · 本地文件",
         )
     }
 }
