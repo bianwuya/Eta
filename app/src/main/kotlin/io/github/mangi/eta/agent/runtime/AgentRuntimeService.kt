@@ -20,6 +20,7 @@ import android.os.Looper
 import android.os.Message
 import android.os.Messenger
 import android.os.Process
+import android.os.SystemClock
 import android.provider.Settings
 import android.view.Gravity
 import android.view.WindowManager
@@ -65,6 +66,10 @@ import io.github.mangi.eta.local.conversationcommunication.ConversationOutcomeRe
 import io.github.mangi.eta.local.conversationcommunication.ConversationTerminalOutcome
 import io.github.mangi.eta.core.ModuleConfig
 import io.github.mangi.eta.core.safeLogType
+import io.github.mangi.eta.agent.tool.ToolExecutionDecision
+import io.github.mangi.eta.local.guipresentation.GuiPresentationState
+import io.github.mangi.eta.local.guipresentation.GuiPresentationDiagnostics
+import io.github.mangi.eta.local.guipresentation.GuiVisibilityGate
 import io.github.mangi.eta.data.repository.RuntimeConfigRepository
 import kotlin.concurrent.thread
 import kotlinx.coroutines.CoroutineScope
@@ -109,6 +114,21 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     @Volatile private var destroyed = false
     @Volatile private var lastGuiOwnerRunId: String? = null
     private var displayedRun: RuntimeRunRegistry.Run? = null
+    private val presentation = GuiPresentationState()
+    private val presentationRunId = mutableStateOf<String?>(null)
+    private val capsuleOwnerKey = mutableStateOf("")
+    private val visibilityGate = GuiVisibilityGate(
+        isMainThread = { Looper.myLooper() == Looper.getMainLooper() },
+        dispatch = { mainHandler.post(it) },
+    )
+    private val visibleWaiters = linkedMapOf<GuiVisibilityGate.Attempt, () -> Unit>()
+    private var latestPresentationAttempt: GuiVisibilityGate.Attempt? = null
+    private var capsulePaintedOwner: String? = null
+    private var capsuleFramePending: Any? = null
+    private var overlayEpoch = 0L
+    @Volatile private var clearanceIdentity: Any = Any()
+    private var releaseVisual: Runnable? = null
+    private var diagnosticEntryPackage: String? = null
 
     private var windowManager: WindowManager? = null
     private var glowView: ComposeView? = null
@@ -126,7 +146,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     private val capsuleSupplementFocusable = mutableStateOf(false)
     /** Agent 手势穿过胶囊时为 true：窗口不可触摸，胶囊淡出让路。 */
     private val capsuleYielded = mutableStateOf(false)
-    private val restoreCapsule = Runnable { setCapsuleYielded(false) }
+    private var restoreCapsule: Runnable? = null
     private val clearanceHost = object : AgentOverlayClearance.Host {
         override fun capsuleTouchBounds(): Rect? {
             val view = capsuleView?.takeIf { it.isAttachedToWindow } ?: return null
@@ -143,11 +163,22 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         override fun yieldCapsule() = setCapsuleYielded(true)
 
         override fun scheduleCapsuleRestore(delayMs: Long) {
-            mainHandler.removeCallbacks(restoreCapsule)
-            mainHandler.postDelayed(restoreCapsule, delayMs)
+            cancelRestore()
+            val epoch = overlayEpoch
+            val owner = displayedRun?.runId
+            restoreCapsule = Runnable {
+                if (!destroyed && epoch == overlayEpoch && owner == displayedRun?.runId) {
+                    setCapsuleYielded(false)
+                }
+            }.also { mainHandler.postDelayed(it, delayMs) }
         }
 
-        override fun cancelRestore() = mainHandler.removeCallbacks(restoreCapsule)
+        override fun cancelRestore() {
+            restoreCapsule?.let(mainHandler::removeCallbacks)
+            restoreCapsule = null
+        }
+
+        override fun presentationIdentity(): Any = clearanceIdentity
     }
     private val hideToken = Any()
 
@@ -163,6 +194,9 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         serviceScope.launch {
             VirtualDisplayController.snapshots.collect { snapshot ->
                 val wasActive = virtualDisplayState.value.active
+                if (virtualDisplayState.value.materializingToMain != snapshot.materializingToMain) {
+                    capsulePaintedOwner = null
+                }
                 virtualDisplayState.value = snapshot
                 if (wasActive != snapshot.active) {
                     if (!snapshot.active) VirtualDisplayController.setStageExpanded(false)
@@ -196,6 +230,8 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
 
     override fun onDestroy() {
         destroyed = true
+        visibilityGate.close()
+        visibleWaiters.clear()
         if (activeInstance === this) activeInstance = null
         setKeepScreenOn(false)
         runs.all().forEach { run ->
@@ -210,9 +246,9 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         AgentOverlayClearance.detach(clearanceHost)
         VirtualDisplayController.release(this)
         unregisterResultCardBack()
-        resultCardView?.let { view -> runCatching { windowManager?.removeView(view) } }
-        capsuleView?.let { view -> runCatching { windowManager?.removeView(view) } }
-        glowView?.let { view -> runCatching { windowManager?.removeView(view) } }
+        resultCardView?.let { removePresentationView(it, "result") }
+        capsuleView?.let { removePresentationView(it, "capsule") }
+        glowView?.let { removePresentationView(it, "glow") }
         resultCardView = null
         capsuleView = null
         glowView = null
@@ -565,6 +601,9 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
             },
             persistArtifacts = ::persistRunArtifacts,
             conversationMessaging = conversationMessaging,
+            beforeGuiAction = { controller, isCurrent, entryPackage ->
+                awaitGuiPresentation(run, controller, isCurrent, entryPackage)
+            },
         ).execute(run.session, run.request)
         if (!run.session.controller.isCancelled) {
             recordConversationOutcome(
@@ -692,7 +731,8 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
             val ownsGui = guiState.ownerRunId == run.runId
             // StateFlow 可以合并短暂的获得与释放；终态归属仍以顺序事件记录的最后所有者为准。
             if (event is AgentEvent.GuiControlChanged && event.status == GuiControlStatus.Acquired &&
-                !guiState.userPaused && lastGuiOwnerRunId == run.runId && (ownsGui || guiState.ownerRunId == null)) {
+                !guiState.userPaused && ownsGui && !run.session.isTerminal &&
+                !run.session.controller.isCancelled) {
                 bindDisplayedRun(run)
             }
             if (AgentOverlayVisibilityPolicy.shouldRecordForegroundExecution(event, true)) {
@@ -700,7 +740,8 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
             }
             runCatching {
                 run.overlayState = run.overlayState.applyEvent(event)
-                if (displayedRun === run && ownsGui && !run.session.isTerminal) {
+                if (displayedRun === run && ownsGui && !run.session.isTerminal &&
+                    !run.session.controller.isCancelled) {
                     state.value = run.overlayState
                     syncActiveRunOverlayVisibility(run)
                 }
@@ -1078,22 +1119,127 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         showOverlay()
     }
 
-    private fun syncActiveRunOverlayVisibility(run: RuntimeRunRegistry.Run?) {
-        if (AgentOverlayVisibilityPolicy.shouldSuppressOverlayInEtaUi(
-                handoffSource = run?.request?.handoff?.source,
-                etaUiInForeground = MainActivity.isInForeground,
-                virtualDisplayActive = virtualDisplayState.value.active,
-            )
-        ) {
-            removeAmbientWindows()
-        } else {
-            ensureOverlayVisible()
+    private fun awaitGuiPresentation(
+        run: RuntimeRunRegistry.Run,
+        controller: AgentRunController,
+        isActionCurrent: () -> Boolean,
+        entryPackage: String?,
+    ): ToolExecutionDecision = visibilityGate.await(
+        controller = controller,
+        isCurrent = {
+            !destroyed && runs.contains(run) && !run.session.isTerminal &&
+                guiControl.state.value.ownerRunId == run.runId &&
+                !guiControl.state.value.userPaused && isActionCurrent()
+        },
+        present = { attempt ->
+            if (attempt.canPresent()) {
+                applyGuiControlState(guiControl.state.value, reveal = false)
+                diagnosticEntryPackage = entryPackage
+                when (val shown = showOverlay(attempt::canPresent)) {
+                    is ToolExecutionDecision.Reject -> {
+                        tracePresentation("gate_rejected", run)
+                        attempt.reject(shown)
+                        if (displayedRun === run && !guiControl.state.value.userPaused) removeAmbientWindows()
+                    }
+                    ToolExecutionDecision.Allow -> {
+                        latestPresentationAttempt = attempt
+                        if (!attempt.canPresent()) {
+                            if (displayedRun === run) removeAmbientWindows()
+                        } else {
+                            // The callback is driven by the existing capsule's settled Compose draw,
+                            // not just attachment/pre-draw or an Activity lifecycle flag.
+                            visibleWaiters[attempt] = {
+                                if (!attempt.canPresent()) {
+                                    visibleWaiters.remove(attempt)
+                                } else if (displayedRun === run && capsuleIsVisible() &&
+                                    ((capsulePaintedOwner == run.runId &&
+                                        !virtualDisplayState.value.materializingToMain && !capsuleYielded.value) ||
+                                        (presentation.hasControlledPresentation(run.runId, virtualDisplayState.value.materializingToMain) &&
+                                            (!virtualDisplayState.value.materializingToMain || glowView?.isAttachedToWindow == true)))) {
+                                    tracePresentation(if (capsuleYielded.value || virtualDisplayState.value.materializingToMain)
+                                        "gate_controlled_path" else "gate_visible", run)
+                                    attempt.complete(ToolExecutionDecision.Allow)
+                                    visibleWaiters.remove(attempt)
+                                }
+                            }
+                            visibleWaiters[attempt]?.invoke()
+                            capsuleView?.invalidate()
+                        }
+                    }
+                }
+            }
+        },
+        disposed = { attempt ->
+            visibleWaiters.remove(attempt)
+            if (!attempt.allowed && latestPresentationAttempt === attempt && displayedRun === run && visibleWaiters.isEmpty() &&
+                !guiControl.state.value.userPaused) {
+                tracePresentation("gate_disposed_rejected", run)
+                removeAmbientWindows()
+            }
+        },
+    )
+
+    private fun capsuleIsVisible(): Boolean {
+        val view = capsuleView ?: return false
+        return view.isAttachedToWindow && view.isShown && view.windowVisibility == View.VISIBLE &&
+            view.alpha > 0f && view.width > 0 && view.height > 0 &&
+            view.getGlobalVisibleRect(Rect())
+    }
+
+    private fun onCapsuleVisibleFrame(epoch: Long, owner: String?) {
+        if (destroyed || epoch != overlayEpoch || owner != presentationRunId.value ||
+            !capsuleIsVisible() || capsuleYielded.value || virtualDisplayState.value.materializingToMain) return
+        // A new owner must paint its own content before its action may proceed.
+        val previousOwner = capsulePaintedOwner
+        val contentIdentity = clearanceIdentity
+        capsulePaintedOwner = owner
+        presentation.confirmVisible(owner)
+        if (capsuleFramePending === contentIdentity || (visibleWaiters.isEmpty() && previousOwner == owner)) return
+        capsuleFramePending = contentIdentity
+        mainHandler.post {
+            if (capsuleFramePending === contentIdentity) capsuleFramePending = null
+            if (!destroyed && epoch == overlayEpoch && owner == presentationRunId.value &&
+                contentIdentity == clearanceIdentity) {
+                if (updateCapsuleTouchability()) visibleWaiters.values.toList().forEach { it() }
+                else removeAmbientWindows()
+            }
         }
+    }
+
+    private fun tracePresentation(event: String, run: RuntimeRunRegistry.Run? = displayedRun) {
+        if (!GuiPresentationDiagnostics.enabled) return
+        GuiPresentationDiagnostics.record(
+            event = event,
+            runId = run?.runId,
+            source = run?.request?.handoff?.source,
+            entryVisible = runCatching {
+                diagnosticEntryPackage?.let { name ->
+                    AgentAccessibilityService.current()?.packageWindowVisibility(name)?.name
+                }
+            }.getOrNull() ?: "unknown",
+            overlayAttached = capsuleView?.isAttachedToWindow == true,
+            owner = guiControl.state.value.ownerRunId,
+        )
+    }
+
+    private fun syncActiveRunOverlayVisibility(@Suppress("UNUSED_PARAMETER") run: RuntimeRunRegistry.Run?) {
+        // Foreground Activity != a visible operation hint. An actual GUI owner always
+        // uses the original system capsule, even when the chat initiated the run.
+        if (presentation.phase == GuiPresentationState.Phase.USER_PAUSED) {
+            ensureOverlayVisible()
+            return
+        }
+        // Initial/recreated windows belong to a live bounded gate, not a late ownership event.
+        if (presentation.phase == GuiPresentationState.Phase.OWNED) return
     }
 
     private fun handleEtaUiVisibilityChanged() {
         if (destroyed) return
         val run = displayedRun ?: return
+        if (presentation.phase != GuiPresentationState.Phase.HIDDEN) {
+            syncActiveRunOverlayVisibility(run)
+            return
+        }
         val suppress = AgentOverlayVisibilityPolicy.shouldSuppressOverlayInEtaUi(
             handoffSource = run.request.handoff?.source,
             etaUiInForeground = MainActivity.isInForeground,
@@ -1102,15 +1248,6 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         if (resultCardView != null) {
             if (suppress) dismissResult(run)
             return
-        }
-        val guiState = guiControl.state.value
-        val activeGuiRun = guiState.userPaused || (guiState.ownerRunId == run.runId && !run.session.isTerminal)
-        if (!activeGuiRun) return
-        if (suppress) {
-            removeAmbientWindows()
-        } else {
-            state.value = run.overlayState
-            ensureOverlayVisible()
         }
     }
 
@@ -1123,9 +1260,18 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         )
     }
 
-    private fun applyGuiControlState(guiState: GuiControlCoordinator.State) {
-        if (destroyed) return
-        val owner = guiState.ownerRunId?.let(runs::get)
+    private fun applyGuiControlState(guiState: GuiControlCoordinator.State) =
+        applyGuiControlState(guiState, reveal = true)
+
+    private fun applyGuiControlState(guiState: GuiControlCoordinator.State, reveal: Boolean) {
+        if (destroyed || guiState != guiControl.state.value) return
+        releaseVisual?.let(mainHandler::removeCallbacks)
+        releaseVisual = null
+        val owner = guiState.ownerRunId?.let(runs::get)?.takeIf {
+            guiState.userPaused || (!it.session.isTerminal && !it.session.controller.isCancelled)
+        }
+        val wasReleasing = presentation.phase == GuiPresentationState.Phase.RELEASING
+        presentation.update(owner?.runId, guiState.userPaused, SystemClock.uptimeMillis())
         if (owner != null && displayedRun !== owner) {
             bindDisplayedRun(owner)
             AgentHapticFeedback.perform(this, AgentHapticFeedback.Type.RUN_STARTED)
@@ -1138,9 +1284,15 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                     detailText = "手机操作已暂停",
                 )
                 owner?.overlayState = state.value
-                syncActiveRunOverlayVisibility(owner ?: displayedRun)
+                if (reveal) syncActiveRunOverlayVisibility(owner ?: displayedRun)
             }
             owner != null -> {
+                if (wasReleasing) {
+                    clearanceHost.cancelRestore()
+                    capsuleYielded.value = false
+                    presentation.setYielded(false)
+                    capsulePaintedOwner = null
+                }
                 if (owner.overlayState.phase == AgentOverlayPhase.PAUSED) {
                     owner.overlayState = owner.overlayState.copy(
                         phase = AgentOverlayPhase.RUNNING,
@@ -1149,20 +1301,59 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                     )
                 }
                 state.value = owner.overlayState
-                syncActiveRunOverlayVisibility(owner)
+                capsuleOwnerKey.value = owner.runId
+                if (reveal) syncActiveRunOverlayVisibility(owner)
+            }
+            presentation.phase == GuiPresentationState.Phase.RELEASING -> {
+                clearanceHost.cancelRestore()
+                clearanceIdentity = Any()
+                capsulePaintedOwner = null
+                capsuleOwnerKey.value = displayedRun?.runId.orEmpty() + ":released"
+                // A neutral, noninteractive tail; never claims an old click is in progress.
+                state.value = state.value.copy(status = AgentOverlayStatus.Reasoning, thought = "", detailText = "")
+                capsuleExpanded.value = false
+                setCapsuleInputMode(false)
+                if (!updateCapsuleTouchability()) removeAmbientWindows()
+                val revision = presentation.revision
+                val deadline = presentation.releaseDeadlineMs ?: SystemClock.uptimeMillis()
+                releaseVisual = Runnable {
+                    if (guiControl.state.value.ownerRunId == null && !guiControl.state.value.userPaused &&
+                        presentation.expire(revision, SystemClock.uptimeMillis())) {
+                        tracePresentation("release_expired")
+                        removeAmbientWindows()
+                    }
+                }.also { mainHandler.postDelayed(it, (deadline - SystemClock.uptimeMillis()).coerceAtLeast(0L)) }
             }
             else -> removeAmbientWindows()
         }
+        updateCapsuleTouchability()
+        tracePresentation("owner_projection")
         updateKeepScreenOn()
         publishExecutionState()
     }
 
     private fun bindDisplayedRun(run: RuntimeRunRegistry.Run) {
         if (displayedRun === run) return
-        removeOverlayWindows()
+        // Keep the ambient windows attached during a handoff; only their owner/content changes.
+        mainHandler.removeCallbacksAndMessages(hideToken)
+        clearanceHost.cancelRestore()
+        unregisterResultCardBack()
+        resultCardView?.let { removePresentationView(it, "result") }
+        resultCardView = null
+        resultCardParams = null
+        capsulePaintedOwner = null
+        clearanceIdentity = Any()
+        capsuleYielded.value = false
+        presentation.setYielded(false)
+        presentation.forgetVisible()
         displayedRun?.completedContext = null
         displayedRun = run
+        diagnosticEntryPackage = null
+        presentationRunId.value = run.runId
+        capsuleOwnerKey.value = run.runId
         capsuleExpanded.value = false
+        setCapsuleInputMode(false)
+        if (capsuleView != null && !updateCapsuleTouchability()) removeAmbientWindows()
     }
 
     private fun publishExecutionState() {
@@ -1186,12 +1377,22 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         capsuleView?.keepScreenOn = enabled
     }
 
-    private fun showOverlay() {
-        if (capsuleView != null) return
+    private fun showOverlay(): ToolExecutionDecision = showOverlay { !destroyed }
+
+    private fun showOverlay(isCurrent: () -> Boolean): ToolExecutionDecision {
+        fun stale() = ToolExecutionDecision.Reject("GUI_PRESENTATION_STALE", "手机操作权已变化，本次未执行")
+        if (!isCurrent()) return stale()
         // TYPE_ACCESSIBILITY_OVERLAY 免 SYSTEM_ALERT_WINDOW 权限；仅回退态（无障碍未启用）才需检查
-        if (AgentAccessibilityService.current() == null && !Settings.canDrawOverlays(this)) return
-        val wm = overlayContext().getSystemService(Context.WINDOW_SERVICE) as? WindowManager ?: return
+        if (AgentAccessibilityService.current() == null && !Settings.canDrawOverlays(this)) {
+            tracePresentation("overlay_permission_missing")
+            return ToolExecutionDecision.Reject("GUI_OVERLAY_PERMISSION_REQUIRED", "操作提示需要无障碍浮层或悬浮窗权限，本次未执行")
+        }
+        if (capsuleView?.isAttachedToWindow == true) return ToolExecutionDecision.Allow
+        if (capsuleView != null || glowView != null) removeAmbientWindows()
+        val wm = overlayContext().getSystemService(Context.WINDOW_SERVICE) as? WindowManager
+            ?: return ToolExecutionDecision.Reject("GUI_PRESENTATION_UNAVAILABLE", "操作提示窗口服务不可用，本次未执行")
         windowManager = wm
+        val epoch = ++overlayEpoch
 
         // ── 氛围光窗口：全屏触摸穿透，彩虹光圈（后台虚拟屏运行时隐藏流光，仅承载全屏破壁动画） ─
         val glow = createOverlayComposeView {
@@ -1202,23 +1403,32 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
             )
         }
         val glowLp = glowLayoutParams()
+        if (!isCurrent()) return stale()
         runCatching { wm.addView(glow, glowLp) }.onFailure { throwable ->
+            tracePresentation("glow_add_failed")
             AndroidAgentLogger.warnThrottled("runtime_glow_add_view_failed") {
                 "Agent runtime glow addView failed: type=${throwable.safeLogType()}"
             }
+            if (glow.isAttachedToWindow) removePresentationView(glow, "glow")
+            return ToolExecutionDecision.Reject("GUI_PRESENTATION_FAILED", "操作提示流光窗口建立失败，本次未执行")
         }
         glowView = glow
         glowParams = glowLp
+        tracePresentation("glow_add_ok")
 
         // ── 状态胶囊窗口：状态栏下方居中，收起时一句状态（含微缩镜），点击展开控制与画廊视窗 ─
         val capsule = createOverlayComposeView {
-            val controlRunId = displayedRun?.runId
+            val controlRunId = presentationRunId.value
+            val contentKey = capsuleOwnerKey.value
+            val contentIdentity = clearanceIdentity
+            fun isCurrentContent() = epoch == overlayEpoch && contentKey == capsuleOwnerKey.value &&
+                controlRunId == presentationRunId.value && contentIdentity == clearanceIdentity
             AgentOverlayCapsule(
                 state = state.value,
                 expanded = capsuleExpanded.value,
                 yielded = capsuleYielded.value,
                 onToggleExpanded = ::toggleCapsule,
-                onCollapsedSettled = ::onCapsuleCollapsedSettled,
+                onCollapsedSettled = { if (isCurrentContent()) onCapsuleCollapsedSettled() },
                 onPause = {
                     VirtualDisplayController.setUserControlling(false)
                     requestPause(controlRunId)
@@ -1228,8 +1438,8 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                     requestResume()
                 },
                 onStop = { requestStop(controlRunId) },
-                onSupplementModeChange = ::setCapsuleInputMode,
-                onSupplement = { requestSupplement(controlRunId, it) },
+                onSupplementModeChange = { if (isCurrentContent()) setCapsuleInputMode(it) },
+                onSupplement = { if (isCurrentContent()) requestSupplement(controlRunId, it) },
                 virtualDisplay = virtualDisplayState.value,
                 onTakeOverVirtualDisplay = {
                     VirtualDisplayController.setUserControlling(true)
@@ -1246,40 +1456,90 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                 onSwipeVirtualCanvas = { sx, sy, ex, ey, durationMs ->
                     VirtualDisplayController.dispatchUserSwipeOnCanvas(sx, sy, ex, ey, durationMs)
                 },
+                ownerKey = contentKey,
+                onVisibleFrame = { if (isCurrentContent()) onCapsuleVisibleFrame(epoch, controlRunId) },
             )
         }
         val capsuleLp = capsuleLayoutParams()
         capsule.keepScreenOn = keepScreenOn.value
+        if (!isCurrent()) {
+            removeAmbientWindows()
+            return stale()
+        }
         runCatching { wm.addView(capsule, capsuleLp) }.onFailure { throwable ->
+            tracePresentation("capsule_add_failed")
             AndroidAgentLogger.warnThrottled("runtime_capsule_add_view_failed") {
                 "Agent runtime capsule addView failed: type=${throwable.safeLogType()}"
             }
-            return
+            if (capsule.isAttachedToWindow) removePresentationView(capsule, "capsule")
+            removeAmbientWindows()
+            return ToolExecutionDecision.Reject("GUI_PRESENTATION_FAILED", "操作提示胶囊窗口建立失败，本次未执行")
         }
         capsuleView = capsule
         capsuleParams = capsuleLp
+        if (!updateCapsuleTouchability()) {
+            removeAmbientWindows()
+            return ToolExecutionDecision.Reject("GUI_PRESENTATION_FAILED", "操作提示窗口更新失败，本次未执行")
+        }
+        tracePresentation("capsule_add_ok")
+        return ToolExecutionDecision.Allow
     }
 
     /**
      * 让路时同步切换触摸穿透：标志位立刻生效保证手势不被截走，视觉过渡交给胶囊内的动画。
      * 恢复时先淡入再收回触摸，两者顺序无关紧要，因为恢复发生在手势结束之后。
      */
-    private fun setCapsuleYielded(yielded: Boolean) {
-        if (!yielded) mainHandler.removeCallbacks(restoreCapsule)
+    private fun setCapsuleYielded(yielded: Boolean): Boolean {
+        if (!yielded) clearanceHost.cancelRestore()
         capsuleYielded.value = yielded
-        val wm = windowManager ?: return
-        val capsule = capsuleView ?: return
-        val lp = capsuleParams ?: return
-        val nextFlags = if (yielded) {
+        presentation.setYielded(yielded)
+        capsulePaintedOwner = null
+        if (updateCapsuleTouchability()) return true
+        removeAmbientWindows()
+        return false
+    }
+
+    private fun updateCapsuleTouchability(): Boolean {
+        val wm = windowManager ?: return false
+        val capsule = capsuleView ?: return false
+        val lp = capsuleParams ?: return false
+        val guiState = guiControl.state.value
+        // A delayed clearance restore must not reactivate a released or different owner's window.
+        val touchable = presentation.touchable && (guiState.userPaused ||
+            (guiState.ownerRunId != null && guiState.ownerRunId == displayedRun?.runId)) &&
+            capsulePaintedOwner == displayedRun?.runId
+        val nextFlags = if (!touchable) {
             lp.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
         } else {
             lp.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
         }
-        if (lp.flags == nextFlags) return
+        if (lp.flags == nextFlags) return true
         lp.flags = nextFlags
-        runCatching { wm.updateViewLayout(capsule, lp) }.onFailure { throwable ->
+        return runCatching { wm.updateViewLayout(capsule, lp) }.onFailure { throwable ->
+            tracePresentation("capsule_touch_update_failed")
             AndroidAgentLogger.warnThrottled("runtime_capsule_clearance_failed") {
                 "Agent runtime capsule clearance update failed: type=${throwable.safeLogType()}"
+            }
+        }.isSuccess
+    }
+
+    private fun removePresentationView(view: View, kind: String) {
+        val wm = windowManager ?: return
+        runCatching { wm.removeViewImmediate(view) }.onSuccess {
+            tracePresentation("${kind}_remove_ok")
+        }.onFailure { throwable ->
+            tracePresentation("${kind}_remove_failed")
+            // Even if WindowManager rejected removal, a stale surface must neither consume input
+            // nor continue claiming to execute an operation.
+            view.visibility = View.GONE
+            view.isEnabled = false
+            (view.layoutParams as? WindowManager.LayoutParams)?.let { params ->
+                params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                runCatching { wm.updateViewLayout(view, params) }
+            }
+            AndroidAgentLogger.warnThrottled("runtime_overlay_remove_failed") {
+                "Agent runtime overlay removal failed: type=${throwable.safeLogType()}"
             }
         }
     }
@@ -1362,6 +1622,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         }
         val lp = resultCardLayoutParams()
         runCatching { wm.addView(card, lp) }.onFailure { throwable ->
+            tracePresentation("result_add_failed")
             AndroidAgentLogger.warnThrottled("runtime_result_card_add_view_failed") {
                 "Agent runtime result card addView failed: type=${throwable.safeLogType()}"
             }
@@ -1369,6 +1630,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         }
         resultCardView = card
         resultCardParams = lp
+        tracePresentation("result_add_ok")
         registerResultCardBack(card)
         card.requestFocus()
     }
@@ -1583,6 +1845,13 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         val wm = windowManager ?: return
         val capsule = capsuleView ?: return
         val lp = capsuleParams ?: return
+        if (!focusable) {
+            capsule.clearFocus()
+            runCatching {
+                (getSystemService(Context.INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager)
+                    ?.hideSoftInputFromWindow(capsule.windowToken, 0)
+            }.onFailure { tracePresentation("capsule_keyboard_hide_failed") }
+        }
         val nextFlags = if (focusable) {
             lp.flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv()
         } else {
@@ -1591,9 +1860,11 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         if (lp.flags == nextFlags) return
         lp.flags = nextFlags
         runCatching { wm.updateViewLayout(capsule, lp) }.onFailure { throwable ->
+            tracePresentation("capsule_focus_update_failed")
             AndroidAgentLogger.warnThrottled("runtime_capsule_focus_update_failed") {
                 "Agent runtime capsule focus update failed: type=${throwable.safeLogType()}"
             }
+            removeAmbientWindows()
         }
     }
 
@@ -1604,6 +1875,9 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         (dp * resources.displayMetrics.density).toInt()
 
     private fun enterFinalState(finalState: AgentOverlayState) {
+        displayedRun?.runId?.let(presentation::terminal)
+        releaseVisual?.let(mainHandler::removeCallbacks)
+        releaseVisual = null
         state.value = finalState
 
         val run = displayedRun
@@ -1627,11 +1901,17 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     }
 
     private fun removeAmbientWindows() {
-        mainHandler.removeCallbacks(restoreCapsule)
+        clearanceHost.cancelRestore()
+        latestPresentationAttempt = null
+        overlayEpoch++
+        clearanceIdentity = Any()
+        capsulePaintedOwner = null
         capsuleYielded.value = false
+        presentation.setYielded(false)
+        presentation.forgetVisible()
         capsuleView?.keepScreenOn = false
-        capsuleView?.let { view -> runCatching { windowManager?.removeView(view) } }
-        glowView?.let { view -> runCatching { windowManager?.removeView(view) } }
+        capsuleView?.let { removePresentationView(it, "capsule") }
+        glowView?.let { removePresentationView(it, "glow") }
         capsuleView = null
         glowView = null
         capsuleParams = null
@@ -1651,13 +1931,14 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
 
     private fun removeOverlayWindows() {
         mainHandler.removeCallbacksAndMessages(hideToken)
-        mainHandler.removeCallbacks(restoreCapsule)
-        capsuleYielded.value = false
-        capsuleView?.keepScreenOn = false
+        releaseVisual?.let(mainHandler::removeCallbacks)
+        releaseVisual = null
+        presentation.clear()
+        presentationRunId.value = null
+        capsuleOwnerKey.value = ""
         unregisterResultCardBack()
-        resultCardView?.let { view -> runCatching { windowManager?.removeView(view) } }
-        capsuleView?.let { view -> runCatching { windowManager?.removeView(view) } }
-        glowView?.let { view -> runCatching { windowManager?.removeView(view) } }
+        resultCardView?.let { removePresentationView(it, "result") }
+        removeAmbientWindows()
         resultCardView = null
         capsuleView = null
         glowView = null

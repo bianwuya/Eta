@@ -100,6 +100,9 @@ internal class AgentLocalTools(
     private val beforeToolExecution: (String) -> ToolExecutionDecision = {
         ToolExecutionDecision.Allow
     },
+    private val beforeGuiAction: (String, () -> Boolean) -> ToolExecutionDecision = { _, _ ->
+        ToolExecutionDecision.Allow
+    },
     private val skillIndexService: SkillIndexService? = null,
     private val skillLoader: SkillLoader? = null,
     private val skillResourceReader: SkillResourceReader? = null,
@@ -241,6 +244,12 @@ internal class AgentLocalTools(
                     )
                 }
             }
+            if (AgentToolRequirements.requiresGuiControl(toolCall.name)) {
+                val visible = prepareGuiAction(toolCall.name, guiGeneration)
+                if (visible is ToolExecutionDecision.Reject) {
+                    return@runCatching textResult(errorResult(visible.code, visible.message))
+                }
+            }
             when (toolCall.name) {
                 "generate_image" -> imageGenerationTool.execute(toolCall)
                 "ask_user_questions" -> {
@@ -253,7 +262,7 @@ internal class AgentLocalTools(
                 "search_apps" -> textResult(searchApps(args))
                 "launch_app" -> {
                     publishedObservation.set(PublishedObservation())
-                    textResult(launchApp(args))
+                    textResult(launchApp(args, guiGeneration))
                 }
                 "present_to_user" -> {
                     publishedObservation.set(PublishedObservation())
@@ -261,7 +270,7 @@ internal class AgentLocalTools(
                 }
                 "open_uri" -> {
                     publishedObservation.set(PublishedObservation())
-                    textResult(openUri(args))
+                    textResult(openUri(args, guiGeneration))
                 }
                 "browser_use" -> browserUse(args, toolCall.id)
                 "web_search", "fetch_url" -> {
@@ -329,6 +338,7 @@ internal class AgentLocalTools(
                 errorResult(
                     code = when (throwable) {
                         is InvalidToolArgumentException, is org.json.JSONException -> "INVALID_ARGUMENT"
+                        is AgentOverlayClearance.Rejected -> throwable.code
                         is DeviceControlUnavailableException -> "ACCESSIBILITY_UNAVAILABLE"
                         else -> "TOOL_ERROR"
                     },
@@ -344,18 +354,34 @@ internal class AgentLocalTools(
         }
 
     private fun executeForegroundIntent(toolName: String, action: () -> JSONObject): JSONObject {
-        fun execute(): JSONObject {
+        fun execute(generation: Long?): JSONObject {
             if (closed.get()) throw AgentRunCancelledException()
             deviceToolPermissionError(toolName)?.let { return JSONObject(it.content) }
             return when (val decision = beforeToolExecution(toolName)) {
                 ToolExecutionDecision.Allow -> {
+                    val visible = prepareGuiAction(toolName, generation)
+                    if (visible is ToolExecutionDecision.Reject) {
+                        return JSONObject(errorResult(visible.code, visible.message))
+                    }
                     publishedObservation.set(PublishedObservation())
                     action()
                 }
                 is ToolExecutionDecision.Reject -> JSONObject(errorResult(decision.code, decision.message))
             }
         }
-        return guiControl?.withAction { execute() } ?: execute()
+        return guiControl?.withAction { execute(it) } ?: execute(null)
+    }
+
+    private fun prepareGuiAction(toolName: String, generation: Long?): ToolExecutionDecision {
+        val isCurrent = {
+            !closed.get() && !runController.isCancelled &&
+                (guiControl == null || (generation != null && guiControl.isActionCurrent(generation)))
+        }
+        val decision = beforeGuiAction(toolName, isCurrent)
+        if (runController.isCancelled) throw AgentRunCancelledException()
+        return if (decision == ToolExecutionDecision.Allow && !isCurrent()) {
+            ToolExecutionDecision.Reject("GUI_PRESENTATION_STALE", "手机操作权已变化，本次未执行；请重新观察")
+        } else decision
     }
 
     private fun deviceToolPermissionError(
@@ -571,7 +597,7 @@ internal class AgentLocalTools(
             coordinateSpace = args.optString("coordinate_space"),
             displayId = displayId,
         )
-        return clearOverlay(displayId, point) {
+        return clearOverlay("tap", displayId, point) {
             if (!CanvasRoutingPolicy.isVirtualDisplay(displayId)) {
                 AgentHapticFeedback.perform(context, AgentHapticFeedback.Type.TAP)
             }
@@ -593,7 +619,7 @@ internal class AgentLocalTools(
             x = ((first.x.toLong() + second.x.toLong()) / 2L).toInt(),
             y = ((first.y.toLong() + second.y.toLong()) / 2L).toInt(),
         )
-        return clearOverlay(displayId, point) {
+        return clearOverlay("tap_area", displayId, point) {
             if (!CanvasRoutingPolicy.isVirtualDisplay(displayId)) {
                 AgentHapticFeedback.perform(context, AgentHapticFeedback.Type.TAP)
             }
@@ -610,7 +636,7 @@ internal class AgentLocalTools(
         if (node == null) {
             return errorResult("INVALID_NODE_INDEX", "观察快照中不存在节点 index=$index")
         }
-        val result = clearOverlay(displayId, ScreenPoint(node.centerX, node.centerY)) {
+        val result = clearOverlay("tap_element", displayId, ScreenPoint(node.centerX, node.centerY)) {
             deviceController.tapElement(observation, index)
         }
         if (result.isOkJson()) {
@@ -631,7 +657,7 @@ internal class AgentLocalTools(
         if (node == null) {
             return errorResult("INVALID_NODE_INDEX", "观察快照中不存在节点 index=$index")
         }
-        val result = clearOverlay(displayId, ScreenPoint(node.centerX, node.centerY)) {
+        val result = clearOverlay("long_press_element", displayId, ScreenPoint(node.centerX, node.centerY)) {
             deviceController.longPressElement(observation, index, durationMs)
         }
         if (result.isOkJson()) {
@@ -652,7 +678,7 @@ internal class AgentLocalTools(
             displayId = displayId,
         )
         val durationMs = args.optInt("duration_ms", 800)
-        return clearOverlay(displayId, point) {
+        return clearOverlay("long_press", displayId, point) {
             if (!CanvasRoutingPolicy.isVirtualDisplay(displayId)) {
                 AgentHapticFeedback.perform(context, AgentHapticFeedback.Type.LONG_PRESS)
             }
@@ -676,7 +702,7 @@ internal class AgentLocalTools(
             displayId = displayId,
         )
         val durationMs = args.optInt("duration_ms", 500)
-        return clearOverlay(displayId, start, end) {
+        return clearOverlay("swipe", displayId, start, end) {
             if (!CanvasRoutingPolicy.isVirtualDisplay(displayId)) {
                 AgentHapticFeedback.perform(context, AgentHapticFeedback.Type.SWIPE)
             }
@@ -868,7 +894,7 @@ internal class AgentLocalTools(
             .toString()
     }
 
-    private fun launchApp(args: JSONObject): String {
+    private fun launchApp(args: JSONObject, guiGeneration: Long?): String {
         val packageName = args.optString("package_name").trim().ifBlank { null }
         val appName = args.optString("app_name").trim().ifBlank { null }
         val requestedDisplay = CanvasRoutingPolicy.RequestedDisplay.parse(
@@ -936,6 +962,8 @@ internal class AgentLocalTools(
             launchedVirtualId
         } else {
             activeDisplayId = Display.DEFAULT_DISPLAY
+            val visible = prepareGuiAction("launch_app", guiGeneration)
+            if (visible is ToolExecutionDecision.Reject) return errorResult(visible.code, visible.message)
             context.startActivity(launchIntent)
             Display.DEFAULT_DISPLAY
         }
@@ -981,7 +1009,7 @@ internal class AgentLocalTools(
             .toString()
     }
 
-    private fun openUri(args: JSONObject): String {
+    private fun openUri(args: JSONObject, guiGeneration: Long?): String {
         val uriText = args.optString("uri").trim()
         if (uriText.isBlank()) {
             return errorResult("INVALID_ARGUMENT", "uri 不能为空")
@@ -1021,6 +1049,8 @@ internal class AgentLocalTools(
             virtualId
         } else {
             activeDisplayId = Display.DEFAULT_DISPLAY
+            val visible = prepareGuiAction("open_uri", guiGeneration)
+            if (visible is ToolExecutionDecision.Reject) return errorResult(visible.code, visible.message)
             context.startActivity(intent)
             Display.DEFAULT_DISPLAY
         }
@@ -1639,9 +1669,23 @@ internal class AgentLocalTools(
     )
 
     /** 手势经过状态胶囊时让它暂时穿透并淡出；在虚拟屏内操作时不干扰物理屏胶囊。 */
-    private fun <T> clearOverlay(displayId: Int, vararg points: ScreenPoint, gesture: () -> T): T {
-        if (CanvasRoutingPolicy.isVirtualDisplay(displayId)) {
+    private fun clearOverlay(toolName: String, displayId: Int, vararg points: ScreenPoint, gesture: () -> String): String {
+        val observationGeneration = publishedObservation.get().generation
+        fun execute(): String {
+            if (closed.get() || runController.isCancelled) throw AgentRunCancelledException()
+            if (runController.isPaused || (guiControl != null &&
+                    (observationGeneration == null || !guiControl.isActionCurrent(observationGeneration)))) {
+                throw AgentOverlayClearance.Rejected(
+                    "GUI_PRESENTATION_STALE", "手机操作权已变化或已暂停，本次手势未执行",
+                )
+            }
+            // Clearance itself waits. Reconfirm the presentation after that wait and before injection.
+            val visible = prepareGuiAction(toolName, observationGeneration)
+            if (visible is ToolExecutionDecision.Reject) return errorResult(visible.code, visible.message)
             return gesture()
+        }
+        if (CanvasRoutingPolicy.isVirtualDisplay(displayId)) {
+            return execute()
         }
         val area = Rect(
             points.minOf { it.x },
@@ -1649,7 +1693,12 @@ internal class AgentLocalTools(
             points.maxOf { it.x } + 1,
             points.maxOf { it.y } + 1,
         )
-        return AgentOverlayClearance.around(area, gesture)
+        return try {
+            AgentOverlayClearance.around(area, ::execute)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            throw AgentRunCancelledException()
+        }
     }
 
     private fun showTap(x: Int, y: Int, displayId: Int = Display.DEFAULT_DISPLAY) {

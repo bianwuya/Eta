@@ -2,6 +2,8 @@ package io.github.mangi.eta.agent.runtime
 
 import android.app.Application
 import android.os.Looper
+import android.content.Context
+import android.view.WindowManager
 import androidx.compose.ui.platform.ComposeView
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.agent.overlay.AgentOverlayPhase
@@ -29,7 +31,17 @@ class AgentRuntimeScreenOnTest {
             val service = serviceController.get()
             val session = service.registerRun("active-run").session
             val capsule = ComposeView(service)
+            val wm = service.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+            val params = WindowManager.LayoutParams().apply {
+                type = WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+                width = 200
+                height = 80
+                flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+            }
+            wm.addView(capsule, params)
+            service.setField("windowManager", wm)
             service.setField("capsuleView", capsule)
+            service.setField("capsuleParams", params)
 
             service.invoke("updateKeepScreenOn")
             assertTrue(AgentRuntimeService.keepScreenOn.value)

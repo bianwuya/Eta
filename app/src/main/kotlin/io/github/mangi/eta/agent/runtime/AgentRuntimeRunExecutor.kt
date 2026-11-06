@@ -23,7 +23,6 @@ import io.github.mangi.eta.agent.subagent.SubagentControlRegistry
 import io.github.mangi.eta.agent.mcp.McpRunSnapshot
 import io.github.mangi.eta.agent.mcp.McpToolExecutor
 import io.github.mangi.eta.agent.mcp.RoutingToolExecutor
-import io.github.mangi.eta.agent.overlay.AgentOverlayVisibilityPolicy
 import io.github.mangi.eta.agent.skill.SkillCompatibilityChecker
 import io.github.mangi.eta.agent.skill.SkillContext
 import io.github.mangi.eta.agent.skill.SkillRuntime
@@ -40,6 +39,7 @@ import io.github.mangi.eta.data.repository.AgentMemoryRepository
 import io.github.mangi.eta.data.repository.RuntimeConfigRepository
 import io.github.mangi.eta.local.conversationcommunication.ConversationMessagingPolicy
 import io.github.mangi.eta.local.conversationcommunication.ConversationMessagingToolCatalog
+import io.github.mangi.eta.local.guipresentation.GuiActionPreparation
 import kotlinx.coroutines.runBlocking
 import org.json.JSONArray
 import org.json.JSONObject
@@ -62,6 +62,9 @@ internal class AgentRuntimeRunExecutor(
         List<AgentEvent>,
     ) -> Unit,
     private val conversationMessaging: AgentRuntimeConversationMessaging? = null,
+    private val beforeGuiAction: (AgentRunController, () -> Boolean, String?) -> ToolExecutionDecision = { _, _, _ ->
+        ToolExecutionDecision.Reject("GUI_PRESENTATION_UNAVAILABLE", "操作提示宿主不可用，本次未执行")
+    },
 ) {
     data class Outcome(
         val result: AgentRuntimeWire.RunResult,
@@ -237,14 +240,13 @@ internal class AgentRuntimeRunExecutor(
                 screenshotExcludedPackages = {
                     entrySurfaceGuard?.consumeScreenshotExcludedPackages().orEmpty()
                 },
-                beforeToolExecution = { toolName ->
+                beforeGuiAction = { toolName, isCurrent ->
                     val requiresAccessibility =
                         AgentToolRequirements.requiresAccessibility(toolName)
-                    if (
-                        !requiresAccessibility &&
-                        !AgentOverlayVisibilityPolicy.requiresEntrySurfaceDismissal(toolName)
-                    ) {
-                        ToolExecutionDecision.Allow
+                    if (gui == null) {
+                        ToolExecutionDecision.Reject("GUI_CONTROL_REQUIRED", "当前工具没有手机操作权，本次未执行")
+                    } else if (!isCurrent()) {
+                        ToolExecutionDecision.Reject("GUI_PRESENTATION_STALE", "手机操作权已变化，本次未执行；请重新观察")
                     } else {
                         val accessibility = if (requiresAccessibility) {
                             AgentAccessibilityKeeper.ensureEnabledForGuiOperation(appContext)
@@ -257,12 +259,15 @@ internal class AgentRuntimeRunExecutor(
                                     code = accessibility.code,
                                     message = accessibility.message,
                                 )
-                            entrySurfaceGuard?.dismissOnce() == false ->
-                                ToolExecutionDecision.Reject(
-                                    code = "ENTRY_SURFACE_NOT_READY",
-                                    message = "入口窗口关闭未完成；本次工具未执行，请勿在当前任务中重复调用",
+                            else -> {
+                                GuiActionPreparation.prepare(
+                                    isCurrent = isCurrent,
+                                    ensureVisible = {
+                                        beforeGuiAction(toolController, isCurrent, entrySurfaceGuard?.targetPackageName)
+                                    },
+                                    dismissEntry = { entrySurfaceGuard?.dismissOnce() != false },
                                 )
-                            else -> ToolExecutionDecision.Allow
+                            }
                         }
                     }
                 },

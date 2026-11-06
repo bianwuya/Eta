@@ -2,6 +2,8 @@ package io.github.mangi.eta.agent.overlay
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterExitState
+import androidx.compose.animation.ExperimentalAnimationApi
 import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.FastOutLinearInEasing
@@ -44,6 +46,7 @@ import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -52,6 +55,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
@@ -84,6 +88,7 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
  * 状态文字只在语义变化时以上滑淡入切换，流式正文不进入胶囊。
  */
 @Composable
+@OptIn(ExperimentalAnimationApi::class)
 internal fun AgentOverlayCapsule(
     state: AgentOverlayState,
     expanded: Boolean,
@@ -101,11 +106,13 @@ internal fun AgentOverlayCapsule(
     onFullscreenVirtualDisplay: () -> Unit = {},
     onTapVirtualCanvas: (Float, Float, Boolean) -> Unit = { _, _, _ -> },
     onSwipeVirtualCanvas: (Float, Float, Float, Float, Int) -> Unit = { _, _, _, _, _ -> },
+    onVisibleFrame: () -> Unit = {},
+    ownerKey: String = "",
 ) {
     var visible by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { visible = true }
-    var supplementMode by remember { mutableStateOf(false) }
-    var supplementText by remember { mutableStateOf("") }
+    var supplementMode by remember(ownerKey) { mutableStateOf(false) }
+    var supplementText by remember(ownerKey) { mutableStateOf("") }
     val scope = rememberCoroutineScope()
     val keyboard = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
@@ -127,7 +134,7 @@ internal fun AgentOverlayCapsule(
         }
     }
 
-    LaunchedEffect(expanded) {
+    LaunchedEffect(ownerKey, expanded) {
         if (!expanded && supplementMode) leaveSupplementMode()
     }
 
@@ -173,6 +180,8 @@ internal fun AgentOverlayCapsule(
             fadeIn(tween(160)),
         exit = slideOutVertically(tween(160)) { -it } + fadeOut(tween(140)),
     ) {
+        val settledVisible = transition.currentState == EnterExitState.Visible &&
+            transition.targetState == EnterExitState.Visible && !transition.isRunning
         Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
             Column(
                 modifier = Modifier
@@ -190,7 +199,11 @@ internal fun AgentOverlayCapsule(
                     }
                     .shadow(10.dp, RoundedCornerShape(targetCapsuleCorner), ambientColor = accent, spotColor = accent)
                     .clip(RoundedCornerShape(targetCapsuleCorner))
-                    .background(MiuixTheme.colorScheme.surfaceContainer.copy(alpha = 0.95f)),
+                    .background(MiuixTheme.colorScheme.surfaceContainer.copy(alpha = 0.95f))
+                    .drawWithContent {
+                        drawContent()
+                        if (settledVisible && !yielded && clearance < 0.01f) onVisibleFrame()
+                    },
             ) {
                 Row(
                     modifier = Modifier
@@ -212,25 +225,28 @@ internal fun AgentOverlayCapsule(
                     PhaseIndicator(phase = state.phase, accent = accent)
                     Spacer(Modifier.width(9.dp))
                     Column(modifier = Modifier.weight(1f)) {
-                        AnimatedContent(
-                            targetState = statusText,
-                            transitionSpec = {
-                                (slideInVertically(tween(220)) { it / 2 } + fadeIn(tween(220))) togetherWith
-                                    (slideOutVertically(tween(180)) { -it / 2 } + fadeOut(tween(160))) using
-                                    SizeTransform(clip = true) { _, _ -> snap() }
-                            },
-                            label = "capsule_status",
-                        ) { text ->
-                            Text(
-                                text = text,
-                                color = MiuixTheme.colorScheme.onSurface,
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.Medium,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
+                        // Do not animate the previous owner's action text into a different run.
+                        key(ownerKey) {
+                            AnimatedContent(
+                                targetState = statusText,
+                                transitionSpec = {
+                                    (slideInVertically(tween(220)) { it / 2 } + fadeIn(tween(220))) togetherWith
+                                        (slideOutVertically(tween(180)) { -it / 2 } + fadeOut(tween(160))) using
+                                        SizeTransform(clip = true) { _, _ -> snap() }
+                                },
+                                label = "capsule_status",
+                            ) { text ->
+                                Text(
+                                    text = text,
+                                    color = MiuixTheme.colorScheme.onSurface,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                            ThoughtLine(thought = state.thought.takeIf { state.phase == AgentOverlayPhase.RUNNING }.orEmpty())
                         }
-                        ThoughtLine(thought = state.thought.takeIf { state.phase == AgentOverlayPhase.RUNNING }.orEmpty())
                     }
                     AnimatedVisibility(
                         visible = virtualDisplay.active && !expanded,
