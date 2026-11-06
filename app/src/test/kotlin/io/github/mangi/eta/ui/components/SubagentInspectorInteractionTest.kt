@@ -82,11 +82,14 @@ class SubagentInspectorInteractionTest {
         // measuring whether an unrelated streaming update moves the idle reader.
         fixture.advance(60)
         val anchoredTop = fixture.topOfText("步骤编号 5")
+        val beforeUpdate = fixture.scrollMetrics("步骤编号 5")
         snapshot.value = snapshot.value.copy(steps = steps.drop(1) + SubagentStepSnapshot(
-            id = "new", kind = SubagentStepSnapshot.KIND_TOOL, title = "新增流式步骤"))
+            id = "new", kind = SubagentStepSnapshot.KIND_TOOL, title = "新增流式步骤",
+            toolName = "read_file", status = SubagentStepSnapshot.STATUS_SUCCESS))
         fixture.advance(10)
         fixture.assertVisibleText("步骤编号 5")
-        assertEquals("streaming must preserve the visible step position", anchoredTop, fixture.topOfText("步骤编号 5"), 2f)
+        assertEquals("streaming must preserve the visible step position; before=$beforeUpdate; " +
+            "after=${fixture.scrollMetrics("步骤编号 5")}", anchoredTop, fixture.topOfText("步骤编号 5"), 2f)
         fixture.clickDescription("收起任务信息")
         fixture.advance(20)
         assertFalse(fixture.hasText("任务信息"))
@@ -289,6 +292,17 @@ class SubagentInspectorInteractionTest {
             true
         }
         fun topOfText(text: String): Float = nodes().first { it.hasText(text) }.boundsInRoot.top
+        fun scrollMetrics(text: String): String {
+            val target = nodes().first { it.hasText(text) }
+            var ancestor = target.parent
+            while (ancestor != null && ancestor.config.getOrNull(SemanticsProperties.VerticalScrollAxisRange) == null) {
+                ancestor = ancestor.parent
+            }
+            val scroller = requireNotNull(ancestor)
+            val range = requireNotNull(scroller.config.getOrNull(SemanticsProperties.VerticalScrollAxisRange))
+            return "text=${target.boundsInRoot}, viewport=${scroller.boundsInRoot}, " +
+                "scroll=${range.value()}/${range.maxValue()}"
+        }
         fun assertBefore(first: String, second: String) {
             val a = nodes().first { it.hasText(first) }.boundsInRoot
             val b = nodes().first { it.hasText(second) }.boundsInRoot
