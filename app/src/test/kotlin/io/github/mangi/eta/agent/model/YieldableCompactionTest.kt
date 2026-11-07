@@ -15,6 +15,8 @@ import org.junit.Test
 class YieldableCompactionTest {
     private val config = AgentModelClient.ModelConfig(baseUrl = "https://example.invalid", apiKey = "fixture", model = "fixture",
         systemPrompt = "fixed", contextWindow = 128_000, autoCompactionEnabled = true)
+    // The task window still triggers compaction; the summary model must fit the complete history.
+    private val summaryConfig = config.copy(contextWindow = 1_000_000)
     private fun answer(content: String) = ProviderResponse(JSONObject().put("role", "assistant").put("content", content).put("finish_reason", "stop"))
     private fun tool(id: String, name: String, arguments: String) = JSONObject().put("id", id).put("type", "function")
         .put("function", JSONObject().put("name", name).put("arguments", arguments))
@@ -46,10 +48,12 @@ class YieldableCompactionTest {
             override val capabilities = this@YieldableCompactionTest.capabilities
             override fun complete(request: ProviderRequest, runController: AgentRunController, onEvent: (ProviderEvent) -> Unit): ProviderResponse {
                 if (request.purpose == ProviderRequestPurpose.COMPACTION) {
+                    assertEquals(summaryConfig.contextWindow, request.config.contextWindow)
                     assertEquals("full report must first reach chat", 0L, seenReport.count)
                     compactions.incrementAndGet()
                     return answer("已完成旧工作。")
                 }
+                assertEquals(config.contextWindow, request.config.contextWindow)
                 onEvent(ProviderEvent.Usage(AgentTokenUsage(inputTokens = 120_000)))
                 return when (calls.incrementAndGet()) {
                     1 -> call(tool("child", "subagent", """{"prompt":"任务","description":"检查"}"""))
@@ -71,6 +75,7 @@ class YieldableCompactionTest {
                     history = listOf(AgentModelClient.ConversationMessage(role = "user", content = "历史".repeat(10_000)),
                         AgentModelClient.ConversationMessage(role = "assistant", content = "旧回答".repeat(10_000))),
                     provider = provider, runController = controller, additionalTools = JSONArray().put(AgentSubagentToolCatalog.schema()),
+                    compactionTarget = { AgentCompactionTarget(summaryConfig, provider) },
                     yieldableSubagents = owner, onTranscript = { transcript ->
                         if (accepted.count > 0 && transcript.any { it.role == "tool" && it.content.contains("accepted") }) {
                             controller.pause()
@@ -104,7 +109,7 @@ class YieldableCompactionTest {
             override val capabilities = this@YieldableCompactionTest.capabilities
             override fun complete(request: ProviderRequest, runController: AgentRunController, onEvent: (ProviderEvent) -> Unit) = answer("先前任务摘要")
         }
-        val compacted = AgentContextCompactor(config, provider, AgentRunController()).compact(history, 1, emptySet())
+        val compacted = AgentContextCompactor(summaryConfig, provider, AgentRunController()).compact(history, 1, emptySet())
         val users = (0 until compacted.length()).map(compacted::getJSONObject).filter { it.optString("role") == "user" }
         assertEquals(1, users.size); assertTrue(GeminiEphemeralState.isRunStart(users.single()))
         assertTrue(GeminiEphemeralState.isRunStart(first))

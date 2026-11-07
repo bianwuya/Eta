@@ -191,9 +191,11 @@ class SubagentTaskGroupLoopTest {
             override val capabilities = ProviderCapabilities(EndpointKind.CHAT_COMPLETIONS, true, true, true, true, false, false)
             override fun complete(request: ProviderRequest, runController: AgentRunController, onEvent: (ProviderEvent) -> Unit): ProviderResponse {
                 if (request.purpose == ProviderRequestPurpose.COMPACTION) {
+                    assertEquals(1_000_000, request.config.contextWindow)
                     if (request.messages.toString().contains("full_report_ref:")) assertTrue("fresh projection cannot be compacted before chat", seen.get())
                     compactions.incrementAndGet(); return answer("retained prior context")
                 }
+                assertEquals(128_000, request.config.contextWindow)
                 onEvent(ProviderEvent.Usage(io.github.mangi.eta.agent.runtime.AgentTokenUsage(inputTokens = 120_000)))
                 return when (chats.incrementAndGet()) {
                     1 -> tools(call("a"))
@@ -211,6 +213,7 @@ class SubagentTaskGroupLoopTest {
         try {
             AgentModelClient.complete(config.copy(contextWindow = 128_000, autoCompactionEnabled = true), "goal",
                 AgentModelClient.ToolExecutor { AgentModelClient.ToolResult("work") }, provider = model,
+                compactionTarget = { AgentCompactionTarget(config.copy(contextWindow = 1_000_000), model) },
                 runController = controller, yieldableSubagents = owner, additionalTools = schemas(),
                 history = listOf(AgentModelClient.ConversationMessage("user", "old".repeat(20_000)),
                     AgentModelClient.ConversationMessage("assistant", "old-answer".repeat(10_000))))
