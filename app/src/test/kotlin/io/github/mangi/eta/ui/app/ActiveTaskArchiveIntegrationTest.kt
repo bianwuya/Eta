@@ -101,6 +101,10 @@ class ActiveTaskArchiveIntegrationTest {
 
     @Test fun messengerSaturationKeepsTerminalRevisionEvenWhenCollectorOnlySeesLastEmptySnapshot() {
         RuntimeMessengerFixture().use { fixture ->
+            // Establish the real fixture binding through its worker/looper pump before testing
+            // channel saturation, rather than racing lazy callbackFlow startup with teardown.
+            val initial = fixture.result(fixture.worker { fixture.client.queryActiveRuns() })
+            assertTrue(initial is AgentRuntimeClient.ActiveRunsQuery.Known)
             val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
             val updates = Channel<AgentRuntimeClient.ActiveRunsUpdate>(Channel.CONFLATED)
             try {

@@ -184,7 +184,12 @@ class RuntimeContinuityIpcTest {
     @Test fun fallbackAttachPreservesOutboxAndCanReadTheOwnedFullResult() {
         RuntimeMessengerFixture().use { fixture ->
             val request = fixture.request("fallback")
-            val full = AgentRuntimeWire.RunResult(request.runId, true, "durable full result")
+            // Persist the canonical transcript so round-trip equality tests the full owned result,
+            // not the store's intentional legacy empty-transcript normalization.
+            val full = AgentRuntimeWire.RunResult(request.runId, true, "durable full result",
+                transcript = listOf(io.github.mangi.eta.agent.model.AgentModelClient.ConversationMessage(
+                    role = "assistant", content = "durable full result",
+                )))
             AgentRuntimeResultStore.add(fixture.context, AgentRuntimeWire.CompletedRun(request.handoff!!, full, 1L))
             fixture.beforeDispatch = { msg ->
                 if (msg.what == AgentRuntimeWire.MSG_ATTACH_RUN) {
