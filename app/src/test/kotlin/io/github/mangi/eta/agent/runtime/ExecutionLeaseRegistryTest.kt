@@ -7,6 +7,21 @@ import org.junit.Test
 
 class ExecutionLeaseRegistryTest {
     @Test
+    fun targetedStopConsumesOnlyMatchingLiveLease() {
+        val registry = ExecutionLeaseRegistry()
+        val stopped = mutableListOf<String>()
+        registry.acquire("run:a") { stopped += "a" }
+        registry.acquire("run:b") { stopped += "b" }
+        registry.take("run:a")?.invoke()
+        registry.take("run:a")?.invoke()
+        registry.take("run:expired")?.invoke()
+        assertEquals(listOf("a"), stopped)
+        assertEquals(1, registry.count())
+        registry.take("run:b")?.invoke()
+        assertEquals(listOf("a", "b"), stopped)
+    }
+
+    @Test
     fun taskAcquiredDuringServiceRestartIsNotDrainedByThePreviousOwner() {
         val registry = ExecutionLeaseRegistry()
         registry.attachOwner(1)

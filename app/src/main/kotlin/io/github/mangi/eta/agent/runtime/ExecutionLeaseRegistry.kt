@@ -16,6 +16,9 @@ internal class ExecutionLeaseRegistry {
     @Synchronized fun release(id: String) { leases.remove(id) }
     @Synchronized fun count(): Int = leases.size
 
+    /** Consume precisely one live lease. Old notification actions must not affect any other task. */
+    @Synchronized fun take(id: String): (() -> Unit)? = leases.remove(id)?.onStop
+
     @Synchronized fun attachOwner(owner: Long) {
         activeOwner = owner
         leases.replaceAll { _, lease -> if (lease.owner == null) lease.copy(owner = owner) else lease }

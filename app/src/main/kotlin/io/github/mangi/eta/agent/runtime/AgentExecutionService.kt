@@ -8,10 +8,12 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.SystemClock
 import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.overlay.AgentOverlayStatus
 import io.github.mangi.eta.agent.overlay.localizedText
@@ -62,8 +64,16 @@ internal class AgentExecutionService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_STOP) {
-            stopTasks()
+        if (intent?.action == ACTION_STOP_RUN) {
+            val runId = intent.getStringExtra(EXTRA_RUN_ID).orEmpty()
+            val stop = if (runId.isBlank()) null else leases.take("run:$runId")
+            if (stop != null) stopQueue.submit(listOf(stop)) {
+                mainHandler.post { if (instance === this) refreshNotification() }
+            }
+            else refreshNotification()
+        } else if (intent?.action == ACTION_STOP) {
+            // Old all-task PendingIntents outlive notification updates: deliberately no-op.
+            refreshNotification()
         } else {
             ensureForeground()
             refreshNotification()
@@ -101,23 +111,46 @@ internal class AgentExecutionService : Service() {
 
     private fun notification(): Notification {
         val status = runStatus
+        val run = activeRunSnapshots.singleOrNull()
+        val openIntent = Intent(this, MainActivity::class.java)
+        if (run != null) {
+            openIntent.action = MainActivity.ACTION_OPEN_RUN
+            openIntent.data = Uri.Builder().scheme("eta-task").authority("open").appendPath(run.runId).build()
+            openIntent.putExtra(MainActivity.EXTRA_RUN_ID, run.runId)
+        } else if (activeRunSnapshots.size > 1) {
+            openIntent.action = MainActivity.ACTION_OPEN_ACTIVE_TASKS
+        }
         val open = PendingIntent.getActivity(
-            this, 0, Intent(this, MainActivity::class.java),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
-        val stop = PendingIntent.getService(
-            this, 1, Intent(this, AgentExecutionService::class.java).setAction(ACTION_STOP),
+            this, 0, openIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
         val taskCount = if (activeRunCount > 0) activeRunCount else leases.count()
-        val builder = Notification.Builder(this, CHANNEL)
+        val publicNotification = Notification.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(getString(R.string.execution_title))
+            .setContentText(getString(R.string.execution_title))
+            .setOngoing(true).build()
+        val builder = Notification.Builder(this, CHANNEL)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle(when {
+                run != null -> run.title.ifBlank { getString(R.string.execution_title) }
+                activeRunSnapshots.size > 1 -> "Eta · ${activeRunSnapshots.size} 项任务进行中"
+                else -> getString(R.string.execution_title)
+            })
             .setContentText(executionText(this, status, taskCount))
             .setContentIntent(open)
+            .setVisibility(Notification.VISIBILITY_PRIVATE)
+            .setPublicVersion(publicNotification)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
-            .addAction(Notification.Action.Builder(null, getString(R.string.execution_stop), stop).build())
+        if (run != null) {
+            val stopIntent = Intent(this, AgentExecutionService::class.java).setAction(ACTION_STOP_RUN)
+                .setData(Uri.Builder().scheme("eta-task").authority("stop").appendPath(run.runId).build())
+                .putExtra(EXTRA_RUN_ID, run.runId)
+            val stop = PendingIntent.getService(this, 1, stopIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+            builder.addAction(Notification.Action.Builder(null, "停止此任务", stop).build())
+        }
         // 只有 Agent run 在跑时才申请提升为 Live Update；终端会话、Linux 启动等长驻任务不属于"正在进行、需要持续关注"的活动。
         if (status != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA) {
             builder
@@ -141,6 +174,8 @@ internal class AgentExecutionService : Service() {
     companion object {
         private const val CHANNEL = "eta_execution"
         private const val NOTIFICATION_ID = 1107
+        private const val ACTION_STOP_RUN = "io.github.mangi.eta.action.STOP_USER_RUN"
+        private const val EXTRA_RUN_ID = "run_id"
         private const val ACTION_STOP = "io.github.mangi.eta.action.STOP_USER_EXECUTION"
         private val leases = ExecutionLeaseRegistry()
         private val ownerSequence = AtomicLong()
@@ -148,21 +183,36 @@ internal class AgentExecutionService : Service() {
         @Volatile private var instance: AgentExecutionService? = null
         private var runStatus: AgentOverlayStatus? = null
         private var activeRunCount = 0
+        private var activeRunSnapshots: List<AgentRuntimeWire.ActiveRunSnapshot> = emptyList()
         private var publishedStatusText: String? = null
+        private var lastNotificationAt = 0L
+        private val delayedNotification = Runnable {
+            instance?.takeIf { it.foregroundActive }?.refreshNotification()
+            lastNotificationAt = SystemClock.elapsedRealtime()
+        }
 
         /**
          * Agent run 的当前状态，供通知与状态栏胶囊展示；null 表示没有 Agent run 在跑。
          * 只在显示文字变化时刷新通知，避免流式事件把通知更新频率推到系统限流。
          */
-        fun updateRunStatus(context: Context, status: AgentOverlayStatus?, activeRunCount: Int) {
+        fun updateRunStatus(context: Context, status: AgentOverlayStatus?, activeRunCount: Int,
+            snapshots: List<AgentRuntimeWire.ActiveRunSnapshot> = emptyList()) {
             mainHandler.post {
+                val previousCount = this.activeRunCount
                 runStatus = status
                 this.activeRunCount = activeRunCount
+                val previousRuns = this.activeRunSnapshots
+                this.activeRunSnapshots = snapshots
                 val count = if (activeRunCount > 0) activeRunCount else leases.count()
-                val text = executionText(context, status, count)
+                val text = executionText(context, status, count) + snapshots.joinToString { "${it.runId}:${it.title}:${it.guiStatus}" }
                 if (text == publishedStatusText) return@post
                 publishedStatusText = text
-                instance?.takeIf { it.foregroundActive }?.refreshNotification()
+                val critical = previousCount != activeRunCount ||
+                    previousRuns.map { it.runId to it.guiStatus } != snapshots.map { it.runId to it.guiStatus }
+                val wait = (2_000L - (SystemClock.elapsedRealtime() - lastNotificationAt)).coerceAtLeast(0)
+                mainHandler.removeCallbacks(delayedNotification)
+                if (critical || wait == 0L) delayedNotification.run()
+                else mainHandler.postDelayed(delayedNotification, wait)
             }
         }
 

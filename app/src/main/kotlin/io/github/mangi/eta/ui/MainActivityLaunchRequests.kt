@@ -9,11 +9,15 @@ import io.github.mangi.eta.ui.voice.ACTION_SPEECH_SETTINGS
 internal data class MainActivityLaunchRequests(
     val assistantConversationKey: String? = null,
     val conversationId: String? = null,
+    val runId: String? = null,
+    val activeTasks: Boolean = false,
     val archivedConversation: ArchivedConversationRequest? = null,
     val speechSettings: Boolean = false,
     val terminal: Boolean = false,
 ) {
     fun accept(intent: Intent?): MainActivityLaunchRequests = when (intent?.action) {
+        MainActivity.ACTION_OPEN_ACTIVE_TASKS -> copy(activeTasks = true)
+        MainActivity.ACTION_OPEN_RUN -> copy(runId = intent.nonBlankExtra(MainActivity.EXTRA_RUN_ID))
         MainActivity.ACTION_OPEN_TERMINAL -> copy(terminal = true)
         ACTION_SPEECH_SETTINGS -> copy(speechSettings = true)
         MainActivity.ACTION_OPEN_CONVERSATION_ID -> copy(
@@ -38,6 +42,8 @@ internal data class MainActivityLaunchRequests(
         outState.putBundle(STATE_KEY, Bundle().apply {
             putString("assistant_conversation_key", assistantConversationKey)
             putString("conversation_id", conversationId)
+            putString("run_id", runId)
+            putBoolean("active_tasks", activeTasks)
             putString("archive_source", archivedConversation?.source)
             putString("archive_conversation_key", archivedConversation?.conversationKey)
             putBoolean("speech_settings", speechSettings)
@@ -57,6 +63,8 @@ internal data class MainActivityLaunchRequests(
             return MainActivityLaunchRequests(
                 assistantConversationKey = saved.getString("assistant_conversation_key"),
                 conversationId = saved.getString("conversation_id"),
+                runId = saved.getString("run_id"),
+                activeTasks = saved.getBoolean("active_tasks"),
                 archivedConversation = if (source != null && key != null) {
                     ArchivedConversationRequest(source, key)
                 } else null,

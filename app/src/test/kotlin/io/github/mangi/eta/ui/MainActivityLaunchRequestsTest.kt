@@ -16,6 +16,15 @@ import org.robolectric.annotation.Config
 @Config(application = android.app.Application::class)
 class MainActivityLaunchRequestsTest {
     @Test
+    fun `指定运行身份在重建时保留且消费后不重播`() {
+        val intent = Intent(MainActivity.ACTION_OPEN_RUN).putExtra(MainActivity.EXTRA_RUN_ID, "run-a")
+        val pending = MainActivityLaunchRequests.restore(null, intent)
+        assertEquals("run-a", pending.runId)
+        assertEquals("run-a", MainActivityLaunchRequests.restore(savedState(pending), intent).runId)
+        assertEquals(null, MainActivityLaunchRequests.restore(savedState(pending.copy(runId = null)), intent).runId)
+    }
+
+    @Test
     fun `重建不重新执行已消费的启动会话`() {
         val originalIntent = Intent(EtaAssistantOverlayService.ACTION_OPEN_CONVERSATION)
             .putExtra(EtaAssistantOverlayService.EXTRA_CONVERSATION_KEY, "old-conversation")

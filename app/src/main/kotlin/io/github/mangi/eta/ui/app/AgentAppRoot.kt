@@ -113,6 +113,10 @@ import top.yukonga.miuix.kmp.window.WindowDialog
 @Composable
 fun AgentAppRoot(
     assistantConversationKey: String? = null,
+    openActiveTasks: Boolean = false,
+    onActiveTasksOpened: () -> Unit = {},
+    requestedRunId: String? = null,
+    onRequestedRunOpened: () -> Unit = {},
     requestedConversationId: String? = null,
     onRequestedConversationOpened: () -> Unit = {},
     requestedArchivedConversation: ArchivedConversationRequest? = null,
@@ -179,6 +183,7 @@ fun AgentAppRoot(
     }
 
     var conversationPaneOpen by rememberSaveable { mutableStateOf(false) }
+    var confirmStopRunId by remember { mutableStateOf<String?>(null) }
     var activeTaskTarget by remember { mutableStateOf<ActiveTaskUi?>(null) }
     var conversationRenameTarget by remember { mutableStateOf<ConversationSummaryUi?>(null) }
     var conversationDeleteTarget by remember { mutableStateOf<ConversationSummaryUi?>(null) }
@@ -220,6 +225,27 @@ fun AgentAppRoot(
 
     LaunchedEffect(Unit) {
         RuntimeConfigRepository.ensureDefaults(EtaApp.serviceInstance)
+    }
+
+    LaunchedEffect(openActiveTasks) {
+        if (openActiveTasks) {
+            navigator.popToHome()
+            conversationPaneOpen = true
+            onActiveTasksOpened()
+        }
+    }
+
+    LaunchedEffect(requestedRunId, agentState.conversationPaneState.tasksConnected) {
+        val runId = requestedRunId ?: return@LaunchedEffect
+        if (!agentState.conversationPaneState.tasksConnected) return@LaunchedEffect
+        val task = agentState.activeTask(runId)
+        if (task != null) {
+            activeTaskTarget = task
+            navigator.popToHome()
+        } else {
+            Toast.makeText(context, "任务已结束，请从历史中查看", Toast.LENGTH_SHORT).show()
+        }
+        onRequestedRunOpened()
     }
 
     LaunchedEffect(requestedConversationId) {
@@ -846,6 +872,10 @@ fun AgentAppRoot(
             cornerRadius = DialogDefaults.CornerRadius,
             onDismissRequest = { activeTaskTarget = null },
         ) {
+            if (current != null) top.yukonga.miuix.kmp.basic.TextButton(
+                text = "停止此任务", modifier = Modifier.fillMaxWidth(),
+                onClick = { confirmStopRunId = current.runId; activeTaskTarget = null },
+            )
             top.yukonga.miuix.kmp.basic.TextButton(
                 text = "查看会话或历史", modifier = Modifier.fillMaxWidth(), onClick = {
                     if (task.conversationKey.isNotBlank()) {
@@ -863,6 +893,17 @@ fun AgentAppRoot(
                     }
                 },
             )
+        }
+    }
+
+    confirmStopRunId?.let { runId ->
+        WindowDialog(
+            show = true, title = "停止此任务？", summary = "其他任务不会被停止。",
+            cornerRadius = DialogDefaults.CornerRadius,
+            onDismissRequest = { confirmStopRunId = null },
+        ) {
+            MiuixDialogActions(confirmText = "停止", onCancel = { confirmStopRunId = null },
+                onConfirm = { agentState.stopActiveTask(runId); confirmStopRunId = null })
         }
     }
 

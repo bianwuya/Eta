@@ -1552,6 +1552,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
             this,
             status,
             activeRunCount = activeRuns.size,
+            snapshots = activeRuns.map { it.snapshot() },
         )
     }
 
