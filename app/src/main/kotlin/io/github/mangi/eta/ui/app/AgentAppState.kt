@@ -120,6 +120,7 @@ internal class AgentAppState(
     // 导入期间暂停保存：旧状态的增量保存会删除刚导入的会话；导入成功后整体重载，失败时数据库已回滚。
     private var persistencePaused = false
     private val runtimeRecoveryInProgress = AtomicBoolean(false)
+    private val runtimeRecoveryPending = AtomicBoolean(false)
     private val defaultThinkingEnabled = agentBooleanForUi(Prefs.Keys.AGENT_THINKING_ENABLED)
     @Volatile
     private var conversationPersistence = AgentConversationPersistence(initialConversations)
@@ -181,6 +182,7 @@ internal class AgentAppState(
                 importArchivedExternalRuns()
             } finally {
                 runtimeRecoveryInProgress.set(false)
+                if (runtimeRecoveryPending.getAndSet(false)) refreshRuntimeResults()
             }
         }
     }
@@ -194,12 +196,13 @@ internal class AgentAppState(
                     true
                 }
                 .collect { snapshots ->
+                    val wasDisconnected = !conversationPaneState.tasksConnected
                     val previousIds = activeRunSnapshots.map { it.runId }.toSet()
                     activeRunSnapshots = snapshots
                     conversationPaneState = conversationPaneState.copy(tasksConnected = true)
                     refreshConversationSummaries()
                     // Archive is written before the terminal registry removal; import once on disappearance.
-                    if ((previousIds - snapshots.map { it.runId }.toSet()).isNotEmpty()) refreshRuntimeResults()
+                    if (wasDisconnected || (previousIds - snapshots.map { it.runId }.toSet()).isNotEmpty()) refreshRuntimeResults()
                 }
         }
     }
@@ -287,13 +290,19 @@ internal class AgentAppState(
             ?: AgentModelPickerProjector.project(providers, defaultProviderId, defaultModelId).selectedModel?.id
 
     fun refreshRuntimeResults() {
-        if (!runtimeRecoveryInProgress.compareAndSet(false, true)) return
+        if (!runtimeRecoveryInProgress.compareAndSet(false, true)) {
+            runtimeRecoveryPending.set(true)
+            // Recovery may have just completed between the failed CAS and setting pending.
+            if (!runtimeRecoveryInProgress.get() && runtimeRecoveryPending.getAndSet(false)) refreshRuntimeResults()
+            return
+        }
         scope.launch(Dispatchers.IO) {
             try {
                 recoverRuntimeRuns()
                 importArchivedExternalRuns()
             } finally {
                 runtimeRecoveryInProgress.set(false)
+                if (runtimeRecoveryPending.getAndSet(false)) refreshRuntimeResults()
             }
         }
     }
