@@ -24,6 +24,64 @@ import org.robolectric.annotation.Config
 @Config(sdk = [33, 34], application = Application::class)
 class AgentExecutionServiceTest {
     @Test
+    fun notificationHasTargetedSingleRunAndPublicPrivateVersion() {
+        val context = RuntimeEnvironment.getApplication()
+        val leaseId = "run:notification-single"
+        assertTrue(AgentExecutionService.acquire(context, leaseId) {})
+        val run = AgentRuntimeWire.ActiveRunSnapshot(
+            "notification-single", "conversation", title = "私人标题",
+        )
+        AgentExecutionService.updateRunStatus(context, AgentOverlayStatus.Reasoning, 1, listOf(run))
+        shadowOf(Looper.getMainLooper()).idle()
+        val controller = Robolectric.buildService(AgentExecutionService::class.java).create()
+        try {
+            val notification = requireNotNull(shadowOf(controller.get()).lastForegroundNotification)
+            assertEquals("私人标题", notification.extras.getString(Notification.EXTRA_TITLE))
+            assertEquals(Notification.VISIBILITY_PRIVATE, notification.visibility)
+            assertNotNull(notification.publicVersion)
+            assertFalse(notification.publicVersion.extras.getString(Notification.EXTRA_TITLE).orEmpty().contains("私人标题"))
+            assertEquals(1, notification.actions.size)
+            assertEquals("停止此任务", notification.actions.single().title.toString())
+            val stopIntent = shadowOf(notification.actions.single().actionIntent).savedIntent
+            assertEquals("notification-single", stopIntent.getStringExtra("run_id"))
+            assertEquals("notification-single", stopIntent.data?.lastPathSegment)
+            val openIntent = shadowOf(notification.contentIntent).savedIntent
+            assertEquals("notification-single", openIntent.getStringExtra(io.github.mangi.eta.ui.MainActivity.EXTRA_RUN_ID))
+        } finally {
+            AgentExecutionService.release(leaseId)
+            AgentExecutionService.updateRunStatus(context, null, 0)
+            shadowOf(Looper.getMainLooper()).idle()
+            controller.destroy()
+        }
+    }
+
+    @Test
+    fun multipleRunsDoNotOfferAmbiguousGlobalStop() {
+        val context = RuntimeEnvironment.getApplication()
+        val leaseId = "run:notification-multiple"
+        assertTrue(AgentExecutionService.acquire(context, leaseId) {})
+        val runs = listOf(
+            AgentRuntimeWire.ActiveRunSnapshot("a", "a", title = "A"),
+            AgentRuntimeWire.ActiveRunSnapshot("b", "b", title = "B"),
+        )
+        AgentExecutionService.updateRunStatus(context, AgentOverlayStatus.Reasoning, 2, runs)
+        shadowOf(Looper.getMainLooper()).idle()
+        val controller = Robolectric.buildService(AgentExecutionService::class.java).create()
+        try {
+            val notification = requireNotNull(shadowOf(controller.get()).lastForegroundNotification)
+            assertTrue(notification.extras.getString(Notification.EXTRA_TITLE).orEmpty().contains("2"))
+            assertTrue(notification.actions.isNullOrEmpty())
+            assertEquals(io.github.mangi.eta.ui.MainActivity.ACTION_OPEN_ACTIVE_TASKS,
+                shadowOf(notification.contentIntent).savedIntent.action)
+        } finally {
+            AgentExecutionService.release(leaseId)
+            AgentExecutionService.updateRunStatus(context, null, 0)
+            shadowOf(Looper.getMainLooper()).idle()
+            controller.destroy()
+        }
+    }
+
+    @Test
     @Config(sdk = [33, 36])
     fun agentRunPromotionEndsWhileTerminalSessionRemains() {
         val context = RuntimeEnvironment.getApplication()
