@@ -384,6 +384,10 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                             }
                         }
                     }
+                    if (uiState.phase == EtaVoicePhase.ERROR && conversationKey.isNotBlank()) {
+                        TextButton(text = getString(R.string.task_view_history), modifier = Modifier.fillMaxWidth(),
+                            onClick = ::openVoiceHistory)
+                    }
                     EtaVoicePanel(
                         state = uiState,
                         speech = speechState,
@@ -831,6 +835,15 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                 }
             }
         }
+    }
+
+    private fun openVoiceHistory() {
+        startActivity(Intent(this, MainActivity::class.java)
+            .setAction(MainActivity.ACTION_OPEN_ARCHIVED_CONVERSATION)
+            .putExtra(MainActivity.EXTRA_HANDOFF_SOURCE, AgentRuntimeWire.ETA_VOICE_HANDOFF_SOURCE)
+            .putExtra(MainActivity.EXTRA_CONVERSATION_KEY, conversationKey)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP))
+        dismissAndStop()
     }
 
     private fun newConversationKey(): String = "eta_assistant_${UUID.randomUUID()}"

@@ -262,6 +262,8 @@ fun AgentAppRoot(
         if (agentState.openArchivedConversation(request.source, request.conversationKey)) {
             conversationPaneOpen = false
             navigator.popToHome()
+        } else {
+            Toast.makeText(context, resources.getString(R.string.task_not_archived), Toast.LENGTH_SHORT).show()
         }
         onArchivedConversationOpened()
     }
