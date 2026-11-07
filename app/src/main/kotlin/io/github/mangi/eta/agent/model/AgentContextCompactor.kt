@@ -29,7 +29,11 @@ internal class AgentContextCompactor(
         val end = (history.size downTo 1).firstOrNull { canSplit(history, it) }
             ?: throw failure("CONTEXT_NOT_COMPACTABLE", "没有可安全压缩的完整历史批次。")
         val protectedUser = history.getOrNull(latestUser)?.takeIf { latestUser < end }
-        val source = JSONArray(history.take(end).filterNot { it === protectedUser })
+        // Parent revisions are internal control messages, not model-authored summary text.
+        // Preserve the newest accepted revision verbatim; earlier revisions may be summarized.
+        val protectedDirective = history.lastOrNull(AssistantScreenContextProjection::isRuntimeParentDirective)
+            ?.takeIf { history.indexOf(it) < end }
+        val source = JSONArray(history.take(end).filterNot { it === protectedUser || it === protectedDirective })
         val durable = AgentConversationCodec.transcript(source, 0, sensitiveIds)
         if (durable.isEmpty()) throw failure("CONTEXT_NOT_COMPACTABLE", "没有可压缩的历史内容。")
         val safe = durable.map { message ->
@@ -56,7 +60,7 @@ internal class AgentContextCompactor(
             summaryThroughUserTurn = covered + if (protectedUser != null) 1 else 0,
         )))
         val hadGeminiRunStart = history.any(GeminiEphemeralState::isRunStart)
-        protectedUser?.let(result::put)
+        listOfNotNull(protectedUser, protectedDirective).sortedBy { history.indexOf(it) }.forEach(result::put)
         history.drop(end).forEach { message ->
             // 新摘要改变了前缀；旧 opaque items 不再代表同一份 Provider 上下文。
             val withoutResponsesItems = if (ResponsesEphemeralState.outputItems(message) != null) {
