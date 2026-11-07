@@ -1,131 +1,120 @@
 name: Device Test APK
-
-# Trusted workflow lives on protected local; manually build an unmerged feat/* branch.
-# Build and signing run in separate jobs. Do not expose release keystore secrets to Gradle.
 on:
+  workflow_run:
+    workflows: [PR Check]
+    types: [completed]
   workflow_dispatch:
     inputs:
-      feature_branch:
-        description: "Existing feature branch to test, e.g. feat/chat-image-zoom"
+      check_run_id:
+        description: Successful PR Check run ID
         required: true
         type: string
-
-run-name: Device QA - ${{ inputs.feature_branch }} - ${{ github.actor }}
-
 permissions:
   contents: read
-
+  actions: read
+  pull-requests: read
 concurrency:
-  group: device-test-${{ inputs.feature_branch }}
+  group: qa-sign-${{ github.event.workflow_run.id || inputs.check_run_id }}
   cancel-in-progress: false
-
 jobs:
-  build-unsigned:
-    name: Build branch unsigned Release (no secrets)
+  sign:
+    if: github.ref == 'refs/heads/local' && (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success')
+    name: Verify source and sign QA APKs
     runs-on: ubuntu-latest
-    timeout-minutes: 50
+    timeout-minutes: 20
     steps:
-      - name: Validate feature branch name
-        shell: bash
-        env:
-          FEATURE_BRANCH: ${{ inputs.feature_branch }}
-        run: |
-          set -euo pipefail
-          if [[ ! "$FEATURE_BRANCH" =~ ^feat/[A-Za-z0-9._/-]+$ ]] || [[ "$FEATURE_BRANCH" == *..* ]]; then
-            echo "::error::Only existing feat/* branches are allowed."
-            exit 1
-          fi
-
-      - name: Checkout requested branch
+      - name: Checkout trusted local tools only
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          ref: ${{ inputs.feature_branch }}
-          fetch-depth: 1
+          ref: ${{ github.sha }}
           persist-credentials: false
-
-      - name: Set up canonical Eta build toolchain
-        uses: ./.github/actions/setup-build
-
-      - name: Build an unsigned Release APK
-        shell: bash
+          sparse-checkout: .github/scripts
+      - name: Select source run
+        id: source
+        env:
+          EVENT: ${{ github.event_name }}
+          RUN_ID: ${{ github.event.workflow_run.id || inputs.check_run_id }}
+          EVENT_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          actual_sha="$(git rev-parse HEAD)"
-          echo "Testing commit: $actual_sha"
-          ./gradlew --no-daemon --no-configuration-cache \
-            "-Peta.buildMetadata=qa-${actual_sha:0:7}" :app:assembleRelease
-
-      - name: Upload unsigned APK for signing
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: unsigned-device-qa
-          path: app/build/outputs/apk/release/Eta-v*.apk
-          if-no-files-found: error
-          retention-days: 1
-
-  sign-test-apk:
-    name: Sign and upload device-test Release APK
-    needs: build-unsigned
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      # Deliberately no checkout: do not execute unreviewed branch code with secrets.
+          [[ "$RUN_ID" =~ ^[1-9][0-9]*$ ]] || exit 1
+          if [[ "$EVENT" == workflow_run ]]; then
+            [[ "$EVENT_ATTEMPT" =~ ^[1-9][0-9]*$ ]] || exit 1
+            attempt="$EVENT_ATTEMPT"
+          else
+            attempt="$(python3 -c 'import json,os,urllib.request; r=urllib.request.Request("https://api.github.com/repos/"+os.environ["GITHUB_REPOSITORY"]+"/actions/runs/"+os.environ["RUN_ID"],headers={"Authorization":"Bearer "+os.environ["GH_TOKEN"],"Accept":"application/vnd.github+json"}); print(json.load(urllib.request.urlopen(r))["run_attempt"])')"
+          fi
+          echo "run=$RUN_ID" >> "$GITHUB_OUTPUT"
+          echo "attempt=$attempt" >> "$GITHUB_OUTPUT"
+      - name: Validate source and input
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ steps.source.outputs.run }}
+          ATTEMPT: ${{ steps.source.outputs.attempt }}
+        run: python3 .github/scripts/device_qa.py prepare --run "$RUN_ID" --attempt "$ATTEMPT" --directory "$RUNNER_TEMP/qa-input" --archive "$RUNNER_TEMP/qa.zip"
       - name: Set up Android signing tools
         uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4
         with:
           packages: ""
           log-accepted-android-sdk-licenses: false
-
-      - name: Download unsigned APK from this run
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          name: unsigned-device-qa
-          path: ${{ runner.temp }}/unsigned
-
-      - name: Zipalign and sign with existing release keystore
-        shell: bash
+      - name: Sign both APKs
         env:
           ETA_RELEASE_KEYSTORE_BASE64: ${{ secrets.ETA_RELEASE_KEYSTORE_BASE64 }}
           ETA_RELEASE_STORE_PASSWORD: ${{ secrets.ETA_RELEASE_STORE_PASSWORD }}
           ETA_RELEASE_KEY_ALIAS: ${{ secrets.ETA_RELEASE_KEY_ALIAS }}
           ETA_RELEASE_KEY_PASSWORD: ${{ secrets.ETA_RELEASE_KEY_PASSWORD }}
+        shell: bash
         run: |
           set -euo pipefail
-          if [[ -z "$ETA_RELEASE_KEYSTORE_BASE64" || -z "$ETA_RELEASE_STORE_PASSWORD" ||
-                -z "$ETA_RELEASE_KEY_ALIAS" || -z "$ETA_RELEASE_KEY_PASSWORD" ]]; then
-            echo "::error::Missing release-signing secrets"
-            exit 1
-          fi
+          test -n "$ETA_RELEASE_KEYSTORE_BASE64" && test -n "$ETA_RELEASE_STORE_PASSWORD" && test -n "$ETA_RELEASE_KEY_ALIAS" && test -n "$ETA_RELEASE_KEY_PASSWORD"
+          umask 077
+          trap 'rm -f "$RUNNER_TEMP/release.jks"' EXIT
           printf '%s' "$ETA_RELEASE_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release.jks"
           chmod 600 "$RUNNER_TEMP/release.jks"
-          shopt -s nullglob
-          apks=("$RUNNER_TEMP"/unsigned/Eta-v*.apk)
-          if [[ ${#apks[@]} -ne 1 ]]; then
-            echo "::error::Expected exactly one unsigned APK"
-            exit 1
-          fi
           tools="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
-          test -x "$tools/zipalign"
-          test -x "$tools/apksigner"
           mkdir -p "$RUNNER_TEMP/signed"
-          "$tools/zipalign" -f -p 4 "${apks[0]}" "$RUNNER_TEMP/aligned.apk"
-          target="$RUNNER_TEMP/signed/$(basename "${apks[0]}")"
-          "$tools/apksigner" sign \
-            --ks "$RUNNER_TEMP/release.jks" \
-            --ks-key-alias "$ETA_RELEASE_KEY_ALIAS" \
-            --ks-pass env:ETA_RELEASE_STORE_PASSWORD \
-            --key-pass env:ETA_RELEASE_KEY_PASSWORD \
-            --out "$target" "$RUNNER_TEMP/aligned.apk"
-          "$tools/apksigner" verify --print-certs "$target"
-          "$tools/zipalign" -c -p 4 "$target"
-          sha256sum "$target"
-          rm -f "$RUNNER_TEMP/release.jks"
-
-      - name: Upload installable Release APK
+          for variant in debug release; do
+            name="$(python3 -c 'import json,os,sys; m=json.load(open(os.environ["RUNNER_TEMP"]+"/qa-input/manifest.json")); print(next(x["file_name"] for x in m["apks"] if x["variant"]==sys.argv[1]))' "$variant")"
+            "$tools/zipalign" -f -p 4 "$RUNNER_TEMP/qa-input/$name" "$RUNNER_TEMP/aligned-$variant.apk"
+            "$tools/apksigner" sign --ks "$RUNNER_TEMP/release.jks" --ks-key-alias "$ETA_RELEASE_KEY_ALIAS" --ks-pass env:ETA_RELEASE_STORE_PASSWORD --key-pass env:ETA_RELEASE_KEY_PASSWORD --out "$RUNNER_TEMP/signed/$name" "$RUNNER_TEMP/aligned-$variant.apk"
+            "$tools/apksigner" verify --print-certs-pem "$RUNNER_TEMP/signed/$name" > "$RUNNER_TEMP/cert-$variant.txt"
+            test "$(grep -c -- '-----BEGIN CERTIFICATE-----' "$RUNNER_TEMP/cert-$variant.txt")" = 1
+            actual_cert="$(sed -n '/-----BEGIN CERTIFICATE-----/,/-----END CERTIFICATE-----/p' "$RUNNER_TEMP/cert-$variant.txt" | openssl x509 -noout -fingerprint -sha256 | cut -d= -f2 | tr -d ':\r' | tr '[:upper:]' '[:lower:]')"
+            test "$actual_cert" = 'a7a92cca03f7d7390ab74001c97efbfe4ff4289b0dc4ffa21d6ebc3cee1c81a8'
+            "$tools/zipalign" -c -p 4 "$RUNNER_TEMP/signed/$name"
+          done
+      - name: Revalidate before publication and create receipt
+        id: receipt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ steps.source.outputs.run }}
+          ATTEMPT: ${{ steps.source.outputs.attempt }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/device_qa.py recheck --run "$RUN_ID" --attempt "$ATTEMPT" --directory "$RUNNER_TEMP/qa-input"
+          python3 .github/scripts/device_qa.py receipt --run "$RUN_ID" --attempt "$ATTEMPT" --directory "$RUNNER_TEMP/qa-input" --signed "$RUNNER_TEMP/signed" --proof "$RUNNER_TEMP/proof"
+      - name: Upload Debug APK
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: Eta-device-test-${{ github.run_id }}
-          path: ${{ runner.temp }}/signed/*.apk
+          name: ${{ steps.receipt.outputs.debug_name }}
+          path: ${{ runner.temp }}/signed/${{ steps.receipt.outputs.debug_name }}
           archive: false
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload Release APK
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ steps.receipt.outputs.release_name }}
+          path: ${{ runner.temp }}/signed/${{ steps.receipt.outputs.release_name }}
+          archive: false
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload proof bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: qa-proof-${{ steps.source.outputs.run }}
+          path: ${{ runner.temp }}/proof/
           if-no-files-found: error
           retention-days: 14

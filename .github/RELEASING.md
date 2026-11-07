@@ -1,49 +1,34 @@
 # Eta 个人版维护与发布（local 稳定分支）
 
-## 分支职责
+## 分支与两条交付线
 
-- `main`：原作者 `Mangi-11/Eta` 的同步镜像。不要在 main 提交自己的功能、工作流或签名改动。
-- `local`：自己的稳定版，保留系统分享等定制能力，是**唯一的个人版构建与发布来源**。
-- `feat/<功能名>`：从 local 创建的功能分支。每个功能单独 PR，审查后合并到 local。
-- 日常迭代：功能分支 → PR Check → 受保护合入 local → 原签名标准 Debug/Release 双包；不等待官方更新。
-- 官方同步和集成均仅手动触发，用户决定时间；没有定时或 PR 检查结束后的自动合入。详见 [官方更新流程](UPSTREAM_AUTOMATION.md)。
-- 按需同步：`Actions > Sync upstream main (manual) > Run workflow`，分支选 `local`；只快进镜像 main，不改 local。需要审阅官方更新时另行手动运行 `Prepare upstream PR (manual)`，不会自动 merge/close。
-- 需要合入定制版时，打开 https://github.com/bianwuya/Eta/compare/local...main?expand=1 ，确认 **base=local、compare=main** 后创建 PR。通过检查并人工确认后，用 **Create a merge commit** 合并，保留主线祖先关系，后续重复同步不会反复引入旧提交。不要启用自动合并，也不要把 local 反向合入 main。
+- `main` 是原作者 `Mangi-11/Eta` 的同步镜像，不放个人功能或签名改动；`local` 是个人稳定分支，也是当前 GitHub 默认分支。功能从独立分支发起 base=`local` 的 PR。
+- **QA 线（拟上线）**：PR 完整检查运行 Lint、全量单测并一次构建标准 Debug/Release；成功后由可信 `local` 上的签名工作流接收 `workflow_run`，只对合格的同仓库、仍开放未合并且精确 HEAD 对应的 PR 构建产物签名，不重编译、不合业务 PR。也可按检查 run ID 补签；以实际工作流支持为准。双包和回执供本人手动安装验证，非稳定发布。多个 PR 可独立并行，同一 PR 更新后旧检查不可当作新 HEAD。
+- **稳定线**：完成检查与必要审查后，经明确合入决定正常通过受保护 PR 合入 `local`，由 `Eta Build` 生成原签名标准 Debug/Release。两条线不修改 `main`、分支保护或签名身份，也不自动安装。
 
-> 注意：GitHub 的默认分支与上述工作流中的 main/local 是两回事。若要新建 PR 默认指向 local，
-> 还需在 GitHub `Settings > General > Default branch` 将默认分支切换到 local。
-> GitHub App 当前不能在本工作流中修改这个仓库设置；改默认分支不会删除或合并代码。
-> 由于 main 保持原作者原样，main 上原有的上游构建触发器可能仍会运行，这是镜像策略的限制。
+**上线状态**：上述 QA 签名链依赖工作流变更合入默认分支；在流程 PR 合入前，新的 `workflow_run` 不会因此文档生效。代码、检查、真实签名双包和本人验收必须分别提供证据，不能把计划或文档当作上线/签名实证。
 
-## 自动审查：PR Check
+官方同步与集成仅手动且由用户决定；不定时、不随普通 PR 自动合入。参见 [官方更新流程](UPSTREAM_AUTOMATION.md)。按需运行 `Sync upstream main (manual)`，需要审阅时另运行 `Prepare upstream PR (manual)`；它们不自动 merge/close。确需把官方更新合入个人版时核对 base=`local`、compare=`main`，按受保护流程审阅并使用 merge commit，勿把 local 反向合入 main。上游 main 自带构建触发器可能仍运行，其产物不是个人稳定版。
 
-`local` 目标分支的 Pull Request 自动运行 `PR Check`：
+## PR 检查与审查上下文
 
-1. Android Lint
-2. Kotlin/Android 单元测试
-3. Debug APK 编译
+`PR Check` 不读取发布签名 Secrets，保留既有必需检查与完整 Lint、单测、标准 Debug；新流程还构建标准 Release 并上传 QA 输入。实际检查 run、精确源码和结果以 Actions 为准，失败不可冒充通过。
 
-不会读取发布签名 Secrets。失败会上传报告。建议在 GitHub 的 `Settings > Rules > Rulesets`
-为 local 设置必需检查 `Lint / Test / Debug Build`、禁止强制推送、要求 PR 审查。
-仅 CI 通过不代表人工审查通过；PR 应保持 Draft 直到复核完毕。
+自动签名要求检查执行定义与可信 base 一致，包括 PR Check、setup-build/actions、wrapper、Gradle 脚本/配置和构建插件入口。改这些基础设施的 PR 仍可构建和审查，但不能凭自己改过的检查给自己自动签包；应先单独审查、正常整合相应基础设施。此约束不是对任意 PR 测试代码的沙箱或独立代码可信证明，签名与 CI 都不代替代码审查。
 
-只把原作者的更新合入 main，不把个人功能反向合入 main。同步 main 时注意保留 local
-自己的工作流；如果官方同时改了工作流，在 main -> local 的 PR 内处理差异。
+PR 正文或仓库内版本化上下文必须包含真实目标、保留行为和非目标、前置/关联 PR 与具体 SHA 和合入状态、包包含/不包含、风险和必要测试；见 [PR 模板](PULL_REQUEST_TEMPLATE.md) 与 [上下文模板](review-context/TEMPLATE.md)。云审查应沿链接读取完整必要需求，不只看 diff，也不依赖本机 scratch。检查 PR head 与实际 checkout 的 merge candidate source SHA，不能混为一谈。
 
-## 自动构建：Eta Build
+关联记录应追溯到精确 check run、签名 run、两包摘要及证书；交付时核验 `qa-receipt.json` 与 `REVIEW-CONTEXT.md` 中的来源和范围，字段以实际制品为准。不把模型已读取或 CodeRabbit skipped 当审查通过；不自动开启付费审查，也不将 AI 报告当作合入、安装或其他操作授权。
 
-下列来源可触发个人版构建：
+## QA 与稳定包使用
 
-- 推送到 `local`：自动执行 Lint、测试，生成 Debug 和使用自己证书签名的 Release APK。
-- `Actions > Eta Build > Run workflow`：**Branch 选择 local**。不要选 main。
-- 推送 `v*` 标签：仅当标签提交在 local 的历史里才允许执行后续任务。
+QA 流程上线且真实运行成功后，从对应 run 获取两个原证书签名的标准 APK 和回执；核对 PR、feature head、base SHA、实际 checkout source SHA、check/sign run、两包 SHA256、包名、版本及证书，再交本人手动安装。QA 包只包含该次实际构建来源，可能是与 base 的合并候选，不假设包含其他并行 PR。开发签名的 PR 原始构建不是交付包；等待本人实际测试，不把下载或安装等同验收。
 
-注意：由于 main 严格镜像上游，其已有的 `Eta Build` 工作流可能也在 main 更新时构建。
-这些 **main 构建产物不是个人稳定版**；只能取 `local` 工作流的签名 Release APK。
+稳定线的 `Eta Build` 由推送 `local`、手动选择 `local` 或符合 local 历史校验的 `v*` 标签触发，需核对精确运行结果、包名、版本、两包摘要和原证书。标准 Debug 会用个人证书重签，Release 使用同一身份；只取对应 local 的个人版制品。
 
-构建成功后打开具体的 Actions 运行记录，在 Artifacts 下载 `Eta-v...apk`。
-普通分支构建会追加 `+<短 SHA>`；Debug 带 `-debug` 后缀。
-Eta Build 会用现有个人版证书重签标准 Debug，并校验 Debug/Release 证书一致；两包均可供同签名覆盖安装。PR Check 中的开发签名 Debug 不属于这个交付链路。
+QA 与稳定包均沿用已有 `applicationId`、签名身份及 `versionCode`，通过构建元数据区分。版本名变化不提高 versionCode；设备已装更高版本、证书不匹配或 ROM 拒绝等版本覆盖时可能失败，不为绕过失败而盲目卸载造成数据丢失。重要数据按需备份，QA 包不当作正式 Release 发布。
+
+签名阶段必须在可信默认分支环境中处理已校验的外部构建产物，不检出或执行功能分支代码、不运行 Gradle；PR 构建阶段不注入签名 Secrets。安全和真实运行结果以实现及独立审查、Actions 证据为准。
 
 ## 签名 Secrets
 
@@ -55,7 +40,7 @@ Eta Build 会用现有个人版证书重签标准 Debug，并校验 Debug/Releas
 - `ETA_RELEASE_KEY_PASSWORD`
 
 不得更换已安装版本所使用的签名密钥，不得把 KeyStore、密码或 Base64 证书正文提交到 Git。
-只有发布构建 Job 恢复证书；PR Check 不持有 Secrets。
+仅可信签名/发布 Job 使用证书；PR Check 不持有 Secrets。
 
 macOS 可以用以下命令复制证书的 Base64：
 
@@ -100,29 +85,6 @@ git push origin v3.4.1
 
 ## 重要边界
 
-- main 只跟进官方，不执行个人定制合并。
-- local 是个人稳定版，功能从 feat 分支通过 PR 合入。
-- PR Check 不使用证书；仅 local/tags 允许个人版 Build；Tag 需要 local 历史校验。
-- Release 自动创建的是**草稿**，绝不自动发布或升级手机里的 App。
-- 官方 main 的默认工作流存在于上游代码中，不应为禁用它而破坏 main 的原样镜像。
-
-## 功能分支 APK 实机验收（不合并也能安装）
-
-在 `local` 启用 `.github/workflows/device-test-apk.yml` 后：
-
-1. 新功能在 `feat/*` 分支开发，先创建指向 `local` 的 Draft PR，并等待 `PR Check` 成功。
-2. 打开 `Actions > Device Test APK > Run workflow`；运行工作流的分支保持 `local`。
-3. 在 `feature_branch` 输入完整功能分支名，例如 `feat/chat-image-zoom`，执行手动构建。
-4. 工作流先在无 Secrets 环境构建未签名 Release，再由**不检出功能代码**的独立 Job 使用原有证书签名。
-5. 进入该次 Actions 运行页面的 Artifacts，下载 `Eta-device-test-...`，获得 APK 后在手机上直接安装测试。
-6. 实测单图、多图、手势、长会话内存、配置保留、旧聊天和新功能；记录对应分支的完整提交 SHA。
-7. 实机通过后再合并 PR 到 `local`；合并后原有 `Eta Build` 会生成稳定签名版。
-
-**版本限制**：功能分支测试包与 `local` 保持相同 `applicationId`、Release 签名、`versionCode`。Android 通常允许同版本号覆盖安装；
-如果设备上已装更高的 `versionCode`、证书不匹配或某些 ROM 拒绝等版本覆盖，则会安装失败，不能通过卸载来盲目解决，以免丢失数据。
-`versionName` 会附加 `+qa-<commit>` 以便辨认；版本名变化本身不会提高 `versionCode`。
-测试前应备份重要数据；不要把生成的测试 APK 当作正式 Release 发布。
-
-**安全边界**：不要给不可信来源的分支签名；在 Actions 页面确认实际分支名和提交号。
-测试工作流使用只读权限，不在运行 Gradle 时注入发布密钥，签名 Job 不检出分支代码。
-为进一步加强保护，可以在 GitHub Environment 中为签名 Job 设置人工批准要求。
+- `main` 保持官方镜像；个人稳定功能经受保护 PR 合入 `local`，QA 出包不要求合业务 PR。
+- PR Check 不使用签名密钥；可信签名链仅处理符合来源、完整性和当前状态约束的产物；稳定 Tag 需通过 local 历史校验。
+- Release 自动创建的是**草稿**，不自动发布或升级手机里的 App。官方 main 的上游工作流不应为禁用而破坏镜像。
