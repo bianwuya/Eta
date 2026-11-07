@@ -4,7 +4,7 @@
 
 Complete the previously approved collaboration upgrade without repeating P1–P5. P6 adds critical child-to-parent decision requests; P7 separately tests compaction/resumption and fixes only demonstrated defects. P8 real-device and real-provider acceptance follows manual installation by the user; it is not implied by CI.
 
-Baseline: protected `local` f7511d0639d45ca76d618740e61ed13df300f84e. Prerequisites: [P1 #18](https://github.com/bianwuya/Eta/pull/18), [P2 #19](https://github.com/bianwuya/Eta/pull/19), [cancellation #20](https://github.com/bianwuya/Eta/pull/20), [P3 #21](https://github.com/bianwuya/Eta/pull/21), [P4 #22](https://github.com/bianwuya/Eta/pull/22), [P5 #23](https://github.com/bianwuya/Eta/pull/23). P5 feature 4db22913a46e913896d7ead07df7637c08b78a92 passed full check 42278162621 and merged as the baseline.
+Original baseline: protected `local` f7511d0639d45ca76d618740e61ed13df300f84e. During P6 development an independent task merged QA infrastructure PR #2 into stable local as3195c3d7896f1214b82f2649b86946a52b7da01e. P6 normally merged that refreshed stable baseline without conflicts (no force push); its PR delta remains P6 only, with the stricter existing full PR check retained. Prerequisites: [P1 #18](https://github.com/bianwuya/Eta/pull/18), [P2 #19](https://github.com/bianwuya/Eta/pull/19), [cancellation #20](https://github.com/bianwuya/Eta/pull/20), [P3 #21](https://github.com/bianwuya/Eta/pull/21), [P4 #22](https://github.com/bianwuya/Eta/pull/22), [P5 #23](https://github.com/bianwuya/Eta/pull/23). P5 feature 4db22913a46e913896d7ead07df7637c08b78a92 passed full check 42278162621 and merged as the baseline.
 
 ## P6 contract
 
@@ -15,7 +15,7 @@ Baseline: protected `local` f7511d0639d45ca76d618740e61ed13df300f84e. Prerequisi
 
 ## Preserved and excluded
 
-Preserve handoff/prompt effectiveness, independent task result semantics, parent control, group sealing/report deduplication, passive same-group INFO mailbox, real receiver reads, original plan-mode read-only restriction, provider signatures, session/account identity and stable request prefixes. No new UI/settings/permissions, workflow/branch-protection changes, upstream merge, automatic installation, official release or P7 implementation in this PR. GUI-P0 #24 and QA infrastructure draft #2 are independent, not included or assumed deployed.
+Preserve handoff/prompt effectiveness, independent task result semantics, parent control, group sealing/report deduplication, passive same-group INFO mailbox, real receiver reads, original plan-mode read-only restriction, provider signatures, session/account identity and stable request prefixes. No new UI/settings/permissions, workflow/branch-protection changes, upstream merge, automatic installation, official release or P7 implementation in this PR. GUI-P0 #24 is independent and not included. QA infrastructure #2 was independently merged into the refreshed stable baseline during this task; P6 does not change, revert or redeploy its workflows. Its own implementation/delivery proof remains separate from P6 behavior.
 
 ## Verification and package provenance
 
