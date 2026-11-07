@@ -51,7 +51,9 @@ class SubagentRecoveryRoundTripTest {
         val committed = CountDownLatch(1)
         val wrapped = object : SubagentDecisionBroker.Storage {
             override fun accessRequests(operation: (JSONArray) -> JSONObject): JSONObject {
-                val result = store.accessRequests(operation)
+                // The fixture keeps a waiter only to observe the lost-owner terminal state.
+                // Rebind its storage handle on reopen; the old Room instance is really closed.
+                val result = AgentSubagentCheckpoint(context, "run").accessRequests(operation)
                 if (result.optString("status") == "pending") committed.countDown()
                 return result
             }
