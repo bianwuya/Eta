@@ -124,12 +124,25 @@ internal class AgentModelFailure(
                 current = current.cause
             }
             if (causes.any {
-                it is javax.net.ssl.SSLHandshakeException ||
-                    it is javax.net.ssl.SSLPeerUnverifiedException ||
-                    it is java.security.cert.CertificateException
+                it is javax.net.ssl.SSLPeerUnverifiedException ||
+                    it is javax.net.ssl.SSLProtocolException ||
+                    it is ProtocolException ||
+                    it is java.security.cert.CertificateException ||
+                    it is java.security.cert.CertPathValidatorException ||
+                    it is java.security.cert.CertPathBuilderException
+            }) return false
+            // Explicit identity/configuration failures win even when a wrapper also carries EOF.
+            if (causes.any { cause ->
+                val message = cause.message.orEmpty().lowercase(java.util.Locale.ROOT)
+                listOf(
+                    "certificate", "certpath", "trust anchor", "hostname", "peer not authenticated",
+                    "no subject alternative", "unrecognized_name", "unrecognized name",
+                    "protocol_version", "unsupported protocol", "invalid protocol", "wrong version number",
+                    "handshake_failure", "handshake failure", "no shared cipher", "no cipher suites in common",
+                ).any { it in message }
             }) return false
             return causes.any { it is java.io.EOFException } ||
-                failure.message?.trim()?.lowercase() in setOf("connection closed", "connection closed by peer")
+                causes.any { it.message?.trim()?.lowercase(java.util.Locale.ROOT) in setOf("connection closed", "connection closed by peer") }
         }
 
         private fun isContextOverflow(error: JSONObject?): Boolean {

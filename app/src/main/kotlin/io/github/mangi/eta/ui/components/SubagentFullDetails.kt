@@ -16,7 +16,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -35,7 +35,9 @@ import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Refresh
 import io.github.mangi.eta.agent.subagent.SubagentDetailStore
+import io.github.mangi.eta.agent.subagent.SubagentHistoryEntry
 import io.github.mangi.eta.agent.subagent.SubagentStepSnapshot
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -54,6 +56,8 @@ internal fun SubagentFullDetails(id: String, allowDelete: Boolean) {
     val store = remember(id) { SubagentDetailStore(context) }
     val scope = rememberCoroutineScope()
     var steps by remember(id) { mutableStateOf<List<SubagentStepSnapshot>>(emptyList()) }
+    var historyIncomplete by remember(id) { mutableStateOf(false) }
+    var history by remember(id) { mutableStateOf<List<SubagentHistoryEntry>>(emptyList()) }
     var selected by remember(id) { mutableStateOf<String?>(null) }
     var page by remember(id) { mutableIntStateOf(0) }
     var text by remember(id) { mutableStateOf<String?>(null) }
@@ -63,33 +67,78 @@ internal fun SubagentFullDetails(id: String, allowDelete: Boolean) {
     var error by remember(id) { mutableStateOf<String?>(null) }
     var loading by remember(id) { mutableStateOf(true) }
     var confirmDelete by remember(id) { mutableStateOf(false) }
+    var loadedRefresh by remember(id) { mutableIntStateOf(-1) }
     val maxHeight = with(LocalDensity.current) { LocalWindowInfo.current.containerSize.height.toDp() } * 0.72f
     BackHandler(enabled = selected != null) { selected = null; page = 0 }
     LaunchedEffect(id, selected, page, refresh) {
         loading = true
         text = null
         next = false
-        runCatching {
+        error = null
+        if (id.isBlank()) {
+            exists = false
+            steps = emptyList()
+            history = emptyList()
+            error = "缺少任务详情标识，无法读取历史记录。"
+            loading = false
+            return@LaunchedEffect
+        }
+        val field = selected
+        val pageIndex = page
+        val reloadDirectory = field == null || refresh != loadedRefresh
+        try {
             withContext(Dispatchers.IO) {
                 val header = store.header(id)
-                val rows = if (selected == null) store.steps(id) else steps
-                val content = selected?.let { store.page(id, it, page) }
-                val more = selected?.let { store.hasNext(id, it, page) } ?: false
-                Triple(header != null, rows, content to more)
+                if (header == null) {
+                    null
+                } else {
+                    val rows = if (reloadDirectory) store.steps(id) else null
+                    val entries = if (reloadDirectory) store.history(id) else null
+                    val content = field?.let { store.page(id, it, pageIndex) to store.hasNext(id, it, pageIndex) }
+                    LoadedSubagentDetails(header.historyIncomplete, rows, entries, content)
+                }
+            }.let { result ->
+                exists = result != null
+                if (result == null) {
+                    steps = emptyList()
+                    history = emptyList()
+                    loadedRefresh = -1
+                } else {
+                    historyIncomplete = result.historyIncomplete
+                    if (reloadDirectory) {
+                        steps = requireNotNull(result.steps)
+                        history = requireNotNull(result.history)
+                        loadedRefresh = refresh
+                    }
+                    if (field != null) {
+                        val content = requireNotNull(result.content)
+                        text = content.first
+                        next = content.second
+                    }
+                }
             }
-        }.onSuccess {
-            exists = it.first; steps = it.second; text = it.third.first; next = it.third.second; error = null
-        }.onFailure { error = "详情读取失败：${it.javaClass.simpleName}" }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            exists = false
+            steps = emptyList()
+            history = emptyList()
+            loadedRefresh = -1
+            error = "历史记录读取失败：${failure.javaClass.simpleName}，请刷新重试。"
+        }
         loading = false
     }
     Column(Modifier.fillMaxWidth().heightIn(max = maxHeight).navigationBarsPadding()) {
         SubagentDetailsToolbar(
             title = when (selected) {
-                null -> "保留内容"
+                null -> "历史目录"
                 "prompt" -> "任务指令"
                 "output" -> "回复与交接报告"
                 "error" -> "错误详情"
-                else -> steps.firstOrNull { "step-${it.id}" == selected }?.title ?: "工具详情"
+                else -> history.firstOrNull { it.id.isNotBlank() && "history-${it.id}" == selected }
+                    ?.title?.ifBlank { "历史记录" }
+                    ?: steps.firstOrNull { "step-${it.id}" == selected }?.title?.ifBlank { "工具详情" }
+                    ?: "保留内容"
             },
             onBack = if (selected == null) null else ({ selected = null; page = 0 }),
             copyEnabled = !loading && text != null,
@@ -102,7 +151,7 @@ internal fun SubagentFullDetails(id: String, allowDelete: Boolean) {
             deleteEnabled = exists,
             onDelete = if (selected == null && allowDelete) ({ confirmDelete = true }) else null,
         )
-        error?.let { Text(it, color = StatusError) }
+        error?.let { Text(it, Modifier.padding(horizontal = 8.dp, vertical = 8.dp), color = StatusError) }
         AnimatedContent(
             targetState = selected,
             modifier = Modifier.weight(1f, fill = false),
@@ -110,15 +159,49 @@ internal fun SubagentFullDetails(id: String, allowDelete: Boolean) {
             label = "subagent_detail_content",
         ) { entry ->
             when {
-                !exists -> ListEmptyState(title = "详情未保留或已清理")
                 loading -> Column(Modifier.fillMaxWidth().padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                     CircularProgressIndicator(size = 24.dp)
                 }
+                error != null && !exists -> Unit
+                !exists -> ListEmptyState(title = "详情未保留、已丢失或已清理")
                 entry == null -> LazyColumn(Modifier.fillMaxWidth().overScrollVertical()) {
-                    item { ArrowPreference(title = "任务指令", onClick = { selected = "prompt"; page = 0 }) }
-                    item { ArrowPreference(title = "回复与交接报告", onClick = { selected = "output"; page = 0 }) }
-                    item { ArrowPreference(title = "错误详情", onClick = { selected = "error"; page = 0 }) }
-                    items(steps.filter { it.kind != SubagentStepSnapshot.KIND_THINKING }, key = { it.id }) { step ->
+                    if (historyIncomplete) {
+                        item(key = "history-incomplete") {
+                            Text("部分记录保存失败，历史可能不完整", Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
+                                style = MiuixTheme.textStyles.footnote2, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+                        }
+                    }
+                    if (history.isEmpty()) {
+                        item(key = "legacy-warning") {
+                            Text("旧版记录不完整，仅显示已保留材料", Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
+                                style = MiuixTheme.textStyles.footnote2, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+                        }
+                    } else {
+                        item(key = "history-heading") {
+                            Text("历史记录", Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
+                                style = MiuixTheme.textStyles.footnote2, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+                        }
+                        itemsIndexed(history, key = { index, item -> "history:$index:${item.id}" }) { _, item ->
+                            val missingId = item.id.isBlank()
+                            ArrowPreference(
+                                title = item.title.ifBlank { "历史记录" },
+                                summary = if (missingId) "缺少记录标识，正文无法读取" else historySummary(item),
+                                onClick = {
+                                    if (missingId) error = "该条历史记录缺少标识，正文无法读取。"
+                                    else { selected = "history-${item.id}"; page = 0 }
+                                },
+                            )
+                        }
+                        item(key = "retained-heading") {
+                            Text("其他已保留材料", Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
+                                style = MiuixTheme.textStyles.footnote2, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+                        }
+                    }
+                    item(key = "prompt") { ArrowPreference(title = "任务指令", onClick = { selected = "prompt"; page = 0 }) }
+                    item(key = "output") { ArrowPreference(title = "回复与交接报告", onClick = { selected = "output"; page = 0 }) }
+                    item(key = "error") { ArrowPreference(title = "错误详情", onClick = { selected = "error"; page = 0 }) }
+                    itemsIndexed(steps.filter { it.kind != SubagentStepSnapshot.KIND_THINKING },
+                        key = { index, step -> "step:$index:${step.id}" }) { _, step ->
                         ArrowPreference(title = step.title.ifBlank { step.toolName }, summary = step.status,
                             onClick = { selected = "step-${step.id}"; page = 0 })
                     }
@@ -126,7 +209,7 @@ internal fun SubagentFullDetails(id: String, allowDelete: Boolean) {
                 else -> key(entry, page) {
                     LazyColumn(Modifier.fillMaxWidth().overScrollVertical()) {
                         item { SelectionContainer {
-                            Text(text ?: "本项无保留正文或已达保留上限。", Modifier.padding(horizontal = 8.dp, vertical = 12.dp),
+                            Text(text ?: "本项正文未保留、已丢失或达到保留上限。", Modifier.padding(horizontal = 8.dp, vertical = 12.dp),
                                 style = MiuixTheme.textStyles.footnote2.copy(fontFamily = FontFamily.Monospace))
                         } }
                     }
@@ -153,12 +236,40 @@ internal fun SubagentFullDetails(id: String, allowDelete: Boolean) {
                 confirmDelete = false
                 scope.launch {
                     runCatching { withContext(Dispatchers.IO) { store.clear(id) } }
-                        .onSuccess { exists = false; steps = emptyList(); text = null }
+                        .onSuccess { exists = false; steps = emptyList(); history = emptyList(); text = null; error = null }
                         .onFailure { error = "删除失败，请重试" }
                 }
             })
         }
     }
+}
+
+private data class LoadedSubagentDetails(
+    val historyIncomplete: Boolean,
+    val steps: List<SubagentStepSnapshot>?,
+    val history: List<SubagentHistoryEntry>?,
+    val content: Pair<String?, Boolean>?,
+)
+
+private fun historySummary(entry: SubagentHistoryEntry): String {
+    val kind = when (entry.kind) {
+        "assistant" -> "回复"
+        "tool" -> "工具"
+        "retry" -> "重试"
+        "terminal" -> "终态"
+        "limit" -> "保留上限"
+        else -> entry.kind
+    }
+    val status = when (entry.status) {
+        "running" -> "进行中"
+        "success", "completed" -> "已完成"
+        "failed" -> "失败"
+        "cancelled" -> "已取消"
+        "partial" -> "部分保留"
+        "truncated" -> "已截断"
+        else -> entry.status
+    }
+    return listOf(kind, status).filter { it.isNotBlank() }.joinToString(" · ")
 }
 
 @Composable
