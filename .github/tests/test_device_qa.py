@@ -61,6 +61,20 @@ class QA(unittest.TestCase):
         qa.validate_build_inputs(tree('app/src/main/kotlin/Feature.kt'),
                                  tree('app/src/main/kotlin/Feature.kt', '2'*40))
         with self.assertRaises(ValueError): qa.validate_build_inputs({'truncated':True}, tree('gradlew'))
+    def test_new_check_attempt_is_not_blocked_by_previous_attempt_proof(self):
+        from unittest.mock import patch
+        artifact={'id':9,'name':'qa-proof-123','expired':False,'size_in_bytes':100,
+                  'workflow_run':{'id':200}}
+        def api(path):
+            if '/actions/artifacts?' in path: return {'total_count':1,'artifacts':[artifact]}
+            return {'path':'.github/workflows/device-test-apk.yml','head_branch':'local','conclusion':'success'}
+        def download(url,path):
+            with zipfile.ZipFile(path,'w') as z:
+                z.writestr('qa-receipt.json',json.dumps({'check_run_id':123,'check_run_attempt':1}))
+                z.writestr('REVIEW-CONTEXT.md','fixture')
+        with patch.object(qa,'api',side_effect=api), patch.object(qa,'download',side_effect=download):
+            with self.assertRaises(ValueError): qa.prevent_duplicate(123,1)
+            qa.prevent_duplicate(123,2)
     def test_receipt_uses_signed_digest_not_unsigned_digest(self):
         import os
         from unittest.mock import patch
@@ -92,4 +106,9 @@ class QA(unittest.TestCase):
         self.assertIn('python3 -m unittest discover -s .github/tests -v',text)
         sign=(p.parents[1]/'workflows/device-test-apk.yml').read_text()
         self.assertIn('workflow_run:',sign); self.assertIn('workflow_dispatch:',sign); self.assertIn('qa-sign-${{ github.event.workflow_run.id || inputs.check_run_id }}',sign)
+        signing,report=sign.split('  report:',1)
+        self.assertNotIn('pull-requests: write',signing)
+        self.assertIn('pull-requests: write',report)
+        self.assertNotIn('ETA_RELEASE_',report)
+        self.assertIn('eta-qa:check-',report)
 if __name__=='__main__': unittest.main()

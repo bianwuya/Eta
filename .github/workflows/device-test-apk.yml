@@ -22,6 +22,11 @@ jobs:
     name: Verify source and sign QA APKs
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    outputs:
+      pr_number: ${{ steps.receipt.outputs.pr_number }}
+      feature_head_sha: ${{ steps.receipt.outputs.feature_head_sha }}
+      base_sha: ${{ steps.receipt.outputs.base_sha }}
+      source_sha: ${{ steps.receipt.outputs.source_sha }}
     steps:
       - name: Checkout trusted local tools only
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -96,6 +101,7 @@ jobs:
           python3 .github/scripts/device_qa.py recheck --run "$RUN_ID" --attempt "$ATTEMPT" --directory "$RUNNER_TEMP/qa-input"
           python3 .github/scripts/device_qa.py receipt --run "$RUN_ID" --attempt "$ATTEMPT" --directory "$RUNNER_TEMP/qa-input" --signed "$RUNNER_TEMP/signed" --proof "$RUNNER_TEMP/proof"
       - name: Upload Debug APK
+        id: debug
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ${{ steps.receipt.outputs.debug_name }}
@@ -104,6 +110,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
       - name: Upload Release APK
+        id: release
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ${{ steps.receipt.outputs.release_name }}
@@ -112,9 +119,69 @@ jobs:
           if-no-files-found: error
           retention-days: 14
       - name: Upload proof bundle
+        id: proof
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: qa-proof-${{ steps.source.outputs.run }}
           path: ${{ runner.temp }}/proof/
           if-no-files-found: error
           retention-days: 14
+  report:
+    name: Link QA delivery to PR
+    needs: sign
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: write
+    steps:
+      # Separate from the signing job; no signing secrets or feature checkout.
+      - name: Upsert exact-source package links
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ needs.sign.outputs.pr_number }}
+          FEATURE_HEAD: ${{ needs.sign.outputs.feature_head_sha }}
+          BASE_SHA: ${{ needs.sign.outputs.base_sha }}
+          SOURCE_SHA: ${{ needs.sign.outputs.source_sha }}
+          CHECK_RUN: ${{ github.event.workflow_run.id || inputs.check_run_id }}
+        run: |
+          python3 - <<'PYCODE'
+          import json, os, re, urllib.request
+          repo=os.environ['GITHUB_REPOSITORY']; pr=os.environ['PR_NUMBER']; check=os.environ['CHECK_RUN']
+          assert repo=='bianwuya/Eta' and re.fullmatch(r'[1-9][0-9]*',pr) and re.fullmatch(r'[1-9][0-9]*',check)
+          for key in ('FEATURE_HEAD','BASE_SHA','SOURCE_SHA'): assert re.fullmatch(r'[0-9a-f]{40}',os.environ[key])
+          def api(path,body=None,method=None):
+              request=urllib.request.Request('https://api.github.com/repos/'+repo+'/'+path,
+                  data=json.dumps(body).encode() if body is not None else None,method=method,
+                  headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json'})
+              with urllib.request.urlopen(request,timeout=30) as response: return json.load(response)
+          current=api('pulls/'+pr)
+          assert current['state']=='open' and current['head']['sha']==os.environ['FEATURE_HEAD'] and current['base']['sha']==os.environ['BASE_SHA'], 'PR changed after signing; do not publish as latest'
+          marker='<!-- eta-qa:check-'+check+' -->'
+          body=marker+'\n## 原签名 QA 双包\n\nSource `'+os.environ['SOURCE_SHA']+'`; feature head `'+os.environ['FEATURE_HEAD']+'`; base `'+os.environ['BASE_SHA']+'`.\n\n'
+          # Query artifact IDs here rather than exporting filenames/URLs from a
+          # secret-bearing job (GitHub can suppress such outputs as secret matches).
+          artifacts=api('actions/runs/'+os.environ['GITHUB_RUN_ID']+'/artifacts?per_page=100')
+          assert artifacts['total_count']==len(artifacts['artifacts']), 'Artifact list incomplete'
+          rows=[a for a in artifacts['artifacts'] if not a['expired']]
+          tag='+qa-'+os.environ['SOURCE_SHA'][:7]+'.apk'
+          selected={
+              'Debug':[a for a in rows if a['name'].endswith('-debug'+tag)],
+              'Release':[a for a in rows if a['name'].endswith(tag) and not a['name'].endswith('-debug'+tag)],
+              '来源/审查回执':[a for a in rows if a['name']=='qa-proof-'+check]}
+          for label,items in selected.items():
+              assert len(items)==1, 'Missing or duplicate delivery artifact'
+              url='https://github.com/'+repo+'/actions/runs/'+os.environ['GITHUB_RUN_ID']+'/artifacts/'+str(items[0]['id'])
+              body+='['+label+']('+url+') · '
+          body+='[完整检查](https://github.com/'+repo+'/actions/runs/'+check+')\n\n业务未合入；未安装、未本人验收。不同分支包分别覆盖不等于集成功能。\n'
+          found=[]
+          for page in range(1,11):
+              rows=api('issues/'+pr+'/comments?per_page=100&page='+str(page))
+              found += [r for r in rows if r['user']['login']=='github-actions[bot]' and marker in (r.get('body') or '')]
+              if len(rows)<100: break
+          else: raise ValueError('Comment listing incomplete')
+          assert len(found)<=1, 'Duplicate QA markers require inspection'
+          if found: api('issues/comments/'+str(found[0]['id']),{'body':body},'PATCH')
+          else: api('issues/'+pr+'/comments',{'body':body},'POST')
+          PYCODE

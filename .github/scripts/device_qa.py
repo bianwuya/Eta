@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Trusted-side validation for untrusted PR QA input."""
-import hashlib,json,os,re,stat,urllib.error,urllib.parse,urllib.request,zipfile
+import hashlib,json,os,re,stat,tempfile,urllib.error,urllib.parse,urllib.request,zipfile
 from pathlib import Path
 REPO='bianwuya/Eta'; LIMIT=150*1024*1024
 SHA=re.compile(r'^[0-9a-f]{40}$'); HASH=re.compile(r'^[0-9a-f]{64}$')
@@ -90,17 +90,31 @@ def download(url,target):
         total=0
         while chunk:=r.read(1048576):
             total+=len(chunk); need(total<=2*LIMIT+2*1024*1024,'download too large'); out.write(chunk)
-def prevent_duplicate(run_id):
+def prevent_duplicate(run_id,attempt):
     name=urllib.parse.quote('qa-proof-'+str(run_id),safe='')
     artifacts=api(f'/repos/{REPO}/actions/artifacts?name={name}&per_page=100')
     need(artifacts['total_count']==len(artifacts['artifacts']),'too many previous proofs')
     for artifact in artifacts['artifacts']:
         if artifact['expired'] or artifact['name']!='qa-proof-'+str(run_id): continue
         prior=api(f"/repos/{REPO}/actions/runs/{artifact['workflow_run']['id']}")
-        need(not (prior['path']=='.github/workflows/device-test-apk.yml' and prior['conclusion']=='success'), 'already signed by successful run')
+        if not (prior['path']=='.github/workflows/device-test-apk.yml' and prior['head_branch']=='local' and prior['conclusion']=='success'):
+            continue
+        # A new check attempt may have a new merge base; a proof for attempt 1
+        # cannot permanently block signing attempt 2 of the same run ID.
+        need(0<artifact['size_in_bytes']<=2*1024*1024, 'oversized previous proof')
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'proof.zip'
+            download(f'https://api.github.com/repos/{REPO}/actions/artifacts/{artifact["id"]}/zip',path)
+            with zipfile.ZipFile(path) as proof:
+                infos=proof.infolist()
+                need(len(infos)==2 and {x.filename for x in infos}=={'qa-receipt.json','REVIEW-CONTEXT.md'},'invalid previous proof')
+                need(proof.getinfo('qa-receipt.json').file_size<=65536,'oversized previous receipt')
+                receipt=json.loads(proof.read('qa-receipt.json'))
+        need(not (receipt.get('check_run_id')==run_id and receipt.get('check_run_attempt')==attempt),
+             'already signed this check attempt by a successful run')
 
 def prepare(run_id,attempt,dest,archive):
-    prevent_duplicate(run_id)
+    prevent_duplicate(run_id,attempt)
     run,pr,source=identity(run_id,attempt); arts=api(f'/repos/{REPO}/actions/runs/{run_id}/artifacts?per_page=100'); need(arts['total_count']==len(arts['artifacts']),'incomplete artifact list')
     found=[x for x in arts['artifacts'] if x['name']=='pr-qa-input' and not x['expired']]; need(len(found)==1,'missing or duplicate input')
     download(f'https://api.github.com/repos/{REPO}/actions/artifacts/{found[0]["id"]}/zip',archive); unpack(archive,dest)
@@ -125,6 +139,8 @@ def receipt(run_id,attempt,dest,signed,proof):
     proof.mkdir(parents=True,exist_ok=True); (proof/'qa-receipt.json').write_text(json.dumps(r,indent=2)+'\n'); shutil.copyfile(dest/'REVIEW-CONTEXT.md',proof/'REVIEW-CONTEXT.md')
     with open(os.environ['GITHUB_OUTPUT'],'a') as out:
         for e in entries: out.write(e['variant']+'_name='+e['file_name']+'\n')
+        for key in ('pr_number','feature_head_sha','base_sha','source_sha'):
+            out.write(key+'='+str(r[key])+'\n')
     with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as out:
         out.write(f"## PR QA delivery\n\n[PR]({r['pr_url']}) · [Check]({r['check_run_url']}) · [Signing]({r['sign_run_url']})\n\nSource `{m['source_sha']}`; not installed or user-accepted.\n")
 
