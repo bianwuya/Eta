@@ -26,6 +26,8 @@ internal class RuntimeMessengerFixture : AutoCloseable {
     init {
         // Other Robolectric contexts can leave an accepted binding without a callback.
         // Each injected service owns both ends of its test connection, including entry.
+        // Android does not report onServiceDisconnected for an intentional unbind.
+        shadowOf(RuntimeEnvironment.getApplication()).setUnbindServiceCallsOnServiceDisconnected(false)
         resetBinding()
     }
     private val host = Robolectric.buildService(AgentRuntimeService::class.java).create()
