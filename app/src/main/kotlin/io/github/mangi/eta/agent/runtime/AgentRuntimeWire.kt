@@ -222,6 +222,10 @@ internal object AgentRuntimeWire {
         val phase: RunPhase = RunPhase.Running,
         val operation: String = OP_CHAT,
         val handoffSource: String = "",
+        val conversationKey: String = "",
+        val title: String = "",
+        val createdAt: Long = 0L,
+        val guiStatus: GuiControlStatus? = null,
     )
 
     /**
@@ -688,6 +692,10 @@ internal object AgentRuntimeWire {
                 putString("phase", run.phase.wireValue)
                 putString("operation", run.operation)
                 putString("handoff_source", run.handoffSource)
+                putString("conversation_key", run.conversationKey)
+                putString("title", run.title)
+                putLong(KEY_CREATED_AT, run.createdAt)
+                run.guiStatus?.let { putString("gui_status", it.wireValue) }
             }
         }))
     }
@@ -701,6 +709,10 @@ internal object AgentRuntimeWire {
                 phase = RunPhase.fromWireValue(item.getString("phase").orEmpty()),
                 operation = item.getString("operation") ?: OP_CHAT,
                 handoffSource = item.getString("handoff_source").orEmpty(),
+                conversationKey = item.getString("conversation_key").orEmpty(),
+                title = item.getString("title").orEmpty(),
+                createdAt = item.getLong(KEY_CREATED_AT),
+                guiStatus = GuiControlStatus.fromWireValue(item.getString("gui_status").orEmpty()),
             )
         }
 

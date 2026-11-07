@@ -23,6 +23,7 @@ internal class RuntimeRunRegistry(private val capacity: Int = MAX_ACTIVE_RUNS) {
         private val onRequestIngested: () -> Unit = {},
     ) {
         val runId: String get() = session.runId
+        private val createdAt = System.currentTimeMillis()
         val conversationId: String = AgentConversationIdentity.fromHandoff(initialRequest.handoff, initialRequest.runId)
         @Volatile var request: AgentRuntimeWire.RunRequest = initialRequest
             private set
@@ -118,6 +119,11 @@ internal class RuntimeRunRegistry(private val capacity: Int = MAX_ACTIVE_RUNS) {
             conversationId = conversationId,
             operation = request.operation,
             handoffSource = request.handoff?.source.orEmpty(),
+            conversationKey = request.handoff?.takeIf { it.source != AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE }
+                ?.let { AgentExternalArchivePayload.from(it.payload)?.conversationKey }.orEmpty(),
+            title = presentationTitle(request),
+            createdAt = createdAt,
+            guiStatus = guiStatus,
             phase = when {
                 session.isCommitting -> AgentRuntimeWire.RunPhase.Committing
                 preparing -> AgentRuntimeWire.RunPhase.Preparing
@@ -179,6 +185,15 @@ internal class RuntimeRunRegistry(private val capacity: Int = MAX_ACTIVE_RUNS) {
         .map(Run::snapshot)
 
     companion object {
+        internal fun presentationTitle(request: AgentRuntimeWire.RunRequest): String {
+            val archiveTitle = request.handoff
+                ?.takeIf { it.source != AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE }
+                ?.let { AgentExternalArchivePayload.from(it.payload)?.title }.orEmpty()
+            return archiveTitle.ifBlank { request.prompt }
+                .replace(Regex("[\\p{Cc}\\p{Cf}\\s]+"), " ")
+                .trim().take(60).ifBlank { "临时任务" }
+        }
+
         const val MAX_ACTIVE_RUNS = 8
     }
 }

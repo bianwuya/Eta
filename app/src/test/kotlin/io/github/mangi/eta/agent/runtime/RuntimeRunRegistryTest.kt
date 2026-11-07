@@ -21,6 +21,31 @@ import org.robolectric.annotation.Config
 @Config(sdk = [36], application = Application::class)
 class RuntimeRunRegistryTest {
     @Test
+    fun acceptedSnapshotRetainsIdentityTimeAndReflectsGuiState() {
+        val registry = RuntimeRunRegistry()
+        val run = registry.accept("run", "conversation")
+        val initial = registry.snapshots().single()
+        assertEquals("run", initial.runId)
+        assertEquals("conversation", initial.conversationId)
+        assertEquals("测试请求", initial.title)
+        assertTrue(initial.createdAt > 0L)
+        run.guiStatus = GuiControlStatus.Waiting
+        val waiting = registry.snapshots().single()
+        assertEquals(initial.createdAt, waiting.createdAt)
+        assertEquals(AgentRuntimeWire.RunPhase.WaitingForGui, waiting.phase)
+        assertEquals(GuiControlStatus.Waiting, waiting.guiStatus)
+    }
+
+    @Test
+    fun presentationTitleIsBoundedAndRemovesControlCharacters() {
+        val request = request("run", "conversation").copy(prompt = "  第一行\n第二行\u0000" + "长".repeat(100))
+        val title = RuntimeRunRegistry.presentationTitle(request)
+        assertEquals(60, title.length)
+        assertTrue(title.startsWith("第一行 第二行 "))
+        assertFalse(title.contains('\u0000'))
+    }
+
+    @Test
     fun queuedSteeringKeepsTheRunAndDeduplicatesTheSameQueueMessage() {
         val registry = RuntimeRunRegistry()
         val run = registry.accept("steer", "conversation")

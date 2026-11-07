@@ -16,7 +16,8 @@ class AgentRuntimeParallelWireTest {
     fun activeRunSnapshotsKeepIndependentIdentityAndPhase() {
         val snapshots = AgentRuntimeWire.RunPhase.entries.mapIndexed { index, phase ->
             AgentRuntimeWire.ActiveRunSnapshot("run-$index", "conversation-$index", phase,
-                AgentRuntimeWire.OP_COMPACT, AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE)
+                AgentRuntimeWire.OP_COMPACT, AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE,
+                "external-$index", "标题 $index", 123L + index, GuiControlStatus.Acquired)
         }
         val restored = AgentRuntimeWire.activeRunsFromBundle(AgentRuntimeWire.activeRunsToBundle(snapshots))
         assertEquals(snapshots, restored)
