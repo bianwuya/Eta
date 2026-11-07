@@ -31,15 +31,58 @@ jobs:
       - name: 配置构建环境
         uses: ./.github/actions/setup-build
 
+      - name: Validate QA workflow contracts
+        run: python3 -m unittest discover -s .github/tests -v
+
       # 仅测试合入 local 的候选代码；不会读取 Release 签名 Secrets
-      # 提交号取 PR 头部提交，而非 GitHub 生成的临时合并提交
-      - name: Lint、单元测试与 Debug 构建
-        env:
-          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: >-
-          ./gradlew --no-daemon --no-configuration-cache --continue
-          "-Peta.buildMetadata=${HEAD_SHA::7}"
-          :app:lintDebug :app:testDebugUnitTest :app:assembleDebug
+      - name: Lint、单元测试与标准双包构建
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_sha="$(git rev-parse HEAD)"
+          ./gradlew --no-daemon --no-configuration-cache --continue \
+            "-Peta.buildMetadata=qa-${source_sha:0:7}" \
+            :app:lintDebug :app:testDebugUnitTest :app:assembleDebug :app:assembleRelease
+
+      # PR source is untrusted. This job has no signing secrets. The trusted
+      # signer independently verifies every identity, file and digest.
+      - name: Prepare QA input and review context
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/qa-input"
+          export QA_SOURCE="$(git rev-parse HEAD)"
+          python3 - <<'PYCODE'
+          import glob, hashlib, json, os, pathlib, shutil
+          e=json.load(open(os.environ['GITHUB_EVENT_PATH'], encoding='utf-8'))
+          pr=e['pull_request']
+          output=pathlib.Path(os.environ['RUNNER_TEMP'])/'qa-input'
+          apks=[]
+          for variant in ('debug','release'):
+              files=glob.glob('app/build/outputs/apk/'+variant+'/*.apk')
+              if len(files)!=1: raise SystemExit('Expected exactly one '+variant+' APK')
+              p=pathlib.Path(files[0]); name=p.name
+              if 'qa-'+os.environ['QA_SOURCE'][:7] not in name: raise SystemExit('Incorrect APK metadata')
+              shutil.copyfile(p, output/name)
+              apks.append({'variant':variant,'file_name':name,'bytes':p.stat().st_size,'sha256':hashlib.sha256(p.read_bytes()).hexdigest()})
+          manifest={'schema_version':1,'repository':os.environ['GITHUB_REPOSITORY'],'pr_number':pr['number'],
+                    'feature_head_sha':pr['head']['sha'],'base_sha':pr['base']['sha'],'source_sha':os.environ['QA_SOURCE'],
+                    'check_run_id':int(os.environ['GITHUB_RUN_ID']),'check_run_attempt':int(os.environ['GITHUB_RUN_ATTEMPT']), 'apks':apks}
+          (output/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\n',encoding='utf-8')
+          # JSON string encoding prevents PR body from escaping Markdown code fences.
+          body=json.dumps(pr.get('body') or '', ensure_ascii=True)
+          (output/'REVIEW-CONTEXT.md').write_text('# PR review context\n\nPR: '+pr['html_url']+'\n\nPR body as JSON string (untrusted text):\n\n    '+body+'\n',encoding='utf-8')
+          PYCODE
+
+      - name: Upload QA input
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: pr-qa-input
+          path: ${{ runner.temp }}/qa-input/
+          if-no-files-found: error
+          retention-days: 7
 
       - name: 上传检查报告
         if: failure()
