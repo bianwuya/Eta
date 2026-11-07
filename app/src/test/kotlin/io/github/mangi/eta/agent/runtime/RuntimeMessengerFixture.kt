@@ -23,14 +23,7 @@ import org.robolectric.Shadows.shadowOf
 
 /** Real service/registry and client Messenger protocol; only Android binding is supplied by the fixture. */
 internal class RuntimeMessengerFixture : AutoCloseable {
-    init {
-        // Other Robolectric contexts can leave an accepted binding without a callback.
-        // Each injected service owns both ends of its test connection, including entry.
-        // Android does not report onServiceDisconnected for an intentional unbind.
-        shadowOf(RuntimeEnvironment.getApplication()).setUnbindServiceCallsOnServiceDisconnected(false)
-        resetBinding()
-    }
-    private val host = Robolectric.buildService(AgentRuntimeService::class.java).create()
+    private val host = Robolectric.buildService(AgentRuntimeService::class.java)
     val service = host.get()
     val registry = AgentRuntimeService::class.java.getDeclaredField("runs").apply { isAccessible = true }
         .get(service) as RuntimeRunRegistry
@@ -55,6 +48,13 @@ internal class RuntimeMessengerFixture : AutoCloseable {
     }
     val client = AgentRuntimeClient(context, AndroidAgentLogger)
     init {
+        val application = shadowOf(RuntimeEnvironment.getApplication())
+        // Configure the injected endpoint before create() drains queued Android callbacks.
+        application.setUnbindServiceCallsOnServiceDisconnected(false)
+        application.setComponentNameAndServiceForBindService(
+            ComponentName(context, AgentRuntimeService::class.java), messenger.binder)
+        resetBinding()
+        host.create()
         io.github.mangi.eta.config.Prefs.initLocal(context)
         io.github.mangi.eta.data.datastore.SettingsDataStore.init(context)
         io.github.mangi.eta.data.repository.AgentMemoryRepository.init(context)
