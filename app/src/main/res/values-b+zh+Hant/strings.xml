@@ -1,5 +1,31 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <resources>
+    <string name="task_connected">任務連線中</string>
+    <string name="task_section">進行中 · %1$d</string>
+    <string name="task_gui_active">正在操作手機</string>
+    <string name="task_gui_paused">手機操作已暫停</string>
+    <string name="task_preparing">準備中</string>
+    <string name="task_paused">已暫停</string>
+    <string name="task_archiving">正在封存</string>
+    <string name="task_running">進行中</string>
+    <string name="task_elapsed">開始於 %1$s</string>
+    <string name="task_finished">任務已結束或正在封存</string>
+    <string name="task_view_history">查看對話或歷史</string>
+    <string name="task_not_archived">任務尚未封存，請稍後重試</string>
+    <string name="task_not_available">對話暫不可用，請稍後重試</string>
+    <string name="task_stop">停止此任務</string>
+    <string name="task_stop_confirm">停止此任務？</string>
+    <string name="task_stop_confirm_detail">其他任務不會被停止。</string>
+    <string name="task_stop_action">停止</string>
+    <string name="task_old_notification">任務已結束，請從歷史中查看</string>
+    <string name="task_notification_multiple">Eta · %1$d 項任務進行中</string>
+    <string name="voice_task_preparing">任務仍在接納中，請稍後再試。</string>
+    <string name="voice_tasks_title">已有任務正在進行</string>
+    <string name="voice_tasks_continue">繼續目前任務</string>
+    <string name="voice_tasks_new">新增任務（舊任務繼續）</string>
+    <string name="voice_tasks_all">查看全部任務</string>
+    <string name="voice_tasks_unavailable">暫時無法取得任務狀態，可新增任務或稍後重試。</string>
+    <string name="voice_task_finished_or_unavailable">任務已結束或暫時無法連線，請在任務歷史中查看。</string>
   <string name="conversation_stop_and_delete">停止任務並刪除</string>
   <string name="conversation_stop_and_delete_message">此對話的任務將先停止，結果儲存後刪除對話。</string>
   <string name="conversation_delete_save_failed">無法儲存或確認任務結果，對話尚未刪除。</string>

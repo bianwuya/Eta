@@ -54,7 +54,8 @@ internal class AgentRuntimeClient(
 
     fun run(
         request: AgentRuntimeWire.RunRequest,
-        onEvent: (AgentEvent) -> Unit
+        onRequestIngested: () -> Unit = {},
+        onEvent: (AgentEvent) -> Unit,
     ): AgentRuntimeWire.RunResult {
         val resultLatch = CountDownLatch(1)
         val resultRef = AgentResultMailbox()
@@ -68,6 +69,7 @@ internal class AgentRuntimeClient(
                 },
                 onRequestIngested = {
                     preparedImagesRef.getAndSet(null)?.close()
+                    onRequestIngested()
                 },
             )
         )
