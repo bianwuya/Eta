@@ -27,7 +27,7 @@ class RuntimeRunRegistryTest {
         val initial = registry.snapshots().single()
         assertEquals("run", initial.runId)
         assertEquals("conversation", initial.conversationId)
-        assertEquals("测试请求", initial.title)
+        assertEquals("临时任务", initial.title)
         assertTrue(initial.createdAt > 0L)
         run.guiStatus = GuiControlStatus.Waiting
         val waiting = registry.snapshots().single()

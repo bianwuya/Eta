@@ -557,9 +557,9 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
         // Submission belongs to Runtime, not to the entry window's lifecycle.
         runJob = CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
           try {
-            val speechConfig = if (fromSpeech) SpeechSettingsRepository.settings() else null
             val screen = try { capture?.snapshot() ?: EtaAssistantScreenContext.Snapshot() }
                 finally { capture?.close() }
+            val speechConfig = if (fromSpeech) SpeechSettingsRepository.settings() else null
             val runImages = listOfNotNull(screen.image)
             val config = AgentModelClient.loadConfig()
             val payload = AgentExternalArchivePayload(
@@ -624,7 +624,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                 }
                 hiddenForForegroundOperation
             }
-            if (!destroyed && observer == observerGeneration) runtimeClient.ackResult(runId)
+            if (!destroyed && observer == observerGeneration && result.contextSnapshotRef.isBlank()) runtimeClient.ackResult(runId)
             if (shouldStopAfterResult) {
                 withContext(Dispatchers.Main.immediate) {
                     if (!destroyed && observer == observerGeneration && activeRunId == null) {
