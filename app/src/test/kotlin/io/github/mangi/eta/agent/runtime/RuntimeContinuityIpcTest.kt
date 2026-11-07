@@ -4,6 +4,14 @@ import android.app.Application
 import android.os.Looper
 import android.os.Message
 import io.github.mangi.eta.data.db.EtaDatabase
+import io.github.mangi.eta.ui.app.AgentAppState
+import io.github.mangi.eta.ui.model.AgentMessageUi
+import io.github.mangi.eta.ui.model.UserMessageUi
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.runBlocking
 import java.util.concurrent.atomic.AtomicReference
 import org.junit.Assert.*
 import org.junit.Before
@@ -36,6 +44,7 @@ class RuntimeContinuityIpcTest {
             assertEquals(1, fixture.messages.count { it == AgentRuntimeWire.MSG_CANCEL })
             assertTrue(fixture.registry.snapshots().isEmpty())
         }
+    }
 
     @Test fun actualStartIngestionRunsIndependentRequestsAndDuplicateStartOnlyAttaches() {
         val release = java.util.concurrent.CountDownLatch(1)
@@ -110,7 +119,6 @@ class RuntimeContinuityIpcTest {
             assertTrue(fixture.result(commit))
             assertTrue((fixture.result(observer) as AgentRuntimeClient.AttachOutcome.Completed).result.ok)
         }
-    }
     }
 
     @Test fun stopAfterIngestionKeepsSiblingAndCleanupLeaseUntilActualTerminal() {
@@ -223,11 +231,38 @@ class RuntimeContinuityIpcTest {
         EtaDatabase.closeForTests()
         RuntimeMessengerFixture().use { fixture ->
             val outcome = fixture.result(fixture.worker { fixture.client.attachRun(id, onEvent = {}) })
-                as AgentRuntimeClient.AttachOutcome.Completed
-            assertEquals("saved before destruction", outcome.result.content)
+            assertEquals(AgentRuntimeClient.AttachOutcome.NotActive, outcome)
+            val completed = fixture.result(fixture.worker { fixture.client.queryCompletedRuns() })
+                as AgentRuntimeClient.CompletedRunsQuery.Known
+            val durable = completed.runs.single { it.result.runId == id }
+            assertEquals("saved before destruction", durable.result.content)
+            assertEquals(AgentRuntimeWire.ETA_VOICE_HANDOFF_SOURCE, durable.handoff.source)
+            assertEquals(id, AgentExternalArchivePayload.from(durable.handoff.payload)!!.conversationKey)
             assertTrue(fixture.registry.snapshots().isEmpty())
             assertFalse(AgentRuntimeWire.MSG_START_RUN in fixture.messages)
             assertFalse(AgentRuntimeWire.MSG_ACK_RESULT in fixture.messages)
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+            try {
+                val app = AgentAppState(fixture.context, scope)
+                fixture.await {
+                    app.conversationPaneState.tasksConnected &&
+                        AgentRuntimeWire.MSG_ACK_RESULT in fixture.messages
+                }
+                val conversationId = AgentConversationIdentity.archiveConversationId(
+                    AgentRuntimeWire.ETA_VOICE_HANDOFF_SOURCE, id,
+                )
+                val restored = requireNotNull(fixture.result(fixture.worker { runBlocking {
+                    AgentConversationStore.loadConversation(fixture.context, conversationId)
+                } }))
+                assertEquals(1, restored.messages.filterIsInstance<UserMessageUi>().size)
+                assertEquals(1, restored.messages.filterIsInstance<AgentMessageUi>()
+                    .count { it.content == "saved before destruction" })
+                assertTrue(AgentRuntimeResultStore.list(fixture.context).isEmpty())
+                assertFalse(AgentRuntimeWire.MSG_START_RUN in fixture.messages)
+            } finally {
+                scope.cancel()
+                shadowOf(Looper.getMainLooper()).idle()
+            }
         }
     }
 }
