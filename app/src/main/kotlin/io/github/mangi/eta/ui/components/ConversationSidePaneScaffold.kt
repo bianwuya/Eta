@@ -48,6 +48,7 @@ import androidx.navigationevent.NavigationEventInfo
 import androidx.navigationevent.compose.NavigationBackHandler
 import androidx.navigationevent.compose.rememberNavigationEventState
 import io.github.mangi.eta.R
+import io.github.mangi.eta.ui.model.ActiveTaskUi
 import io.github.mangi.eta.ui.model.ConversationPaneUiState
 import io.github.mangi.eta.ui.model.ConversationSummaryUi
 import kotlin.math.roundToInt
@@ -74,6 +75,7 @@ fun ConversationSidePaneScaffold(
     onDismiss: () -> Unit,
     onSearchChange: (String) -> Unit,
     onConversationSelected: (String) -> Unit,
+    onActiveTaskSelected: (ActiveTaskUi) -> Unit,
     onConversationRename: (ConversationSummaryUi) -> Unit,
     onConversationExport: (ConversationSummaryUi) -> Unit,
     onConversationDelete: (ConversationSummaryUi) -> Unit,
@@ -226,6 +228,7 @@ fun ConversationSidePaneScaffold(
                         listState = panelListState,
                         onSearchChange = onSearchChange,
                         onConversationSelected = onConversationSelected,
+                        onActiveTaskSelected = onActiveTaskSelected,
                         onConversationRename = onConversationRename,
                         onConversationExport = onConversationExport,
                         onConversationDelete = onConversationDelete,

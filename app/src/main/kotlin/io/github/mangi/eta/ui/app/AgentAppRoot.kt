@@ -56,6 +56,7 @@ import io.github.mangi.eta.ui.model.AgentMemoryAction
 import io.github.mangi.eta.ui.model.AgentSkillsAction
 import io.github.mangi.eta.ui.model.AgentSystemEnhanceAction
 import io.github.mangi.eta.ui.model.AgentToolsAction
+import io.github.mangi.eta.ui.model.ActiveTaskUi
 import io.github.mangi.eta.ui.model.ConversationSummaryUi
 import io.github.mangi.eta.ui.model.LOCAL_NETWORK_PERMISSION_ITEM_ID
 import io.github.mangi.eta.ui.model.PermissionHealthAction
@@ -178,6 +179,7 @@ fun AgentAppRoot(
     }
 
     var conversationPaneOpen by rememberSaveable { mutableStateOf(false) }
+    var activeTaskTarget by remember { mutableStateOf<ActiveTaskUi?>(null) }
     var conversationRenameTarget by remember { mutableStateOf<ConversationSummaryUi?>(null) }
     var conversationDeleteTarget by remember { mutableStateOf<ConversationSummaryUi?>(null) }
     var conversationExportTarget by remember { mutableStateOf<ConversationSummaryUi?>(null) }
@@ -322,6 +324,7 @@ fun AgentAppRoot(
             onRefreshKimiWeb = appViewModel::refreshKimiWeb,
             onOpenBrowser = { openConversationBrowser() },
             onSelectConversation = { conversationId -> selectConversation(conversationId) },
+            onSelectActiveTask = { activeTaskTarget = it },
             onConversationRename = { conversation ->
                 conversationRenameTarget = conversation
             },
@@ -830,6 +833,35 @@ fun AgentAppRoot(
         ) {
             top.yukonga.miuix.kmp.basic.TextButton(
                 text = "知道了", onClick = characterStore::dismissNotice, modifier = Modifier.fillMaxWidth(),
+            )
+        }
+    }
+
+    activeTaskTarget?.let { task ->
+        val current = agentState.activeTask(task.runId)
+        WindowDialog(
+            show = true,
+            title = task.title,
+            summary = listOf(current?.status ?: "任务已结束或正在归档", task.source.ifBlank { "Eta" }).joinToString(" · "),
+            cornerRadius = DialogDefaults.CornerRadius,
+            onDismissRequest = { activeTaskTarget = null },
+        ) {
+            top.yukonga.miuix.kmp.basic.TextButton(
+                text = "查看会话或历史", modifier = Modifier.fillMaxWidth(), onClick = {
+                    if (task.conversationKey.isNotBlank()) {
+                        uiScope.launch {
+                            if (agentState.openArchivedConversation(task.source, task.conversationKey)) {
+                                activeTaskTarget = null
+                                conversationPaneOpen = false
+                            } else Toast.makeText(context, "任务尚未归档，请稍后重试", Toast.LENGTH_SHORT).show()
+                        }
+                    } else if (agentState.hasConversation(task.conversationId)) {
+                        selectConversation(task.conversationId)
+                        activeTaskTarget = null
+                    } else {
+                        Toast.makeText(context, "会话暂不可用，请稍后重试", Toast.LENGTH_SHORT).show()
+                    }
+                },
             )
         }
     }

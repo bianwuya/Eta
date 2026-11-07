@@ -58,6 +58,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.R
+import io.github.mangi.eta.ui.model.ActiveTaskUi
 import io.github.mangi.eta.ui.model.ConversationPaneUiState
 import io.github.mangi.eta.ui.model.ConversationSummaryUi
 import top.yukonga.miuix.kmp.basic.DropdownDefaults
@@ -119,6 +120,7 @@ internal fun ConversationPanePanel(
     listState: androidx.compose.foundation.lazy.LazyListState,
     onSearchChange: (String) -> Unit,
     onConversationSelected: (String) -> Unit,
+    onActiveTaskSelected: (ActiveTaskUi) -> Unit,
     onConversationRename: (ConversationSummaryUi) -> Unit,
     onConversationExport: (ConversationSummaryUi) -> Unit,
     onConversationDelete: (ConversationSummaryUi) -> Unit,
@@ -172,7 +174,35 @@ internal fun ConversationPanePanel(
                 verticalArrangement = Arrangement.spacedBy(ConversationPanelMetrics.RowGap),
                 overscrollEffect = null,
             ) {
-                if (state.conversations.isEmpty()) {
+                if (!state.tasksConnected) {
+                    item(key = "tasks-disconnected") {
+                        Text("任务连接中", style = MiuixTheme.textStyles.footnote1,
+                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+                    }
+                }
+                if (state.activeTasks.isNotEmpty()) {
+                    item(key = "section-active-tasks") {
+                        Text("进行中 · ${state.activeTasks.size}",
+                            modifier = Modifier.padding(top = ConversationPanelMetrics.SectionTopPadding,
+                                bottom = ConversationPanelMetrics.SectionBottomPadding),
+                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                            style = MiuixTheme.textStyles.footnote1, fontWeight = FontWeight.SemiBold)
+                    }
+                    items(state.activeTasks, key = { "active-${it.runId}" }) { task ->
+                        Column(Modifier.fillMaxWidth()
+                            .heightIn(min = ConversationPanelMetrics.RowMinHeight)
+                            .clip(RoundedCornerShape(ConversationPanelMetrics.RowCornerRadius))
+                            .clickable { onActiveTaskSelected(task) }
+                            .padding(horizontal = ConversationPanelMetrics.RowHorizontalPadding,
+                                vertical = ConversationPanelMetrics.RowVerticalPadding)) {
+                            Text(task.title, style = MiuixTheme.textStyles.body1, fontWeight = FontWeight.Medium,
+                                color = MiuixTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(task.status, style = MiuixTheme.textStyles.footnote1,
+                                color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+                        }
+                    }
+                }
+                if (state.conversations.isEmpty() && state.activeTasks.isEmpty()) {
                     item {
                         EmptyConversations(isSearching = query.isNotBlank())
                     }

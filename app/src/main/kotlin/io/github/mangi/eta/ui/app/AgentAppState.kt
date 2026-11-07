@@ -57,6 +57,7 @@ import io.github.mangi.eta.ui.model.AgentMessageUi
 import io.github.mangi.eta.ui.model.AgentModelPickerProjector
 import io.github.mangi.eta.ui.model.AgentModelPickerUiState
 import io.github.mangi.eta.ui.model.ConversationModeUi
+import io.github.mangi.eta.ui.model.ActiveTaskUi
 import io.github.mangi.eta.ui.model.ConversationPaneUiState
 import io.github.mangi.eta.ui.model.ConversationSummaryUi
 import io.github.mangi.eta.ui.model.ConversationHistoryLoadState
@@ -85,9 +86,11 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.retryWhen
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.sync.Mutex
@@ -165,7 +168,10 @@ internal class AgentAppState(
     )
         private set
 
+    private var activeRunSnapshots by mutableStateOf<List<AgentRuntimeWire.ActiveRunSnapshot>>(emptyList())
+
     init {
+        observeActiveRuns()
         refreshConversationSummaries()
         observeRuntimeSelection()
         runtimeRecoveryInProgress.set(true)
@@ -177,6 +183,49 @@ internal class AgentAppState(
                 runtimeRecoveryInProgress.set(false)
             }
         }
+    }
+
+    private fun observeActiveRuns() {
+        scope.launch {
+            AgentRuntimeClient(appContext, AndroidAgentLogger).observeActiveRuns()
+                .retryWhen { _, _ ->
+                    conversationPaneState = conversationPaneState.copy(tasksConnected = false)
+                    delay(2000) // only after a failed connection, not periodic task polling
+                    true
+                }
+                .collect { snapshots ->
+                    val previousIds = activeRunSnapshots.map { it.runId }.toSet()
+                    activeRunSnapshots = snapshots
+                    conversationPaneState = conversationPaneState.copy(tasksConnected = true)
+                    refreshConversationSummaries()
+                    // Archive is written before the terminal registry removal; import once on disappearance.
+                    if ((previousIds - snapshots.map { it.runId }.toSet()).isNotEmpty()) refreshRuntimeResults()
+                }
+        }
+    }
+
+    private fun activeTaskUi(run: AgentRuntimeWire.ActiveRunSnapshot): ActiveTaskUi = ActiveTaskUi(
+        runId = run.runId,
+        conversationId = run.conversationId,
+        source = run.handoffSource,
+        conversationKey = run.conversationKey,
+        title = conversationTitles[run.conversationId]?.takeIf { it.isNotBlank() } ?: run.title,
+        status = when {
+            run.guiStatus == GuiControlStatus.Acquired -> "正在操作手机"
+            run.guiStatus == GuiControlStatus.UserPaused -> "手机操作已暂停"
+            run.phase == AgentRuntimeWire.RunPhase.WaitingForGui -> "等待手机控制权"
+            run.phase == AgentRuntimeWire.RunPhase.Preparing -> "准备中"
+            run.phase == AgentRuntimeWire.RunPhase.Paused -> "已暂停"
+            run.phase == AgentRuntimeWire.RunPhase.Committing -> "正在归档"
+            else -> "进行中"
+        },
+        createdAt = run.createdAt,
+    )
+
+    fun activeTask(runId: String): ActiveTaskUi? = activeRunSnapshots.firstOrNull { it.runId == runId }?.let(::activeTaskUi)
+
+    fun stopActiveTask(runId: String) {
+        scope.launch(Dispatchers.IO) { AgentRuntimeClient(appContext, AndroidAgentLogger).cancelRun(runId) }
     }
 
     private fun observeRuntimeSelection() {
@@ -810,6 +859,8 @@ internal class AgentAppState(
             }
         }
     }
+
+    fun hasConversation(conversationId: String): Boolean = conversationsById.containsKey(conversationId)
 
     fun selectConversation(conversationId: String) {
         if (homeState.messageEdit != null) cancelMessageEdit()
@@ -2415,7 +2466,9 @@ internal class AgentAppState(
     }
 
     private fun refreshConversationSummaries() {
+        val activeConversationIds = activeRunSnapshots.mapTo(hashSetOf()) { it.conversationId }
         val summaries = conversationsById.entries
+            .filterNot { it.key in activeConversationIds }
             .sortedByDescending { (id, _) ->
                 conversationUpdatedAt[id] ?: 0L
             }
@@ -2474,6 +2527,9 @@ internal class AgentAppState(
         val query = conversationPaneState.searchQuery.trim()
         conversationPaneState = conversationPaneState.copy(
             selectedConversationId = selectedConversationId,
+            activeTasks = activeRunSnapshots.map(::activeTaskUi).filter {
+                query.isBlank() || it.title.contains(query, ignoreCase = true)
+            },
             conversations = if (query.isBlank()) {
                 summaries
             } else {
