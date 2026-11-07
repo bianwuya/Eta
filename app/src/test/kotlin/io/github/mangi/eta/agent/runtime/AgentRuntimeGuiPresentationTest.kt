@@ -584,6 +584,10 @@ class AgentRuntimeGuiPresentationTest {
         setField("capsuleView", view)
         setField("capsuleParams", params)
         setField("capsulePaintedOwner", field<RuntimeRunRegistry.Run>("displayedRun").runId)
+        // WindowManager.addView queues ViewRoot attachment under Robolectric's paused looper.
+        // Drain that real attachment before testing service loss; addView alone is not attached.
+        shadowOf(Looper.getMainLooper()).idle()
+        assertTrue("fixture window must be attached before lifecycle interleavings", view.isAttachedToWindow)
         return view to params
     }
 
