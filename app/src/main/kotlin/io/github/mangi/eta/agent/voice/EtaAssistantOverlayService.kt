@@ -140,6 +140,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
     private var backInvokedDispatcher: OnBackInvokedDispatcher? = null
     private var backInvokedCallback: OnBackInvokedCallback? = null
     private var runJob: Job? = null
+    private var runStopRequested: AtomicBoolean? = null
     private var dismissalJob: Job? = null
     private var activeRunId: String? = null
     private var entryGeneration = 0L
@@ -532,6 +533,8 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
         val submittedConversationKey = conversationKey
         val submittedHistory = conversationHistory
         val observer = ++observerGeneration
+        val stopRequested = AtomicBoolean(false)
+        runStopRequested = stopRequested
         inputText = ""
         activeRunId = UUID.randomUUID().toString()
         val runId = activeRunId ?: return
@@ -560,6 +563,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                 conversationKey = submittedConversationKey,
                 title = normalized.take(40),
             )
+            if (stopRequested.get()) return@launch
             val result = runtimeClient.run(
                 request = AgentRuntimeWire.RunRequest(
                     runId = runId,
@@ -576,7 +580,10 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                     ),
                 ),
                 onEvent = { event -> handleRuntimeEvent(runId, observer, event) },
-                onRequestIngested = { pendingVoiceSubmissions.remove(runId) },
+                onRequestIngested = {
+                    pendingVoiceSubmissions.remove(runId)
+                    if (stopRequested.get()) CoroutineScope(Dispatchers.IO).launch { runtimeClient.cancelRun(runId) }
+                },
             )
             pendingVoiceSubmissions.remove(runId)
             val shouldStopAfterResult = withContext(Dispatchers.Main.immediate) {
@@ -734,8 +741,10 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
         if (runId != null) {
             flushPendingDelta(runId)
             activeRunId = null
+            runStopRequested?.set(true)
             requestRuntimeCancellation(runId)
-            runJob?.cancel()
+            // Keep the waiter alive so a stop made during IPC admission can be resent after acknowledgement.
+            runStopRequested = null
             runJob = null
             uiState = uiState.copy(
                 phase = EtaVoicePhase.READY,
@@ -767,6 +776,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
         }
         observerGeneration++
         activeRunId = null
+        runStopRequested = null
         // Do not cancel the Runtime client wait: interruption sends MSG_CANCEL.
         runJob = null
     }
