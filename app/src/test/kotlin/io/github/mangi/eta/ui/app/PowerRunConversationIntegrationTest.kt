@@ -65,7 +65,7 @@ class PowerRunConversationIntegrationTest {
                 assertTrue(ui(fixture, scope) { app.openRunConversation(run.runId) })
                 assertEquals(1, app.homeState.messages.filterIsInstance<UserMessageUi>().size)
                 assertEquals(1, app.homeState.messages.filterIsInstance<AgentMessageUi>().count { it.content == "replay live" })
-            } finally { scope.cancel(); shadowOf(Looper.getMainLooper()).idle() }
+            } finally { cancelAndAwait(fixture, scope) }
         }
     }
 
@@ -91,7 +91,7 @@ class PowerRunConversationIntegrationTest {
                 assertFalse(fixture.messages.contains(AgentRuntimeWire.MSG_START_RUN))
                 fixture.complete(run, AgentRuntimeWire.RunResult(run.runId, true, "done"))
                 fixture.await { !app.homeState.isStreaming }
-            } finally { scope.cancel(); shadowOf(Looper.getMainLooper()).idle() }
+            } finally { cancelAndAwait(fixture, scope) }
         }
     }
 
@@ -121,7 +121,7 @@ class PowerRunConversationIntegrationTest {
                 assertEquals(AgentConversationIdentity.archiveConversationId(AgentRuntimeWire.ETA_VOICE_HANDOFF_SOURCE, "b-key"),
                     app.conversationPaneState.selectedConversationId)
                 fixture.complete(a, AgentRuntimeWire.RunResult(a.runId, true, "long done"))
-            } finally { scope.cancel(); shadowOf(Looper.getMainLooper()).idle() }
+            } finally { cancelAndAwait(fixture, scope) }
         }
     }
 
@@ -134,7 +134,7 @@ class PowerRunConversationIntegrationTest {
                 val app = AgentAppState(fixture.context, scope)
                 assertTrue(ui(fixture, scope) { app.openRunConversation(run.runId) })
                 val id = app.conversationPaneState.selectedConversationId
-                scope.cancel()
+                cancelAndAwait(fixture, scope)
                 fixture.await { AgentRuntimeWire.MSG_DETACH_RUN in fixture.messages }
                 scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
                 val restored = AgentAppState(fixture.context, scope)
@@ -142,7 +142,7 @@ class PowerRunConversationIntegrationTest {
                 assertEquals(id, restored.conversationPaneState.selectedConversationId)
                 fixture.complete(run, AgentRuntimeWire.RunResult(run.runId, true, "restored answer"))
                 fixture.await { !restored.homeState.isStreaming && AgentRuntimeWire.MSG_ACK_RESULT in fixture.messages }
-                scope.cancel()
+                cancelAndAwait(fixture, scope)
                 scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
                 val terminal = AgentAppState(fixture.context, scope)
                 assertTrue(ui(fixture, scope) { terminal.openRunConversation(run.runId) })
@@ -152,7 +152,7 @@ class PowerRunConversationIntegrationTest {
                 assertFalse(ui(fixture, scope) { terminal.openRunConversation("unknown-run") })
                 assertEquals(id, terminal.conversationPaneState.selectedConversationId)
                 assertFalse(fixture.messages.contains(AgentRuntimeWire.MSG_START_RUN))
-            } finally { scope.cancel(); shadowOf(Looper.getMainLooper()).idle() }
+            } finally { cancelAndAwait(fixture, scope) }
         }
     }
 
@@ -181,7 +181,7 @@ class PowerRunConversationIntegrationTest {
                 assertTrue(fixture.messages.contains(AgentRuntimeWire.MSG_ACK_RESULT))
             } finally {
                 sql.execSQL("DROP TRIGGER IF EXISTS reject_live_result")
-                scope.cancel()
+                cancelAndAwait(fixture, scope)
                 shadowOf(Looper.getMainLooper()).idle()
             }
         }
@@ -217,7 +217,7 @@ class PowerRunConversationIntegrationTest {
                 assertEquals(listOf("first answer", "second answer"),
                     app.homeState.messages.filterIsInstance<AgentMessageUi>().map { it.content })
                 assertFalse(fixture.messages.contains(AgentRuntimeWire.MSG_START_RUN))
-            } finally { scope.cancel(); shadowOf(Looper.getMainLooper()).idle() }
+            } finally { cancelAndAwait(fixture, scope) }
         }
     }
 
@@ -251,7 +251,7 @@ class PowerRunConversationIntegrationTest {
                 assertTrue(ui(fixture, scope) { app.openRunConversation(run.runId) })
                 assertEquals(previews, app.homeState.messages.filterIsInstance<UserMessageUi>().single().images)
                 assertFalse(fixture.messages.contains(AgentRuntimeWire.MSG_START_RUN))
-            } finally { scope.cancel(); shadowOf(Looper.getMainLooper()).idle() }
+            } finally { cancelAndAwait(fixture, scope) }
         }
     }
 
@@ -275,7 +275,7 @@ class PowerRunConversationIntegrationTest {
                 assertTrue(ui(fixture, scope) { app.openRunConversation(run.runId) })
                 assertEquals(AgentConversationIdentity.archiveConversationId(AgentRuntimeWire.ETA_VOICE_HANDOFF_SOURCE,
                     "terminal-key"), app.conversationPaneState.selectedConversationId)
-            } finally { scope.cancel(); shadowOf(Looper.getMainLooper()).idle() }
+            } finally { cancelAndAwait(fixture, scope) }
         }
     }
 
@@ -290,6 +290,9 @@ class PowerRunConversationIntegrationTest {
                 assertTrue(ui(fixture, scope) { app.openRunConversation(run.runId) })
                 app.sendCurrentMessage("Q")
                 fixture.await { !isRecovering(app) }
+                recoveryFlag(app).set(true)
+                val beforeSettlement = scope.coroutineContext[Job]!!.children.toSet()
+                var settlementJobs = emptyList<Job>()
                 val queuedId = app.homeState.queuedMessages.single().id
                 var interleaved = false
                 val starts = mutableListOf<AgentRuntimeWire.RunRequest>()
@@ -297,6 +300,7 @@ class PowerRunConversationIntegrationTest {
                     when {
                         message.what == AgentRuntimeWire.MSG_QUERY_ACTIVE_RUNS && !interleaved && hasPendingResume(app) -> {
                             interleaved = true
+                            settlementJobs = scope.coroutineContext[Job]!!.children.filterNot { it in beforeSettlement }.toList()
                             app.sendCurrentMessage("N")
                             true // Real query returns idle; N already owns the UI writer.
                         }
@@ -308,12 +312,14 @@ class PowerRunConversationIntegrationTest {
                     }
                 }
                 fixture.complete(run, AgentRuntimeWire.RunResult(run.runId, true, "done"))
-                fixture.await { interleaved && starts.isNotEmpty() }
+                fixture.await { interleaved && starts.isNotEmpty() && settlementJobs.isNotEmpty() && settlementJobs.all { it.isCompleted } }
+                recoveryFlag(app).set(false)
+                refreshAndAwait(fixture, app)
                 assertEquals(listOf("N"), starts.map { it.prompt })
                 assertTrue(app.homeState.isStreaming)
                 assertEquals(listOf(queuedId), app.homeState.queuedMessages.map { it.id })
                 assertEquals("Q", app.homeState.queuedMessages.single().content)
-            } finally { scope.cancel(); shadowOf(Looper.getMainLooper()).idle() }
+            } finally { cancelAndAwait(fixture, scope) }
         }
     }
 
@@ -331,6 +337,8 @@ class PowerRunConversationIntegrationTest {
                 // Hold the existing recovery gate so an unrelated terminal-revision
                 // reconciliation cannot bypass the one intentionally failed query.
                 recoveryFlag(app).set(true)
+                val beforeSettlement = scope.coroutineContext[Job]!!.children.toSet()
+                var settlementJobs = emptyList<Job>()
                 var dropped = false
                 var droppedAt = 0L
                 val starts = mutableListOf<AgentRuntimeWire.RunRequest>()
@@ -339,6 +347,7 @@ class PowerRunConversationIntegrationTest {
                         message.what == AgentRuntimeWire.MSG_QUERY_ACTIVE_RUNS && !dropped && hasPendingResume(app) -> {
                             dropped = true
                             droppedAt = System.nanoTime()
+                            settlementJobs = scope.coroutineContext[Job]!!.children.filterNot { it in beforeSettlement }.toList()
                             false // The real client reports Unavailable after its bounded timeout.
                         }
                         message.what == AgentRuntimeWire.MSG_START_RUN -> {
@@ -350,7 +359,8 @@ class PowerRunConversationIntegrationTest {
                 }
                 fixture.complete(run, AgentRuntimeWire.RunResult(run.runId, true, "done"))
                 fixture.await { dropped && System.nanoTime() - droppedAt >=
-                    java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(8_100) }
+                    java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(8_100) &&
+                    settlementJobs.isNotEmpty() && settlementJobs.all { it.isCompleted } }
                 assertTrue(starts.isEmpty())
                 assertEquals("Q after reconnect", app.homeState.queuedMessages.single().content)
                 recoveryFlag(app).set(false)
@@ -358,10 +368,10 @@ class PowerRunConversationIntegrationTest {
                 fixture.await { starts.isNotEmpty() }
                 assertEquals(listOf("Q after reconnect"), starts.map { it.prompt })
                 assertTrue(app.homeState.queuedMessages.isEmpty())
-                app.refreshRuntimeResults()
-                fixture.await { !hasPendingResume(app) }
+                refreshAndAwait(fixture, app)
+                assertFalse(hasPendingResume(app))
                 assertEquals(1, starts.size)
-            } finally { scope.cancel(); shadowOf(Looper.getMainLooper()).idle() }
+            } finally { cancelAndAwait(fixture, scope) }
         }
     }
 
@@ -387,7 +397,87 @@ class PowerRunConversationIntegrationTest {
                 assertFalse(b.session.controller.isCancelled)
                 assertTrue(fixture.registry.snapshots().any { it.runId == b.runId })
                 fixture.complete(b, AgentRuntimeWire.RunResult(b.runId, true, "successor answer"))
-            } finally { scope.cancel(); shadowOf(Looper.getMainLooper()).idle() }
+            } finally { cancelAndAwait(fixture, scope) }
+        }
+    }
+
+    @Test fun externalSuccessorStopWithFailedSaveCannotResumeFromPredecessorToken() {
+        successorStopDoesNotResumeQueue(failSave = true)
+    }
+
+    @Test fun externalSuccessorStopWithSuccessfulSaveKeepsQueueStopped() {
+        successorStopDoesNotResumeQueue(failSave = false)
+    }
+
+    private fun successorStopDoesNotResumeQueue(failSave: Boolean) {
+        RuntimeMessengerFixture().use { fixture ->
+            configureModel(fixture)
+            val aRequest = fixture.request("token-a", "token-shared")
+            val a = fixture.admit(aRequest).also { it.prepared(aRequest) }
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+            val sql = EtaDatabase.get(fixture.context).openHelper.writableDatabase
+            try {
+                val app = AgentAppState(fixture.context, scope)
+                assertTrue(ui(fixture, scope) { app.openRunConversation(a.runId) })
+                fixture.await { !isRecovering(app) }
+                app.sendCurrentMessage("Q must remain stopped")
+                val queuedId = app.homeState.queuedMessages.single().id
+                recoveryFlag(app).set(true)
+                val beforeSettlement = scope.coroutineContext[Job]!!.children.toSet()
+                var settlementJobs = emptyList<Job>()
+                var heldQuery: android.os.Messenger? = null
+                val starts = mutableListOf<AgentRuntimeWire.RunRequest>()
+                fixture.beforeDispatch = { message ->
+                    when {
+                        message.what == AgentRuntimeWire.MSG_QUERY_ACTIVE_RUNS && heldQuery == null && hasPendingResume(app) -> {
+                            heldQuery = message.replyTo
+                            settlementJobs = scope.coroutineContext[Job]!!.children.filterNot { it in beforeSettlement }.toList()
+                            false
+                        }
+                        message.what == AgentRuntimeWire.MSG_START_RUN -> {
+                            starts += AgentRuntimeWire.runRequestFromBundle(message.data)
+                            false
+                        }
+                        else -> true
+                    }
+                }
+                fixture.complete(a, AgentRuntimeWire.RunResult(a.runId, true, "A done"))
+                fixture.await { heldQuery != null }
+                assertTrue(hasPendingResume(app))
+                val bRequest = fixture.request("token-b", "token-shared")
+                val b = fixture.admit(bRequest).also { it.prepared(bRequest) }
+                publish(fixture)
+                assertTrue(ui(fixture, scope) { app.openRunConversation(b.runId) })
+                heldQuery!!.send(android.os.Message.obtain(null, AgentRuntimeWire.MSG_QUERY_ACTIVE_RUNS_RESPONSE).apply {
+                    data = AgentRuntimeWire.activeRunsToBundle(emptyList())
+                })
+                fixture.await { settlementJobs.isNotEmpty() && settlementJobs.all { it.isCompleted } }
+                recoveryFlag(app).set(false)
+                refreshAndAwait(fixture, app)
+                assertFalse("B registration must invalidate A's token", hasPendingResume(app))
+                assertEquals(listOf(queuedId), app.homeState.queuedMessages.map { it.id })
+                if (failSave) sql.execSQL("CREATE TRIGGER reject_token_b BEFORE INSERT ON conversation_messages " +
+                    "WHEN NEW.id LIKE 'assistant-token-b%' BEGIN SELECT RAISE(ABORT, 'fixture B save failure'); END")
+                app.stopCurrentRun()
+                fixture.await { b.session.controller.isCancelled }
+                fixture.complete(b, AgentRuntimeWire.RunResult(b.runId, false, "", "已停止"))
+                fixture.await { !app.homeState.isStreaming }
+                refreshAndAwait(fixture, app)
+                refreshAndAwait(fixture, app)
+                assertEquals(listOf(queuedId), app.homeState.queuedMessages.map { it.id })
+                assertEquals("Q must remain stopped", app.homeState.queuedMessages.single().content)
+                assertTrue(starts.isEmpty())
+                if (failSave) {
+                    assertTrue(AgentRuntimeResultStore.list(fixture.context).any { it.result.runId == b.runId })
+                    assertTrue(AgentRunArchiveStore.list(fixture.context).any { it.result.runId == b.runId })
+                } else {
+                    fixture.await { AgentRuntimeResultStore.list(fixture.context).none { it.result.runId == b.runId } &&
+                        AgentRunArchiveStore.list(fixture.context).none { it.result.runId == b.runId } }
+                }
+            } finally {
+                cancelAndAwait(fixture, scope)
+                sql.execSQL("DROP TRIGGER IF EXISTS reject_token_b")
+            }
         }
     }
 
@@ -399,6 +489,21 @@ class PowerRunConversationIntegrationTest {
             RuntimeConfigRepository.setSelectedProviderId("queue-provider")
             RuntimeConfigRepository.setSelectedModelId("queue-model")
         } })
+    }
+
+    private fun refreshAndAwait(fixture: RuntimeMessengerFixture, app: AgentAppState) {
+        app.refreshRuntimeResults()
+        fixture.await {
+            !isRecovering(app) &&
+                !(AgentAppState::class.java.getDeclaredField("runtimeRecoveryPending").apply { isAccessible = true }
+                    .get(app) as java.util.concurrent.atomic.AtomicBoolean).get()
+        }
+    }
+
+    private fun cancelAndAwait(fixture: RuntimeMessengerFixture, scope: CoroutineScope) {
+        val job = requireNotNull(scope.coroutineContext[Job])
+        scope.cancel()
+        fixture.await { job.isCompleted }
     }
 
     private fun hasPendingResume(app: AgentAppState): Boolean =

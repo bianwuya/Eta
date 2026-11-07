@@ -682,7 +682,7 @@ internal class AgentAppState(
             return interrupted || restored != existing
         }
 
-        if (!runStore.register(runId, conversationId, observed = false)) return false
+        if (!registerConversationWriter(runId, conversationId, observed = false)) return false
         updateConversation(conversationId, existing.copy(isStreaming = true, isCompacting = checkpoint.operation == AgentRuntimeWire.OP_COMPACT))
         restoreRunEvents(runId, checkpoint.events)
         flushPendingRunDelta(runId)
@@ -729,7 +729,7 @@ internal class AgentAppState(
     ) {
         val existing = conversationsById[conversationId] ?: return
         if (AgentRuntimeHistoryReducer.wasApplied(existing, runId) ||
-            !runStore.register(runId, conversationId)) return
+            !registerConversationWriter(runId, conversationId)) return
         runConversationHints[runId] = conversationId
         val restored = if (operation == AgentRuntimeWire.OP_REWRITE_REPLY) {
             RoleplayConversationReducer.restorePendingRewrite(existing, runId, rewriteTargetMessageId)
@@ -1006,7 +1006,7 @@ internal class AgentAppState(
             conversationTitles = conversationTitles + (conversationId to payload.title)
         }
         if (runStore.activeRunId(conversationId) != null ||
-            !runStore.register(runId, conversationId, observed = false)) return ExternalImport.Deferred
+            !registerConversationWriter(runId, conversationId, observed = false)) return ExternalImport.Deferred
         externalRunIds += runId
         runConversationHints[runId] = conversationId
         updateConversation(
@@ -1945,8 +1945,7 @@ internal class AgentAppState(
         rewriteTargetMessageId: String? = null,
         requestMode: String = "normal",
     ) {
-        if (conversationId in pendingConversationDeletes || !runStore.register(runId, conversationId)) return
-        pendingQueueResumes.remove(conversationId)
+        if (conversationId in pendingConversationDeletes || !registerConversationWriter(runId, conversationId)) return
         // 发送即绑定：会话记住本轮实际使用的模型，回落到默认模型时也随之更新。
         val runModelId = state.effectiveModelId
         val runReasoningEffort = providers.enabledModel(runModelId)?.let { (provider, model) ->
@@ -2586,6 +2585,14 @@ internal class AgentAppState(
             }
             resumeConversationQueue(conversationId, stoppedByUser)
         }
+    }
+
+    private fun registerConversationWriter(runId: String, conversationId: String, observed: Boolean = true): Boolean {
+        if (!runStore.register(runId, conversationId, observed)) return false
+        // A successor owns this queue's stop/save decision. A same-run reconnect is not
+        // a successor and must not invalidate its own deferred settlement state.
+        if (pendingQueueResumes[conversationId]?.runId != runId) pendingQueueResumes.remove(conversationId)
+        return true
     }
 
     private suspend fun resumeSettledQueues(active: AgentRuntimeClient.ActiveRunsQuery) {

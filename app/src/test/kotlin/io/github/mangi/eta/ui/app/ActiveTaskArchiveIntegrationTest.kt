@@ -8,6 +8,7 @@ import io.github.mangi.eta.ui.model.AgentMessageUi
 import io.github.mangi.eta.ui.model.UserMessageUi
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
@@ -62,7 +63,7 @@ class ActiveTaskArchiveIntegrationTest {
                 assertEquals(1, restored.messages.filterIsInstance<AgentMessageUi>().count { it.content == "retry answer" })
                 assertTrue(AgentRuntimeWire.MSG_ACK_RESULT in fixture.messages)
             } finally {
-                scope.cancel()
+                cancelAndAwait(fixture, scope)
                 sql.execSQL("DROP TRIGGER IF EXISTS reject_external_import")
                 shadowOf(Looper.getMainLooper()).idle()
             }
@@ -109,7 +110,7 @@ class ActiveTaskArchiveIntegrationTest {
                 assertEquals(1, messages.filterIsInstance<UserMessageUi>().size)
                 assertEquals(1, messages.filterIsInstance<AgentMessageUi>().count { it.content == "answer" })
                 assertTrue(AgentRuntimeWire.MSG_ACK_RESULT in fixture.messages)
-            } finally { scope.cancel(); shadowOf(Looper.getMainLooper()).idle() }
+            } finally { cancelAndAwait(fixture, scope) }
         }
     }
 
@@ -142,7 +143,15 @@ class ActiveTaskArchiveIntegrationTest {
                 shadowOf(Looper.getMainLooper()).idle()
                 assertTrue(requireNotNull(updates.tryReceive().getOrNull()).snapshots.isEmpty())
                 second.cancel()
-            } finally { scope.cancel(); updates.close(); shadowOf(Looper.getMainLooper()).idle() }
+            } finally { cancelAndAwait(fixture, scope); updates.close() }
         }
+    }
+
+    private fun cancelAndAwait(fixture: RuntimeMessengerFixture, scope: CoroutineScope) {
+        val job = requireNotNull(scope.coroutineContext[Job])
+        scope.cancel()
+        // Cancellation is only a request; Room/blocking Messenger calls may still be
+        // finishing. Drain them before fixture teardown and @After closes the database.
+        fixture.await { job.isCompleted }
     }
 }

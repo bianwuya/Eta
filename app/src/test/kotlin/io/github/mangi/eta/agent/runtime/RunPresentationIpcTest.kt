@@ -1,6 +1,7 @@
 package io.github.mangi.eta.agent.runtime
 
 import android.app.Application
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.Message
@@ -19,13 +20,40 @@ import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [36], application = Application::class)
+@Config(sdk = [36], application = Application::class,
+    shadows = [UnlinkedParcelFileDescriptorShadow::class])
 class RunPresentationIpcTest {
     @Before fun resetDatabase() {
         EtaDatabase.closeForTests()
         RuntimeEnvironment.getApplication().deleteDatabase("eta.db")
     }
     @After fun closeDatabase() { EtaDatabase.closeForTests() }
+
+    @Test fun unlinkedLocalPresentationDescriptorRemainsReadableAfterSenderCloses() {
+        val context = RuntimeEnvironment.getApplication()
+        val text = "unlinked presentation ".repeat(20_000)
+        val bundle = Bundle()
+        AgentWireText.put(bundle, "presentation_user_text", text, context.cacheDir)
+        val sender = requireNotNull(bundle.getParcelable("presentation_user_text_eta_text_fd",
+            android.os.ParcelFileDescriptor::class.java))
+        var received: Bundle? = null
+        val receiver = Messenger(object : Handler(Looper.getMainLooper()) {
+            override fun handleMessage(msg: Message) { received = msg.data }
+        })
+        assertTrue(context.cacheDir.listFiles().orEmpty().none { it.name.startsWith("eta-context-") })
+        AgentWireText.send(receiver, Message.obtain(null, 1).apply { data = bundle })
+        assertFalse(sender.fileDescriptor.valid())
+        assertFalse(AgentWireText.hasDescriptor(bundle, "presentation_user_text"))
+        shadowOf(Looper.getMainLooper()).idle()
+        val delivered = requireNotNull(received)
+        try {
+            val owned = requireNotNull(delivered.getParcelable("presentation_user_text_eta_text_fd",
+                android.os.ParcelFileDescriptor::class.java))
+            assertTrue(owned.fileDescriptor.valid())
+            assertEquals(text, AgentWireText.read(delivered, "presentation_user_text"))
+            assertFalse(owned.fileDescriptor.valid())
+        } finally { AgentWireText.close(delivered) }
+    }
 
     @Test fun deferredPromptHeaderIsNeverReturnedAsThePreparedUserInput() {
         RuntimeMessengerFixture().use { f ->
