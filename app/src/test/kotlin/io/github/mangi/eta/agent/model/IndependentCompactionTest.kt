@@ -45,19 +45,31 @@ class IndependentCompactionTest {
             )))
         }
     }
-    @Test fun smallModelChunksCompleteMessagesThenMergesWithoutTruncating() {
+    @Test fun completeMultiMessageHistoryIsSentOnceWithoutMerge() {
+        val history = (1..3).map { AgentModelClient.ConversationMessage("assistant", "FACT_$it " + "x".repeat(2200)) }
         val seen = mutableListOf<String>()
-        val summarizer = AgentContextSummarizer(config.copy(model = "small", contextWindow = 6000), provider {
-            seen += it.messages.toString()
-            response("part evidence ${seen.size}")
+        val summarizer = AgentContextSummarizer(config, provider {
+            seen += it.messages.getJSONObject(1).getString("content")
+            response("all evidence")
         }, AgentRunController(), false)
-        summarizer.summarize((1..3).map { AgentModelClient.ConversationMessage("assistant", "FACT_$it " + "x".repeat(2200)) })
-        assertEquals(4, seen.size)
-        (1..3).forEach { number -> assertTrue(seen.take(3).any { it.contains("FACT_$number") }) }
-        assertTrue(seen.last().contains("part evidence 1"))
-        assertTrue(seen.last().contains("part evidence 3"))
+        assertEquals("all evidence", summarizer.summarize(history))
+        val expected = "待整理的历史：\n" + history.joinToString("") { AgentConversationCodec.toJsonObject(it).toString() + "\n" }
+        assertEquals(listOf(expected), seen)
     }
-    @Test fun exchangeBeyondBoundedExcerptCapacityFailsBeforeSendingAndPreservesHistory() {
+    @Test fun smallModelDoesNotSplitHistoryThatWouldPreviouslyFitInSeveralRequests() {
+        var calls = 0
+        val summarizer = AgentContextSummarizer(config.copy(model = "small", contextWindow = 6000), provider {
+            calls++
+            response("not used")
+        }, AgentRunController(), false)
+        val failure = assertThrows(AgentModelFailure::class.java) {
+            summarizer.summarize((1..3).map { AgentModelClient.ConversationMessage("assistant", "FACT_$it " + "x".repeat(2200)) })
+        }
+        assertEquals("COMPACTION_MODEL_CAPACITY", failure.code)
+        assertTrue(failure.message.orEmpty().contains("一次性"))
+        assertEquals(0, calls)
+    }
+    @Test fun oversizedSingleMessageFailsBeforeSending() {
         var calls = 0
         val summarizer = AgentContextSummarizer(config.copy(contextWindow = 4000), provider {
             calls++; response("not used")

@@ -42,11 +42,13 @@ class SubagentMailboxRecoveryRegressionTest {
                 try {
                     val text = request.messages.toString()
                     if (request.purpose == ProviderRequestPurpose.COMPACTION) {
+                        assertEquals(1_000_000, request.config.contextWindow)
                         if (chats.get() < 3) assertFalse(text.contains("SECRET_READ"))
                         assertFalse(text.contains("SECRET_OLD"))
                         compactions.incrementAndGet(); return answer("retained context")
                     }
                     sessions.add(request.sessionId); toolsSeen.add(request.tools.toString())
+                    assertEquals(128_000, request.config.contextWindow)
                     // Save the actual system-bearing provider projection, not a guessed role for runtime reports.
                     systems.add((0 until request.messages.length()).map(request.messages::getJSONObject)
                         .filter { it.optString("role") == "system" }.joinToString { it.toString() })
@@ -85,6 +87,7 @@ class SubagentMailboxRecoveryRegressionTest {
             model = "gpt-fixture", systemPrompt = "stable-parent", terminalTools = true, contextWindow = 128_000, autoCompactionEnabled = true)
         val worker = SubagentExecutor(conversationKey = conversation, parentController = parent, parentRunId = "parent",
             configProvider = { config }, capabilitiesProvider = { AgentToolCapabilities(rootAvailable = false) },
+            compactionTarget = { child -> AgentCompactionTarget(child.copy(contextWindow = 1_000_000), model) },
             baseToolExecutor = AgentModelClient.ToolExecutor { ordinary.incrementAndGet(); AgentModelClient.ToolResult("once") },
             skillContext = SkillContext.EMPTY, memoryContext = AgentMemoryContext.DISABLED, mcpTools = JSONArray(),
             executionContext = null, onProgress = {}, mailboxStorage = store, providerFactory = { model })

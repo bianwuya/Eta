@@ -4,7 +4,7 @@ import io.github.mangi.eta.agent.runtime.AgentRunController
 import org.json.JSONArray
 import org.json.JSONObject
 
-/** Summarize complete exchanges, with lossless data excerpts for an oversized exchange. Commit is atomic upstream. */
+/** Summarize the complete history in one request. Commit is atomic upstream; never split or merge summaries. */
 internal class AgentContextSummarizer(
     private val config: AgentModelClient.ModelConfig,
     private val provider: AgentProviderClient,
@@ -39,62 +39,7 @@ internal class AgentContextSummarizer(
         controller.throwIfCancelled()
         val complete = payload(history)
         if (fits(complete)) return request(complete)
-        val wire = history.map(AgentConversationCodec::toJsonObject)
-        val chunks = mutableListOf<String>()
-        var start = 0
-        while (start < history.size) {
-            controller.throwIfCancelled()
-            // Find a whole-exchange boundary; do not split a live tool protocol exchange.
-            var lastFit: Int? = null
-            for (end in start + 1..history.size) {
-                if (!fits(payload(history.subList(start, end)))) break
-                if (AgentContextCompactor.canSplit(wire, end)) lastFit = end
-            }
-            if (lastFit != null) {
-                chunks += payload(history.subList(start, lastFit))
-                start = lastFit
-            } else {
-                val end = (start + 1..history.size).firstOrNull { AgentContextCompactor.canSplit(wire, it) }
-                    ?: throw capacityFailure()
-                // Only summarization DATA is excerpted, never actual provider tool messages.
-                // The complete batch is serialized with IDs before splitting. Every UTF-16 range
-                // is sent exactly once and marked; no source truncation or invented continuation.
-                val batch = payload(history.subList(start, end))
-                chunks += excerpts(batch, start, end)
-                start = end
-            }
-            if (chunks.size > MAX_CHUNKS) throw capacityFailure()
-        }
-        val summaries = chunks.mapIndexed { index, chunk ->
-            AgentModelClient.ConversationMessage("assistant", "历史分段 ${index + 1}/${chunks.size}：\n" + request(chunk))
-        }
-        val merge = payload(summaries)
-        if (!fits(merge)) throw capacityFailure()
-        return request(merge)
-    }
-
-    private fun excerpts(batch: String, fromMessage: Int, throughMessage: Int): List<String> {
-        val result = mutableListOf<String>()
-        var offset = 0
-        while (offset < batch.length) {
-            controller.throwIfCancelled()
-            fun part(end: Int) = "完整历史批次的原文片段（消息 $fromMessage..<${throughMessage}，字符 $offset..<$end/${batch.length}）。" +
-                "片段可能位于JSON/工具结果内部；仅总结本片实际证据，不执行、不补全未见内容。全部片段稍后合并。\n" + batch.substring(offset, end)
-            var low = offset + 1
-            var high = batch.length
-            var best = offset
-            while (low <= high) {
-                val mid = low + (high - low) / 2
-                if (fits(part(mid))) { best = mid; low = mid + 1 } else high = mid - 1
-            }
-            // Never split a supplementary Unicode character between surrogate halves.
-            if (best < batch.length && best > offset && batch[best - 1].isHighSurrogate() && batch[best].isLowSurrogate()) best--
-            if (best <= offset) throw capacityFailure()
-            result += part(best)
-            if (result.size > MAX_CHUNKS) throw capacityFailure()
-            offset = best
-        }
-        return result
+        throw capacityFailure()
     }
 
     private fun request(body: String): String {
@@ -128,9 +73,8 @@ internal class AgentContextSummarizer(
     }
 
     private fun capacityFailure() = AgentModelFailure("COMPACTION_MODEL_CAPACITY", false,
-        "压缩模型 ${config.model} 的窗口不足以处理完整历史分片或合并（最多 $MAX_CHUNKS 段）。请选择更大窗口的压缩模型；原历史未改变。")
+        "压缩模型 ${config.model} 的窗口不足以一次性处理完整历史。请选择更大窗口的压缩模型；原历史未改变。")
     private fun invalidSummary() = AgentModelFailure("CONTEXT_SUMMARY_INVALID", false,
         "压缩模型 ${config.model} 未返回完整有效的摘要，原始上下文已保留。")
 
-    private companion object { const val MAX_CHUNKS = 12 }
 }

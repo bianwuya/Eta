@@ -70,10 +70,12 @@ class AgentContextCompactionTest {
         val snapshots = mutableListOf<AgentContextSnapshot>()
         val provider = provider { request, emit ->
             if (request.purpose == ProviderRequestPurpose.COMPACTION) {
+                assertEquals(1_000_000, request.config.contextWindow)
                 summaries++
                 assertEquals(0, request.effectiveTools.length())
                 response("已完成前面的任务，继续处理最新请求。")
             } else {
+                assertEquals(50_000, request.config.contextWindow)
                 assertTrue(request.messages.toString().contains("最新请求必须保留"))
                 assertTrue(request.messages.toString().contains("固定约束"))
                 emit(ProviderEvent.Usage(AgentTokenUsage(inputTokens = 45_000)))
@@ -83,6 +85,7 @@ class AgentContextCompactionTest {
         val result = AgentModelClient.complete(
             config.copy(contextWindow = 50_000), "最新请求必须保留", AgentModelClient.ToolExecutor { error("不应执行工具") },
             history = history, provider = provider, onContextSnapshot = snapshots::add, onEvent = events::add,
+            compactionTarget = { AgentCompactionTarget(config.copy(contextWindow = 1_000_000), provider) },
         )
         assertTrue(summaries > 0)
         assertEquals(listOf("完成最新请求"), result.transcript.map { it.content })

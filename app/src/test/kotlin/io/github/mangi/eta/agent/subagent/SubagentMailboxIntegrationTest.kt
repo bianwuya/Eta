@@ -54,12 +54,14 @@ class SubagentMailboxIntegrationTest {
     private fun executor(parent: AgentRunController, store: SubagentMailbox.Storage?, model: AgentProviderClient,
         ordinary: AgentModelClient.ToolExecutor = AgentModelClient.ToolExecutor { error("unexpected ordinary tool") },
         gate: PlanRunGate? = null, conversation: String = "mailbox-${UUID.randomUUID()}", registry: SubagentControlRegistry? = null,
-        childConfig: AgentModelClient.ModelConfig = config) =
+        childConfig: AgentModelClient.ModelConfig = config,
+        compactionTarget: ((AgentModelClient.ModelConfig) -> AgentCompactionTarget)? = null) =
         SubagentExecutor(conversationKey = conversation, parentController = parent, parentRunId = "parent",
             configProvider = { childConfig }, capabilitiesProvider = { AgentToolCapabilities(rootAvailable = false) },
             baseToolExecutor = ordinary, skillContext = SkillContext.EMPTY, memoryContext = AgentMemoryContext.DISABLED,
             mcpTools = JSONArray(), executionContext = null, onProgress = {}, mailboxStorage = store, controlRegistry = registry,
             mailboxToolGate = { tool, delegate -> if (gate == null) delegate() else gate.executeChild(tool, delegate) },
+            compactionTarget = compactionTarget,
             providerFactory = { model })
     private fun toolResult(request: ProviderRequest, id: String) = (0 until request.messages.length()).map(request.messages::getJSONObject)
         .single { it.optString("role") == "tool" && it.optString("tool_call_id") == id }
@@ -291,7 +293,11 @@ class SubagentMailboxIntegrationTest {
             override val capabilities = ProviderCapabilities(EndpointKind.CHAT_COMPLETIONS, true, true, true, true, false, false)
             override fun complete(request: ProviderRequest, runController: AgentRunController, onEvent: (ProviderEvent) -> Unit): ProviderResponse {
                 assertFalse(request.messages.toString().contains("UNREAD_COMPACTION_INFO"))
-                if (request.purpose == ProviderRequestPurpose.COMPACTION) { compactions.incrementAndGet(); return answer("retained old context") }
+                if (request.purpose == ProviderRequestPurpose.COMPACTION) {
+                    assertEquals(1_000_000, request.config.contextWindow)
+                    compactions.incrementAndGet(); return answer("retained old context")
+                }
+                assertEquals(128_000, request.config.contextWindow)
                 return when (chats.incrementAndGet()) {
                     1 -> {
                         val sent = SubagentMailbox(a, store) {}.execute(AgentModelClient.ToolCall("send-before-compaction", "agent_mailbox",
@@ -315,7 +321,8 @@ class SubagentMailboxIntegrationTest {
         try {
             val result = executor(parent, store, model, AgentModelClient.ToolExecutor {
                 ordinary.incrementAndGet(); AgentModelClient.ToolResult("performed once")
-            }, conversation = conversation, childConfig = config.copy(contextWindow = 128_000, autoCompactionEnabled = true)).execute(1,
+            }, conversation = conversation, childConfig = config.copy(contextWindow = 128_000, autoCompactionEnabled = true),
+                compactionTarget = { child -> AgentCompactionTarget(child.copy(contextWindow = 1_000_000), model) }).execute(1,
                 AgentModelClient.ToolCall("launch", "subagent", JSONObject().put("prompt", "CURRENT_TASK")
                     .put("description", "fixture").put("resume", entry.subagentId).toString()), invocation) { id, _ ->
                 store.started("b", "launch", 1, id, "fixture", "accepted")
