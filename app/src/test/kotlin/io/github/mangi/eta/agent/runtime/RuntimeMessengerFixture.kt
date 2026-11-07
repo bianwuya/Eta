@@ -23,6 +23,11 @@ import org.robolectric.Shadows.shadowOf
 
 /** Real service/registry and client Messenger protocol; only Android binding is supplied by the fixture. */
 internal class RuntimeMessengerFixture : AutoCloseable {
+    init {
+        // Other Robolectric contexts can leave an accepted binding without a callback.
+        // Each injected service owns both ends of its test connection, including entry.
+        resetBinding()
+    }
     private val host = Robolectric.buildService(AgentRuntimeService::class.java).create()
     val service = host.get()
     val registry = AgentRuntimeService::class.java.getDeclaredField("runs").apply { isAccessible = true }
@@ -103,9 +108,14 @@ internal class RuntimeMessengerFixture : AutoCloseable {
         workers.filter(Thread::isAlive).forEach(Thread::interrupt)
         workers.forEach { worker -> worker.join(3000); assertFalse("waiter leaked", worker.isAlive) }
         shadowOf(Looper.getMainLooper()).idle()
+        resetBinding()
+        host.destroy()
+        shadowOf(Looper.getMainLooper()).idle()
+    }
+
+    private fun resetBinding() {
         AgentRuntimeConnection::class.java.getDeclaredMethod("resetDeadBinding").apply { isAccessible = true }
             .invoke(AgentRuntimeConnection)
-        host.destroy()
         shadowOf(Looper.getMainLooper()).idle()
     }
 }
