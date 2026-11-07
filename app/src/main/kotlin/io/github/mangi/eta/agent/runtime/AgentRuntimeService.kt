@@ -100,6 +100,9 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         get() = savedStateRegistryController.savedStateRegistry
 
     private val mainHandler = Handler(Looper.getMainLooper())
+    // Accessed on main only. Binder identity permits explicit unsubscribe and dead-client cleanup.
+    private val activeRunSubscribers = linkedMapOf<IBinder, Messenger>()
+    private var lastPublishedRuns: List<AgentRuntimeWire.ActiveRunSnapshot>? = null
     private val resultIo = Executors.newSingleThreadExecutor { runnable -> Thread(runnable, "agent-result-io") }
     private val serviceMessenger = Messenger(IncomingHandler())
 
@@ -364,7 +367,21 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                 }
 
                 AgentRuntimeWire.MSG_QUERY_ACTIVE_RUNS -> {
-                    sendActiveRuns(msg.replyTo)
+                    sendActiveRuns(msg.replyTo, msg.sendingUid == Process.myUid())
+                }
+
+                AgentRuntimeWire.MSG_SUBSCRIBE_ACTIVE_RUNS -> {
+                    // The presentation contains user titles; external runtime entry packages cannot subscribe.
+                    if (msg.sendingUid == Process.myUid()) {
+                        msg.replyTo?.let { subscriber ->
+                            activeRunSubscribers[subscriber.binder] = subscriber
+                            sendActiveRunsChanged(subscriber, runs.snapshots())
+                        }
+                    }
+                }
+
+                AgentRuntimeWire.MSG_UNSUBSCRIBE_ACTIVE_RUNS -> {
+                    if (msg.sendingUid == Process.myUid()) msg.replyTo?.let { activeRunSubscribers.remove(it.binder) }
                 }
 
                 AgentRuntimeWire.MSG_ATTACH_RUN -> {
@@ -472,6 +489,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                                 config = AgentRuntimePolicy.constrain(request.config, permissions),
                             ),
                         )
+                        publishExecutionState()
                         executePreparedRun(run)
                     },
                     onFailure = { throwable ->
@@ -983,10 +1001,27 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         }
     }
 
-    private fun sendActiveRuns(replyTo: Messenger?) {
+    private fun sendActiveRunsChanged(subscriber: Messenger, snapshots: List<AgentRuntimeWire.ActiveRunSnapshot>): Boolean =
+        runCatching {
+            subscriber.send(Message.obtain(null, AgentRuntimeWire.MSG_ACTIVE_RUNS_CHANGED).apply {
+                data = AgentRuntimeWire.activeRunsToBundle(snapshots)
+            })
+        }.isSuccess
+
+    private fun publishActiveRuns(snapshots: List<AgentRuntimeWire.ActiveRunSnapshot>) {
+        if (lastPublishedRuns == snapshots) return
+        lastPublishedRuns = snapshots
+        val iterator = activeRunSubscribers.values.iterator()
+        while (iterator.hasNext()) if (!sendActiveRunsChanged(iterator.next(), snapshots)) iterator.remove()
+    }
+
+    private fun sendActiveRuns(replyTo: Messenger?, includePresentation: Boolean) {
         runCatching {
             replyTo?.send(Message.obtain(null, AgentRuntimeWire.MSG_QUERY_ACTIVE_RUNS_RESPONSE).apply {
-                data = AgentRuntimeWire.activeRunsToBundle(runs.snapshots())
+                val snapshots = runs.snapshots()
+                data = AgentRuntimeWire.activeRunsToBundle(if (includePresentation) snapshots else snapshots.map {
+                    it.copy(title = "", conversationKey = "", createdAt = 0L, guiStatus = null)
+                })
             })
         }.onFailure { throwable ->
             AndroidAgentLogger.warnThrottled("runtime_active_runs_delivery_failed") {
@@ -1502,6 +1537,11 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     private fun publishExecutionState() {
         val guiState = guiControl.state.value
         val activeRuns = runs.all().filterNot { it.session.isTerminal }
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            publishActiveRuns(activeRuns.map { it.snapshot() })
+        } else {
+            mainHandler.post { if (!destroyed) publishActiveRuns(runs.snapshots()) }
+        }
         val owner = activeRuns.firstOrNull { it.runId == guiState.ownerRunId }
         val status = if (owner != null && guiState.userPaused) {
             AgentOverlayStatus.Paused

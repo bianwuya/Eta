@@ -99,6 +99,11 @@ internal object AgentRuntimeWire {
     const val MSG_STEER_RUN = 18
     const val MSG_STEER_RUN_RESPONSE = 19
 
+    /** 注册后服务端立即发送全量快照；后续变化仅推送新的全量轻量快照。 */
+    const val MSG_SUBSCRIBE_ACTIVE_RUNS = 20
+    const val MSG_UNSUBSCRIBE_ACTIVE_RUNS = 21
+    const val MSG_ACTIVE_RUNS_CHANGED = 22
+
     private const val MODULE_PACKAGE = "io.github.mangi.eta"
     private const val SERVICE_CLASS = "io.github.mangi.eta.agent.runtime.AgentRuntimeService"
 

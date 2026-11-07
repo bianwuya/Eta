@@ -13,6 +13,11 @@ import io.github.mangi.eta.core.safeLogType
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.withContext
 
 /**
  * 入口进程侧的 Runtime 客户端。
@@ -253,6 +258,45 @@ internal class AgentRuntimeClient(
             } else {
                 ActiveRunQuery.Known(runIdRef.get().takeIf(String::isNotBlank))
             }
+        }
+    }
+
+    /** A new subscription atomically registers and receives the current snapshot from the service.
+     * The caller may re-collect after disconnect; this method never polls Runtime.
+     */
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    fun observeActiveRuns(): Flow<List<AgentRuntimeWire.ActiveRunSnapshot>> = callbackFlow {
+        val lease = withContext(Dispatchers.IO) { AgentRuntimeConnection.acquire(context, logger) }
+        if (lease == null) {
+            close(IllegalStateException("Agent Runtime 服务绑定失败"))
+            return@callbackFlow
+        }
+        val receiver = Messenger(object : Handler(Looper.getMainLooper()) {
+            override fun handleMessage(msg: Message) {
+                if (msg.what == AgentRuntimeWire.MSG_ACTIVE_RUNS_CHANGED) {
+                    trySend(AgentRuntimeWire.activeRunsFromBundle(msg.data ?: Bundle()))
+                }
+            }
+        })
+        val death = IBinder.DeathRecipient { close(IllegalStateException("Agent Runtime 服务连接已断开")) }
+        try {
+            lease.binder.linkToDeath(death, 0)
+            lease.messenger.send(Message.obtain(null, AgentRuntimeWire.MSG_SUBSCRIBE_ACTIVE_RUNS).apply {
+                replyTo = receiver
+            })
+        } catch (failure: Exception) {
+            lease.close()
+            close(failure)
+            return@callbackFlow
+        }
+        awaitClose {
+            runCatching {
+                lease.messenger.send(Message.obtain(null, AgentRuntimeWire.MSG_UNSUBSCRIBE_ACTIVE_RUNS).apply {
+                    replyTo = receiver
+                })
+            }
+            runCatching { lease.binder.unlinkToDeath(death, 0) }
+            lease.close()
         }
     }
 

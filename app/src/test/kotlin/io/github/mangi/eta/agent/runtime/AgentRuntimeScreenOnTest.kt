@@ -27,6 +27,47 @@ import org.robolectric.annotation.Config
 @Config(sdk = [36], application = Application::class)
 class AgentRuntimeScreenOnTest {
     @Test
+    fun activeRunSubscriberGetsInitialSnapshotAndOnlyChangedUpdates() {
+        val controller = Robolectric.buildService(AgentRuntimeService::class.java).create()
+        try {
+            val service = controller.get()
+            val received = mutableListOf<List<AgentRuntimeWire.ActiveRunSnapshot>>()
+            val subscriber = android.os.Messenger(object : android.os.Handler(Looper.getMainLooper()) {
+                override fun handleMessage(msg: android.os.Message) {
+                    if (msg.what == AgentRuntimeWire.MSG_ACTIVE_RUNS_CHANGED) {
+                        received += AgentRuntimeWire.activeRunsFromBundle(msg.data)
+                    }
+                }
+            })
+            val binder = service.onBind(android.content.Intent(AgentRuntimeWire.ACTION_BIND))!!
+            val server = android.os.Messenger(binder)
+            server.send(android.os.Message.obtain(null, AgentRuntimeWire.MSG_SUBSCRIBE_ACTIVE_RUNS).apply {
+                replyTo = subscriber
+            })
+            shadowOf(Looper.getMainLooper()).idle()
+            assertEquals(listOf(emptyList<AgentRuntimeWire.ActiveRunSnapshot>()), received)
+            service.registerRun("a", ownsGui = false)
+            service.invoke("publishExecutionState")
+            shadowOf(Looper.getMainLooper()).idle()
+            assertEquals("a", received.last().single().runId)
+            val count = received.size
+            service.invoke("publishExecutionState")
+            shadowOf(Looper.getMainLooper()).idle()
+            assertEquals(count, received.size)
+            server.send(android.os.Message.obtain(null, AgentRuntimeWire.MSG_UNSUBSCRIBE_ACTIVE_RUNS).apply {
+                replyTo = subscriber
+            })
+            shadowOf(Looper.getMainLooper()).idle()
+            service.registerRun("b", ownsGui = false)
+            service.invoke("publishExecutionState")
+            shadowOf(Looper.getMainLooper()).idle()
+            assertEquals(count, received.size)
+        } finally {
+            controller.destroy()
+        }
+    }
+
+    @Test
     fun pauseResumeAndCancellationUpdateBothAppAndGuiWindowState() {
         val serviceController = Robolectric.buildService(AgentRuntimeService::class.java).create()
         try {
