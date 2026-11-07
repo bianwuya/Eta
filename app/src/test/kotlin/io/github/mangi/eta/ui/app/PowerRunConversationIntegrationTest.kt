@@ -412,7 +412,10 @@ class PowerRunConversationIntegrationTest {
     private fun successorStopDoesNotResumeQueue(failSave: Boolean) {
         RuntimeMessengerFixture().use { fixture ->
             configureModel(fixture)
-            val aRequest = fixture.request("token-a", "token-shared")
+            // ACK deduplication is process-wide, even when a test recreates its database.
+            val identity = if (failSave) "failed-save" else "saved"
+            val key = "token-shared-$identity"
+            val aRequest = fixture.request("token-a-$identity", key)
             val a = fixture.admit(aRequest).also { it.prepared(aRequest) }
             val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
             val sql = EtaDatabase.get(fixture.context).openHelper.writableDatabase
@@ -444,7 +447,7 @@ class PowerRunConversationIntegrationTest {
                 fixture.complete(a, AgentRuntimeWire.RunResult(a.runId, true, "A done"))
                 fixture.await { heldQuery != null }
                 assertTrue(hasPendingResume(app))
-                val bRequest = fixture.request("token-b", "token-shared")
+                val bRequest = fixture.request("token-b-$identity", key)
                 val b = fixture.admit(bRequest).also { it.prepared(bRequest) }
                 publish(fixture)
                 assertTrue(ui(fixture, scope) { app.openRunConversation(b.runId) })
@@ -461,12 +464,14 @@ class PowerRunConversationIntegrationTest {
                     // INSERT constraint failure. Reject both writes to exercise failed save.
                     listOf("INSERT", "UPDATE").forEach { operation ->
                         sql.execSQL("CREATE TRIGGER reject_token_b_$operation BEFORE $operation ON conversation_messages " +
-                            "WHEN NEW.id LIKE 'assistant-token-b%' BEGIN SELECT RAISE(ABORT, 'fixture B save failure'); END")
+                            "WHEN NEW.id LIKE 'assistant-${b.runId}%' BEGIN SELECT RAISE(ABORT, 'fixture B save failure'); END")
                     }
                 }
                 app.stopCurrentRun()
                 fixture.await { b.session.controller.isCancelled }
                 fixture.complete(b, AgentRuntimeWire.RunResult(b.runId, false, "", "已停止"))
+                assertTrue("B must enter the outbox before testing failed UI persistence",
+                    AgentRuntimeResultStore.list(fixture.context).any { it.result.runId == b.runId })
                 fixture.await { !app.homeState.isStreaming }
                 refreshAndAwait(fixture, app)
                 refreshAndAwait(fixture, app)
