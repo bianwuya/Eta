@@ -198,6 +198,27 @@ internal class AgentRunController {
         isReady()
     }
 
+    /** Serialize a decision commit against cancel, pause and parent revisions. The callback
+     * must not acquire another controller in the opposite order; parent precedes child. */
+    fun <T> withDecisionBoundary(block: (String?) -> T): T = lock.withLock {
+        val unavailable = when {
+            cancelled -> "cancelled"
+            paused -> "paused"
+            steeringMessages.isNotEmpty() -> "revised"
+            else -> null
+        }
+        block(unavailable)
+    }
+
+    @Volatile private var committedDecisionInBatch = false
+    fun protectCommittedDecisionUntilToolBatch() { committedDecisionInBatch = true }
+    fun mustStopForCancelledDecisionBatch(): Boolean = committedDecisionInBatch && isCancelled
+    fun finishDecisionToolBatch() { committedDecisionInBatch = false }
+
+    @Volatile private var stopAfterToolBatch = false
+    fun requestStopAfterToolBatch() { stopAfterToolBatch = true }
+    fun shouldStopAfterToolBatch(): Boolean = stopAfterToolBatch
+
     fun signalWorkAvailable() = lock.withLock { pauseCondition.signalAll() }
 
     /**
@@ -209,6 +230,7 @@ internal class AgentRunController {
             if (cancelled) return
             paused = true
             pauseCheckpointReached = false
+            pauseCondition.signalAll()
             children.forEach { it.pause() }
         }
     }

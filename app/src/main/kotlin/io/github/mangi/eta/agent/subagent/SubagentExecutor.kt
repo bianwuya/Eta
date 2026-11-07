@@ -45,6 +45,7 @@ internal class SubagentExecutor(
     private val detailStoreFactory: (() -> SubagentDetailStore)? = null,
     private val controlRegistry: SubagentControlRegistry? = null,
     private val mailboxStorage: SubagentMailbox.Storage? = null,
+    private val decisionBroker: SubagentDecisionBroker? = null,
     private val mailboxToolGate: ((AgentModelClient.ToolCall, () -> AgentModelClient.ToolResult) -> AgentModelClient.ToolResult)? = null,
     private val providerFactory: (AgentModelClient.ModelConfig) -> io.github.mangi.eta.agent.model.AgentProviderClient =
         io.github.mangi.eta.agent.model.ProviderClientFactory::getClient,
@@ -57,6 +58,7 @@ internal class SubagentExecutor(
         parentRound: Int,
         toolCall: AgentModelClient.ToolCall,
         mailboxInvocation: SubagentMailbox.Invocation? = null,
+        decisionTaskId: String? = null,
         onStarted: (String, String) -> Unit = { _, _ -> },
     ): AgentModelClient.ToolResult {
         parentController.throwIfCancelled()
@@ -149,6 +151,7 @@ internal class SubagentExecutor(
                 description = description,
                 isResume = isResume,
                 mailboxInvocation = mailboxInvocation,
+                decisionTaskId = decisionTaskId ?: mailboxInvocation?.taskId,
                 onStarted = onStarted,
             )
         } catch (failure: Exception) {
@@ -169,6 +172,7 @@ internal class SubagentExecutor(
         description: String,
         isResume: Boolean,
         mailboxInvocation: SubagentMailbox.Invocation?,
+        decisionTaskId: String?,
         onStarted: (String, String) -> Unit,
     ): AgentModelClient.ToolResult {
         val profile = entry.profile
@@ -317,9 +321,13 @@ internal class SubagentExecutor(
         val tools = ownedTools ?: baseToolExecutor
         toolBinding = (ownedTools as? AutoCloseable)?.let { childController.register { it.close() } }
 
+        val cancelledByDecision = java.util.concurrent.atomic.AtomicBoolean(false)
         val childToolExecutor = AgentModelClient.ToolExecutor { subCall ->
             childController.throwIfCancelled()
-            if (childController.hasPendingParentDirective) {
+            if (cancelledByDecision.get()) {
+                AgentModelClient.ToolResult(JSONObject().put("ok", false).put("code", "ASK_PARENT_CANCELLED")
+                    .put("message", "Parent cancelled this work; all later tool calls are blocked. Report actual outcomes.").toString())
+            } else if (childController.hasPendingParentDirective) {
                 // The parent has corrected the direction while the child was thinking.
                 // Reject stale tools already emitted by the model; inject the correction at
                 // the next complete turn instead of applying stale side effects.
@@ -355,6 +363,18 @@ internal class SubagentExecutor(
                             .put("code", "MAILBOX_UNAVAILABLE").put("message", "No explicit runtime group; mailbox is unavailable").toString())
                     }
                     mailboxToolGate?.invoke(subCall, readOrStore) ?: readOrStore()
+                } else if (subCall.name == SubagentDecisionBroker.ASK) {
+                    val invoke = {
+                        if (decisionBroker == null || decisionTaskId == null) AgentModelClient.ToolResult(JSONObject()
+                            .put("ok", false).put("code", "ASK_PARENT_UNAVAILABLE").toString())
+                        else decisionBroker.ask(decisionTaskId, subagentId, subCall, childController)
+                    }
+                    (mailboxToolGate?.invoke(subCall, invoke) ?: invoke()).also { result ->
+                        if (runCatching { JSONObject(result.content).optString("status") }.getOrNull() == "cancel") {
+                            cancelledByDecision.set(true)
+                            childController.requestStopAfterToolBatch()
+                        }
+                    }
                 } else tools.execute(subCall)
                 result.also { result ->
                     val safeResult = if (result.sensitive || io.github.mangi.eta.agent.model.AgentSensitiveToolPolicy.isSensitive(subCall.name)) {
@@ -443,6 +463,7 @@ internal class SubagentExecutor(
                 memoryContext = memoryContext,
                 additionalTools = profile.filterTools(JSONArray(mcpTools.toString()).also { extra ->
                     if (mailbox != null) extra.put(SubagentMailbox.schema())
+                    if (decisionBroker != null && decisionTaskId != null) extra.put(SubagentDecisionBroker.askSchema())
                 }),
                 executionContext = executionContext,
                 capabilitiesProvider = capabilitiesProvider,
@@ -456,7 +477,8 @@ internal class SubagentExecutor(
             )
             mailboxActive.set(false)
             // A child stopped while the model returned must not publish a successful completion.
-            childController.throwIfCancelled()
+            // A durable answer can win before a simultaneous cancellation. Preserve the
+            // completed real tool result in child history before honoring cancellation.
             val updatedHistory = SubagentContinuation.history(
                 priorHistory,
                 taskPrompt,
@@ -464,20 +486,24 @@ internal class SubagentExecutor(
                 response.contextSnapshot,
             )
             SubagentSessionStore.complete(conversationKey, subagentId, updatedHistory)
-            tracker.markCompleted(response.content)
+            childController.throwIfCancelled()
+            if (cancelledByDecision.get()) tracker.markCancelled(response.content)
+            else tracker.markCompleted(response.content)
             publishSnapshot(force = true)
             childController.throwIfCancelled()
-            val taskResult = SubagentTaskResult.fromFinal(response.content,
+            val taskResult = if (cancelledByDecision.get()) SubagentTaskResult.interrupted(
+                "主代理取消了该任务；请核实已完成工作和不可回滚副作用。\n" + response.content)
+            else SubagentTaskResult.fromFinal(response.content,
                 finalStopReason == io.github.mangi.eta.agent.model.AssistantStopReason.END_TURN)
 
             val result = AgentModelClient.ToolResult(
                 content = taskResult.attach(JSONObject()
-                    .put("ok", true)
+                    .put("ok", !cancelledByDecision.get())
                     .put("subagent_id", subagentId)
                     .put("subagent_type", profile.name)
                     .put("description", description)
                     .put("model", modelLabel)
-                    .put("status", SubagentActivitySnapshot.STATUS_COMPLETED)
+                    .put("status", if (cancelledByDecision.get()) SubagentActivitySnapshot.STATUS_CANCELLED else SubagentActivitySnapshot.STATUS_COMPLETED)
                     .put("tool_calls", tracker.toolCount())
                     .put("summary", response.content)
                     .put(

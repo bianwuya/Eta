@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.room.withTransaction
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.agent.subagent.YieldableSubagents
+import io.github.mangi.eta.agent.subagent.SubagentDecisionBroker
 import io.github.mangi.eta.local.subagentcontext.SubagentTaskResult
 import io.github.mangi.eta.local.subagentcontext.SubagentTaskGroup
 import io.github.mangi.eta.local.subagentcontext.SubagentMailbox
@@ -19,7 +20,7 @@ internal class AgentSubagentCheckpoint(
     context: Context,
     private val runId: String,
     private val parentCancelled: () -> Boolean = { false },
-) : YieldableSubagents.Persistence, SubagentMailbox.Storage {
+) : YieldableSubagents.Persistence, SubagentMailbox.Storage, SubagentDecisionBroker.Storage {
     private val db = EtaDatabase.get(context.applicationContext)
     private var stopped = false
     private val closedMailboxes = mutableSetOf<String>()
@@ -72,6 +73,19 @@ internal class AgentSubagentCheckpoint(
                 if (stopped || parentCancelled()) throw AgentRunCancelledException()
                 putText(dao, SubagentMailbox.TABLE, runId, "messages", messages.toString())
             }
+            result
+        }
+    }
+
+    @Synchronized
+    override fun accessRequests(operation: (JSONArray) -> JSONObject): JSONObject = runBlocking(Dispatchers.IO) {
+        db.withTransaction {
+            val dao = db.runtimeRunDao()
+            val raw = dao.textChunks(SubagentDecisionBroker.TABLE, runId, "requests", Int.MAX_VALUE, 0).joinToString("") { it.content }
+            val records = if (raw.isEmpty()) JSONArray() else JSONArray(raw)
+            val before = records.toString()
+            val result = operation(records)
+            if (records.toString() != before) putText(dao, SubagentDecisionBroker.TABLE, runId, "requests", records.toString())
             result
         }
     }
@@ -241,7 +255,18 @@ internal class AgentSubagentCheckpoint(
                     val dao = db.runtimeRunDao()
                     val records = read(dao, runId)
                     val before = records.toString()
-                    if (finalize) interrupt(records)
+                    if (finalize) {
+                        interrupt(records)
+                        val rawRequests = dao.textChunks(SubagentDecisionBroker.TABLE, runId, "requests", Int.MAX_VALUE, 0).joinToString("") { it.content }
+                        if (rawRequests.isNotEmpty()) {
+                            val requests = JSONArray(rawRequests)
+                            for (index in 0 until requests.length()) {
+                                val request = requests.getJSONObject(index)
+                                if (request.optString("status") == "pending") request.put("status", "interrupted").put("ok", false)
+                            }
+                            putText(dao, SubagentDecisionBroker.TABLE, runId, "requests", requests.toString())
+                        }
+                    }
                     val accepted = buildMap {
                         for (task in tasks(records)) {
                             val callId = task.optString("tool_call_id")
@@ -295,6 +320,7 @@ internal class AgentSubagentCheckpoint(
             db.withTransaction {
                 db.runtimeRunDao().deleteLocalTextOwner(TABLE, runId)
                 db.runtimeRunDao().deleteLocalTextOwner(SubagentMailbox.TABLE, runId)
+                db.runtimeRunDao().deleteLocalTextOwner(SubagentDecisionBroker.TABLE, runId)
             }
         }
     }

@@ -133,7 +133,7 @@ class SubagentMailboxIntegrationTest {
             check(bRelease.await(5, TimeUnit.SECONDS)); AgentModelClient.ToolResult("ONGOING_TOOL_RESULT")
         })
         val owner = YieldableSubagents(parent, store, parentRunId = "parent",
-            executeGrouped = { invocation, binding, started -> worker.execute(invocation.round, invocation, binding, started)
+            executeGrouped = { invocation, binding, started -> worker.execute(invocation.round, invocation, binding, onStarted = started)
                 .also { outcomes[invocation.id] = JSONObject(it.content) } }) { invocation, started ->
             worker.execute(invocation.round, invocation, onStarted = started)
         }

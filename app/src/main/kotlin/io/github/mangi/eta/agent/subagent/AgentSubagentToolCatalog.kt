@@ -14,7 +14,7 @@ internal object AgentSubagentToolCatalog {
     const val CONTROL_TOOL_NAME = "subagent_control"
     const val SEAL_GROUP_TOOL_NAME = "subagent_seal_group"
 
-    val names = setOf(TOOL_NAME, PROFILE_TOOL_NAME, CONTROL_TOOL_NAME, SEAL_GROUP_TOOL_NAME)
+    val names = setOf(TOOL_NAME, PROFILE_TOOL_NAME, CONTROL_TOOL_NAME, SEAL_GROUP_TOOL_NAME, SubagentDecisionBroker.RESPOND)
 
     fun appendSchemas(
         tools: JSONArray,
@@ -24,7 +24,10 @@ internal object AgentSubagentToolCatalog {
         tools.put(schema(profiles, groupsSupported))
         tools.put(profileToolSchema())
         tools.put(controlToolSchema())
-        if (groupsSupported) tools.put(sealGroupSchema())
+        if (groupsSupported) {
+            tools.put(sealGroupSchema())
+            tools.put(SubagentDecisionBroker.responseSchema())
+        }
     }
 
     fun schema(
