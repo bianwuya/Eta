@@ -5,6 +5,29 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import org.json.JSONObject
 
+/** Last actual report, not a recomputed size of the current request. */
+@Serializable
+internal data class SubagentContextReading(
+    val tokens: Int,
+    val source: String = SOURCE_USAGE,
+    val at: Long = 0,
+    val beforeCompaction: Boolean = false,
+    val previousInvocation: Boolean = false,
+    val modelChanged: Boolean? = null,
+    // A reading may arrive before a request fails; never label it a successful report by default.
+    val attempt: String = ATTEMPT_UNKNOWN,
+) {
+    companion object {
+        const val SOURCE_USAGE = "usage"
+        const val SOURCE_COMPACTION = "compaction"
+        const val ATTEMPT_UNKNOWN = "unknown"
+        const val ATTEMPT_REPORTED = "reported"
+        const val ATTEMPT_COMPLETED = "completed"
+        const val ATTEMPT_FAILED = "failed"
+        const val ATTEMPT_CANCELLED = "cancelled"
+    }
+}
+
 @Serializable
 internal data class SubagentStepSnapshot(
     val id: String,
@@ -48,10 +71,14 @@ internal data class SubagentActivitySnapshot(
     val previewTruncated: Boolean = false,
     val totalSteps: Int = steps.size,
     val updatedAt: Long = 0,
-    // Null means that the source did not report a value (including old snapshots).
+    // Current invocation's most recent report, null after compaction or before a resumed report.
+    // Legacy snapshots may have this value without contextReading metadata.
     val contextTokens: Int? = null,
     val contextWindow: Int? = null,
     val compactionCount: Int? = null,
+    val contextReading: SubagentContextReading? = null,
+    val contextRequestState: String = REQUEST_UNKNOWN,
+    val historyIncomplete: Boolean = false,
 ) {
     val toolStepCount: Int
         get() = steps.count { it.kind == SubagentStepSnapshot.KIND_TOOL }
@@ -90,17 +117,20 @@ internal data class SubagentActivitySnapshot(
             error = error?.take(limit),
         )
 
+        // Omitting default-valued fields gives metadata room even for the smallest preview;
+        // decoding restores the same defaults, including for legacy snapshots.
+        fun encodePreview(limit: Int) = compactJson.encodeToString(preview(limit))
         // Account for JSON escaping and structural overhead, including many short steps.
-        while (preview(0).encode().length > maxChars && recentSteps.isNotEmpty()) {
+        while (encodePreview(0).length > maxChars && recentSteps.isNotEmpty()) {
             recentSteps = recentSteps.drop(1)
         }
-        var best = preview(0).encode()
+        var best = encodePreview(0)
         require(best.length <= maxChars)
         var low = 1
         var high = maxChars
         while (low <= high) {
             val limit = low + (high - low) / 2
-            val candidate = preview(limit).encode()
+            val candidate = encodePreview(limit)
             if (candidate.length <= maxChars) {
                 best = candidate
                 low = limit + 1
@@ -117,11 +147,22 @@ internal data class SubagentActivitySnapshot(
         const val STATUS_FAILED = "failed"
         const val STATUS_CANCELLED = "cancelled"
 
+        const val REQUEST_UNKNOWN = "unknown"
+        const val REQUEST_IN_PROGRESS = "running"
+        const val REQUEST_RETRYING = "retrying"
+        const val REQUEST_COMPLETED = "completed"
+        const val REQUEST_FAILED = "failed"
+        const val REQUEST_CANCELLED = "cancelled"
+
         private const val SNAPSHOT_PREFIX = "{\"subagentId\":"
 
         private val json = Json {
             ignoreUnknownKeys = true
             encodeDefaults = true
+        }
+        private val compactJson = Json {
+            ignoreUnknownKeys = true
+            encodeDefaults = false
         }
 
         fun decode(raw: String?): SubagentActivitySnapshot? {

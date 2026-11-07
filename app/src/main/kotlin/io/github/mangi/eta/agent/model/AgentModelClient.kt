@@ -381,6 +381,7 @@ internal object AgentModelClient {
         val compactedUserTurns: Int = 0,
         val summaryThroughUserTurn: Int = 0,
         val messageId: String = "",
+        val parentAgentDirective: Boolean = false,
     )
 
     fun interface ToolExecutor {

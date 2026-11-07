@@ -51,7 +51,7 @@ internal data class SubagentProfile(
                 ("personal_data" in customAllowlist && (toolName in PersonalSearchTools.names || toolName in AgentPhoneToolCatalog.reads))
         }
         // Built-in roles may exchange passive INFO. An explicit allowlist or deny above still wins.
-        if (toolName == SubagentMailbox.TOOL_NAME) return true
+        if (toolName == SubagentMailbox.TOOL_NAME || toolName == SubagentDecisionBroker.ASK) return true
         if (toolName in READ_ONLY_TOOLS || toolName in PersonalSearchTools.names || toolName in AgentPhoneToolCatalog.reads) {
             return true
         }
@@ -77,6 +77,7 @@ internal data class SubagentProfile(
             AgentSubagentToolCatalog.PROFILE_TOOL_NAME,
             AgentSubagentToolCatalog.CONTROL_TOOL_NAME,
             AgentSubagentToolCatalog.SEAL_GROUP_TOOL_NAME,
+            SubagentDecisionBroker.RESPOND,
             // Cross-conversation messaging stays a parent-only capability; children must not message
             // other conversations or recursively wake each other.
             "conversation_list",

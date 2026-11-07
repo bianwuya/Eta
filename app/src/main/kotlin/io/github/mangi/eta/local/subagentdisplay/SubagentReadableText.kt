@@ -1,5 +1,9 @@
 package io.github.mangi.eta.local.subagentdisplay
 
+import io.github.mangi.eta.agent.subagent.SubagentActivitySnapshot
+import io.github.mangi.eta.agent.subagent.SubagentContextReading
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 
 /** Display-only labels; these do not change the original event, detail, or model request. */
@@ -180,6 +184,80 @@ internal object SubagentReadableText {
         val maximum = window?.takeIf { it > 0 }?.let(::tenThousandTokens) ?: "上限未知"
         val count = compactions?.takeIf { it >= 0 }?.let { "压缩 $it 次" } ?: "压缩未知"
         return "上下文(最近) $used / $maximum · $count"
+    }
+
+    /** Historical readings stay visible, but are never described as a current precise size. */
+    fun contextSummary(snapshot: SubagentActivitySnapshot): String {
+        val reading = snapshot.contextReading?.takeIf { it.tokens >= 0 }
+        val value = reading?.tokens ?: snapshot.contextTokens?.takeIf { it >= 0 }
+        val used = value?.let(::tenThousandTokens) ?: "待上报"
+        val qualifiers = buildList {
+            if (reading?.previousInvocation == true) add("上次")
+            if (reading?.beforeCompaction == true) add("压缩前")
+            if (reading?.previousInvocation == true && reading.modelChanged == true) add("模型或服务商已变")
+        }
+        val qualifier = if (qualifiers.isEmpty()) "" else qualifiers.joinToString("·", "（", "）")
+        val failure = when (snapshot.contextRequestState) {
+            SubagentActivitySnapshot.REQUEST_RETRYING -> " · 请求失败，重试中"
+            SubagentActivitySnapshot.REQUEST_FAILED -> " · 本次请求失败"
+            else -> ""
+        }
+        val count = snapshot.compactionCount?.takeIf { it >= 0 }?.let { "压缩 $it 次" } ?: "压缩未知"
+        // Never compare a previous model's reading with the new model's configured window.
+        val denominator = if (reading?.previousInvocation == true) "" else
+            " / " + (snapshot.contextWindow?.takeIf { it > 0 }?.let(::tenThousandTokens) ?: "上限未知")
+        return "上下文(最近) $used$qualifier$denominator · $count$failure"
+    }
+
+    fun contextExplanation(snapshot: SubagentActivitySnapshot): String {
+        val reading = snapshot.contextReading?.takeIf { it.tokens >= 0 }
+        val parts = mutableListOf<String>()
+        if (reading == null) {
+            val legacy = snapshot.contextTokens?.takeIf { it >= 0 }
+            if (legacy == null) {
+                parts += "尚无有效上下文上报。"
+            } else {
+                parts += "旧版快照记录了 $legacy Token，但来源、时间和尝试状态未知。"
+            }
+        } else {
+            val source = when (reading.source) {
+                SubagentContextReading.SOURCE_USAGE -> "模型用量上报"
+                SubagentContextReading.SOURCE_COMPACTION -> "压缩完成事件的压缩后数值"
+                else -> "未知来源"
+            }
+            val time = if (reading.at > 0) {
+                SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date(reading.at))
+            } else "时间未知"
+            parts += "最近记录：${reading.tokens} Token；来源：$source；$time。"
+            if (reading.source == SubagentContextReading.SOURCE_USAGE) {
+                parts += when (reading.attempt) {
+                    SubagentContextReading.ATTEMPT_COMPLETED -> "该次模型请求已返回。"
+                    SubagentContextReading.ATTEMPT_FAILED -> "该值来自失败的请求尝试，不能视为成功请求的用量。"
+                    SubagentContextReading.ATTEMPT_CANCELLED -> "该值来自已停止的请求尝试。"
+                    else -> "该次上报的请求结果尚未确认。"
+                }
+            }
+            if (reading.previousInvocation) {
+                parts += "这是上一次执行保留的记录，不是本次请求用量。"
+                parts += when (reading.modelChanged) {
+                    true -> "当前模型或服务商与上次不同，不能直接比较。"
+                    false -> "模型与服务商标识未变；本次追加输入后占用仍可能变化。"
+                    null -> "当前模型与上次是否一致未知。"
+                }
+            }
+            if (reading.beforeCompaction) parts += "该记录发生在压缩前，压缩后的占用未知。"
+        }
+        when (snapshot.contextRequestState) {
+            SubagentActivitySnapshot.REQUEST_RETRYING -> parts += "本次模型请求失败，正在重试；已保留最近有效上报。"
+            SubagentActivitySnapshot.REQUEST_FAILED -> parts += "本次模型请求失败；已保留最近有效上报。"
+            SubagentActivitySnapshot.REQUEST_CANCELLED -> parts += "本次模型请求已停止；已保留最近有效上报。"
+        }
+        if (snapshot.status == SubagentActivitySnapshot.STATUS_FAILED &&
+            snapshot.contextRequestState == SubagentActivitySnapshot.REQUEST_UNKNOWN
+        ) parts += "本次执行失败，未确认已发出模型请求。"
+        val maximum = snapshot.contextWindow?.takeIf { it > 0 }?.toString() ?: "未知"
+        parts += "数值为当时的上报，不是实时计算；当前配置上限：$maximum Token。压缩次数仅统计成功完成。"
+        return parts.joinToString("\n")
     }
 
     private fun tenThousandTokens(value: Int): String {

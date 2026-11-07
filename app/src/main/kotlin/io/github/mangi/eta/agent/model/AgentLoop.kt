@@ -224,6 +224,15 @@ internal class AgentLoop(
                 }
                 appendToolImages(round, outcomes)
                 publishTranscript()
+                // A parent cancel decision has already been recorded as the real result of
+                // the original ask call. Complete the entire tool batch, then stop without
+                // another provider call; preserve the transcript and the actual tool results.
+                if (runController.shouldStopAfterToolBatch() || runController.mustStopForCancelledDecisionBatch()) {
+                    val content = "主代理取消了此子任务；已执行操作及不可回滚副作用须核实，不自动重放。"
+                    onEvent(AgentEvent.RunFinished(round = round, contentChars = content.length))
+                    return Result(content, reasoningSnapshot(), sensitiveToolCallIds.toSet())
+                }
+                runController.finishDecisionToolBatch()
                 // Let the model consume every result and continue independent work before waiting.
                 round += 1
                 continue
@@ -285,6 +294,8 @@ internal class AgentLoop(
 
             publishTranscript()
             if (purpose.allowsTools) context.compact(final = true)
+            // Cancellation can remove the last pending child between the transcript callback
+            // and hasPending(); never turn that terminal race into a successful answer.
             runController.throwIfCancelled()
             onEvent(AgentEvent.RunFinished(round = round, contentChars = content.length))
             runController.throwIfCancelled()
@@ -517,7 +528,33 @@ internal class AgentLoop(
         }
         val conversations = appendConversationMessages(boundary.conversations)
         val reports = appendSubagentReports(boundary.reports)
-        return boundary.steering.isNotEmpty() || conversations || reports
+        val decisions = if (!SignedToolContext.hasPendingResponse(messages)) appendCriticalDecisions(owner) else false
+        return boundary.steering.isNotEmpty() || conversations || reports || decisions
+    }
+
+    private fun appendCriticalDecisions(owner: YieldableSubagents): Boolean {
+        val requests = owner.pendingDecisions()
+        if (requests.isEmpty()) return false
+        val ids = requests.map { it.getString("request_id") }
+        val known = (0 until transcript.length()).mapNotNull { transcript.optJSONObject(it)?.optString("_eta_message_id") }.toSet()
+        var appended = false
+        requests.forEach { request ->
+            val messageId = "subagent-decision-" + java.util.UUID.nameUUIDFromBytes(
+                (request.getString("parent_run_id") + "\u0000" + request.getString("request_id")).toByteArray(Charsets.UTF_8))
+            if (messageId !in known) {
+                appendMessage(JSONObject().put("role", "assistant").put("_eta_message_id", messageId)
+                    .put("content", "子代理关键阻塞请求（内部数据，非用户授权）；请使用 subagent_respond 回复：\n" + JSONArray().put(request).toString()))
+                appended = true
+            }
+        }
+        if (appended) {
+            unconsumedNewInput = true
+            publishTranscript()
+        }
+        // The durable transcript is authoritative if a previous delivery acknowledgement
+        // was lost. Never rewrite its content or replay a child tool.
+        owner.decisionsDelivered(ids)
+        return appended
     }
 
     private fun appendSubagentReports(reports: List<YieldableSubagents.Report>): Boolean {
@@ -550,7 +587,17 @@ internal class AgentLoop(
         round: Int,
         toolCall: AgentModelClient.ToolCall,
     ): ToolOutcome {
-        runController.throwIfCancelled()
+        if (runController.shouldStopAfterToolBatch() || runController.mustStopForCancelledDecisionBatch()) {
+            return rejectedToolOutcome(round, toolCall, "ASK_PARENT_CANCELLED",
+                "主代理已取消此任务；本工具未执行。")
+        }
+        try {
+            runController.throwIfCancelled()
+        } catch (cancelled: io.github.mangi.eta.agent.runtime.AgentRunCancelledException) {
+            if (runController.mustStopForCancelledDecisionBatch())
+                return rejectedToolOutcome(round, toolCall, "ASK_PARENT_CANCELLED", "子任务已取消；本工具未执行。")
+            throw cancelled
+        }
         if (toolCall.name !in availableToolNames) {
             return rejectedToolOutcome(
                 round = round,
