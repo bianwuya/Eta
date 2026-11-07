@@ -66,6 +66,16 @@ class MainActivity : ComponentActivity() {
                 ) {
                     AgentAppRoot(
                         assistantConversationKey = launchRequests.assistantConversationKey,
+                        openActiveTasks = launchRequests.activeTasks,
+                        onActiveTasksOpened = {
+                            launchRequests = launchRequests.copy(activeTasks = false)
+                            intent?.action = null
+                        },
+                        requestedRunId = launchRequests.runId,
+                        onRequestedRunOpened = {
+                            launchRequests = launchRequests.copy(runId = null)
+                            intent?.action = null
+                        },
                         requestedConversationId = launchRequests.conversationId,
                         onRequestedConversationOpened = {
                             launchRequests = launchRequests.copy(conversationId = null)
@@ -183,6 +193,9 @@ class MainActivity : ComponentActivity() {
         internal var isInForeground: Boolean = false
             private set
 
+        const val ACTION_OPEN_ACTIVE_TASKS = "io.github.mangi.eta.action.OPEN_ACTIVE_TASKS"
+        const val ACTION_OPEN_RUN = "io.github.mangi.eta.action.OPEN_RUN"
+        const val EXTRA_RUN_ID = "io.github.mangi.eta.extra.RUN_ID"
         const val ACTION_OPEN_TERMINAL = "io.github.mangi.eta.action.OPEN_TERMINAL"
         /** 运行浮层的结果卡片回到本体：App 发起的 run 带会话 ID，直接打开该会话。 */
         const val ACTION_OPEN_CONVERSATION_ID = "io.github.mangi.eta.action.OPEN_CONVERSATION_ID"

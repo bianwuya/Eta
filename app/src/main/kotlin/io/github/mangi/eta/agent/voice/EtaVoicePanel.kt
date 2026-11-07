@@ -177,6 +177,7 @@ internal fun EtaVoicePanel(
     onStop: () -> Unit,
     onClose: () -> Unit,
     onOpenConversation: () -> Unit,
+    onRecoverHistory: () -> Unit = onOpenConversation,
 ) {
     val colors = rememberEtaVoicePanelColors()
     val keyboard = LocalSoftwareKeyboardController.current
@@ -337,6 +338,7 @@ internal fun EtaVoicePanel(
                 onStop = onStop,
                 onClose = onClose,
                 onOpenConversation = onOpenConversation,
+                onRecoverHistory = onRecoverHistory,
             )
         }
     }
@@ -368,6 +370,7 @@ private fun BoxScope.AssistantPanel(
     onStop: () -> Unit,
     onClose: () -> Unit,
     onOpenConversation: () -> Unit,
+    onRecoverHistory: () -> Unit,
 ) {
     val density = LocalDensity.current
     val haptic = LocalHapticFeedback.current
@@ -680,6 +683,12 @@ private fun BoxScope.AssistantPanel(
             colors = colors,
             visible = !hasMessages && !speech.hasFeedback,
         )
+        if (state.phase == EtaVoicePhase.ERROR) {
+            top.yukonga.miuix.kmp.basic.TextButton(
+                text = androidx.compose.ui.res.stringResource(io.github.mangi.eta.R.string.task_view_history),
+                modifier = Modifier.fillMaxWidth(), onClick = onRecoverHistory,
+            )
+        }
         AssistantComposer(
             state = state,
             input = input,

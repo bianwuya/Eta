@@ -69,6 +69,7 @@ internal class AgentRuntimeSession(
     private data class Subscriber(
         val eventSink: (AgentEvent) -> Unit,
         val resultSink: (AgentRuntimeWire.RunResult) -> Unit,
+        val subscriptionKey: Any? = null,
     )
 
     init {
@@ -109,12 +110,18 @@ internal class AgentRuntimeSession(
         eventSink: (AgentEvent) -> Unit,
         resultSink: (AgentRuntimeWire.RunResult) -> Unit,
         onReplayComplete: () -> Unit = {},
+        subscriptionKey: Any? = null,
     ): Boolean = lock.withLock {
         if (state == State.TERMINAL) return false
+        if (subscriptionKey != null) subscribers.removeAll { it.subscriptionKey == subscriptionKey }
         replayEvents.forEach(eventSink)
         onReplayComplete()
-        subscribers += Subscriber(eventSink, resultSink)
+        subscribers += Subscriber(eventSink, resultSink, subscriptionKey)
         true
+    }
+
+    fun detach(subscriptionKey: Any) = lock.withLock {
+        subscribers.removeAll { it.subscriptionKey == subscriptionKey }
     }
 
     fun steer(text: String): Boolean =

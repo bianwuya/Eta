@@ -1,6 +1,9 @@
 package io.github.mangi.eta.ui.app
 
+import android.app.Application
 import android.content.Context
+import android.os.Looper
+import io.github.mangi.eta.agent.runtime.AgentRuntimeWire
 import io.github.mangi.eta.agent.model.AgentConversationCodec
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.agent.roleplay.CharacterCardCodec
@@ -25,28 +28,34 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
+import org.junit.After
 import org.junit.Test
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [36], qualifiers = "en-rUS")
+@Config(sdk = [36], qualifiers = "en-rUS", application = Application::class)
 class AgentConversationStoreTest {
     private lateinit var context: Context
 
     @Before
     fun setUp() {
         context = RuntimeEnvironment.getApplication()
+        shadowOf(RuntimeEnvironment.getApplication()).declareActionUnbindable(AgentRuntimeWire.ACTION_BIND)
         EtaDatabase.closeForTests()
         context.deleteDatabase("eta.db")
     }
+
+    @After fun closeDatabase() { EtaDatabase.closeForTests() }
 
     @Test
     fun repeatedSavePreservesRoleBindingRevisionsPendingRewriteAndOriginalJournal() = runBlocking {
@@ -541,7 +550,7 @@ class AgentConversationStoreTest {
             assertTrue(state.homeState.messages.isEmpty())
             assertFalse(state.homeState.isStreaming)
         } finally {
-            scope.cancel()
+            cancelAndAwait(scope)
         }
     }
 
@@ -562,7 +571,7 @@ class AgentConversationStoreTest {
                 }
             )
         } finally {
-            scope.cancel()
+            cancelAndAwait(scope)
         }
     }
 
@@ -595,5 +604,16 @@ class AgentConversationStoreTest {
         val snapshot = AgentConversationStore.load(context)
         assertTrue(snapshot.conversationsById.isEmpty())
         assertEquals(null, snapshot.selectedConversationId)
+    }
+
+    private fun cancelAndAwait(scope: CoroutineScope) {
+        val job = requireNotNull(scope.coroutineContext[Job])
+        scope.cancel()
+        val deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(10)
+        while (!job.isCompleted && System.nanoTime() < deadline) {
+            shadowOf(Looper.getMainLooper()).idle()
+            Thread.sleep(5)
+        }
+        assertTrue("Conversation test scope did not finish before database teardown", job.isCompleted)
     }
 }

@@ -99,6 +99,15 @@ internal object AgentRuntimeWire {
     const val MSG_STEER_RUN = 18
     const val MSG_STEER_RUN_RESPONSE = 19
 
+    /** 注册后服务端立即发送全量快照；后续变化仅推送新的全量轻量快照。 */
+    const val MSG_SUBSCRIBE_ACTIVE_RUNS = 20
+    const val MSG_UNSUBSCRIBE_ACTIVE_RUNS = 21
+    const val MSG_ACTIVE_RUNS_CHANGED = 22
+    const val MSG_DETACH_RUN = 23
+    const val MSG_QUERY_RUN_PRESENTATION = 24
+    const val MSG_QUERY_RUN_PRESENTATION_RESPONSE = 25
+    const val MSG_PREFER_RUN = 26
+
     private const val MODULE_PACKAGE = "io.github.mangi.eta"
     private const val SERVICE_CLASS = "io.github.mangi.eta.agent.runtime.AgentRuntimeService"
 
@@ -222,6 +231,19 @@ internal object AgentRuntimeWire {
         val phase: RunPhase = RunPhase.Running,
         val operation: String = OP_CHAT,
         val handoffSource: String = "",
+        val conversationKey: String = "",
+        val title: String = "",
+        val createdAt: Long = 0L,
+        val guiStatus: GuiControlStatus? = null,
+        val interactionAt: Long = createdAt,
+    )
+
+    /** First-party display projection, never a model request or configuration. */
+    data class RunPresentation(
+        val snapshot: ActiveRunSnapshot,
+        val handoff: EntryHandoff?,
+        val userText: String,
+        val userImagePreviews: List<String> = emptyList(),
     )
 
     /**
@@ -688,6 +710,11 @@ internal object AgentRuntimeWire {
                 putString("phase", run.phase.wireValue)
                 putString("operation", run.operation)
                 putString("handoff_source", run.handoffSource)
+                putString("conversation_key", run.conversationKey)
+                putString("title", run.title)
+                putLong(KEY_CREATED_AT, run.createdAt)
+                putLong("interaction_at", run.interactionAt)
+                run.guiStatus?.let { putString("gui_status", it.wireValue) }
             }
         }))
     }
@@ -701,8 +728,41 @@ internal object AgentRuntimeWire {
                 phase = RunPhase.fromWireValue(item.getString("phase").orEmpty()),
                 operation = item.getString("operation") ?: OP_CHAT,
                 handoffSource = item.getString("handoff_source").orEmpty(),
+                conversationKey = item.getString("conversation_key").orEmpty(),
+                title = item.getString("title").orEmpty(),
+                createdAt = item.getLong(KEY_CREATED_AT),
+                interactionAt = item.getLong("interaction_at", item.getLong(KEY_CREATED_AT)),
+                guiStatus = GuiControlStatus.fromWireValue(item.getString("gui_status").orEmpty()),
             )
         }
+
+    fun runPresentationToBundle(runId: String, run: RunPresentation?, directory: File): Bundle =
+        ackBundle(runId).apply {
+            try {
+                putBoolean(KEY_OK, run != null)
+                if (run != null) {
+                    putBundle("snapshot", activeRunsToBundle(listOf(run.snapshot)))
+                    // Handoff and previews can themselves contain long user text/data URLs.
+                    AgentWireText.put(this, "presentation_handoff", run.handoff?.let { json.encodeToString(it) }.orEmpty(), directory)
+                    AgentWireText.put(this, "presentation_user_text", run.userText, directory)
+                    AgentWireText.put(this, "presentation_previews", json.encodeToString(run.userImagePreviews), directory)
+                }
+            } catch (failure: Exception) { AgentWireText.close(this); throw failure }
+        }.also { bundle ->
+            try { requireStartRequestWithinBinderBudget(bundle) }
+            catch (failure: Exception) { AgentWireText.close(bundle); throw failure }
+        }
+
+    fun runPresentationFromBundle(bundle: Bundle): RunPresentation? {
+        if (!bundle.getBoolean(KEY_OK)) return null
+        return RunPresentation(
+            snapshot = activeRunsFromBundle(requireNotNull(bundle.getBundle("snapshot"))).single(),
+            handoff = AgentWireText.read(bundle, "presentation_handoff")?.takeIf(String::isNotBlank)
+                ?.let { json.decodeFromString<EntryHandoff>(it) },
+            userText = AgentWireText.read(bundle, "presentation_user_text").orEmpty(),
+            userImagePreviews = json.decodeFromString(AgentWireText.read(bundle, "presentation_previews") ?: "[]"),
+        )
+    }
 
     fun attachRunResponseBundle(runId: String, attached: Boolean): Bundle = Bundle().apply {
         putString(KEY_RUN_ID, runId)

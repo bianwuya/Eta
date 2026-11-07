@@ -37,12 +37,15 @@ internal class EtaAssistantScreenContext(
     private var screenshotReceived = false
     private var image: AgentModelClient.ModelImage? = null
     private var closed = false
+    private var references = 1
+    private var callbacksSealed = false
+    private var captureNotice: String? = null
 
     init { completeIfReady() }
 
     fun acceptAssist(context: Context, state: VoiceInteractionSession.AssistState) {
         synchronized(this) {
-            if (closed || state.index in receivedActivities) return
+            if (closed || callbacksSealed || state.index in receivedActivities) return
             if (receivedActivities.size >= MAX_ACTIVITIES && !state.isFocused) return
             receivedActivities += state.index
             expectedActivities = maxOf(expectedActivities, state.count.coerceIn(1, MAX_ACTIVITIES))
@@ -59,7 +62,7 @@ internal class EtaAssistantScreenContext(
                 if (closed) return@synchronized
                 activities[state.index] = state.isFocused to text
                 pendingActivities--
-                assistComplete = pendingActivities == 0 && receivedActivities.size >= expectedActivities
+                assistComplete = pendingActivities == 0 && (callbacksSealed || receivedActivities.size >= expectedActivities)
                 completeIfReady()
             }
         }
@@ -67,7 +70,7 @@ internal class EtaAssistantScreenContext(
 
     fun acceptScreenshot(bitmap: Bitmap?) {
         synchronized(this) {
-            if (closed || screenshotReceived) {
+            if (closed || callbacksSealed || screenshotReceived) {
                 bitmap?.recycle()
                 return
             }
@@ -103,6 +106,7 @@ internal class EtaAssistantScreenContext(
                         .joinToString { it.flattenToShortString().take(512) })
                 }
                 appendLine(if (image != null) "本次已附屏幕截图。" else "系统未提供可用截图。")
+                captureNotice?.let { appendLine(it) }
                 if (activities.isEmpty()) appendLine("系统尚未提供应用内容。")
                 activities.entries.sortedWith(compareByDescending<Map.Entry<Int, Pair<Boolean, String>>> { it.value.first }
                     .thenBy { it.key }).take(MAX_ACTIVITIES).forEach { appendLine(it.value.second) }
@@ -111,8 +115,29 @@ internal class EtaAssistantScreenContext(
         }
     }
 
+    @Synchronized fun retain(): EtaAssistantScreenContext? {
+        if (closed) return null
+        references++
+        return this
+    }
+
+    @Synchronized fun hasPendingSystemCallbacks(): Boolean = !closed &&
+        (!screenshotComplete && !screenshotReceived || !assistComplete && receivedActivities.size < expectedActivities)
+
+    /** Seal future framework callbacks, but let already accepted parsing finish for submit owners. */
+    @Synchronized fun sealCallbacks(ambiguous: Boolean = false) {
+        callbacksSealed = true
+        if (ambiguous) captureNotice = "连续唤醒期间系统回调无法确认所属画面，本次未使用这些屏幕数据。"
+        if (!screenshotReceived) screenshotComplete = true
+        if (pendingActivities == 0) assistComplete = true
+        completeIfReady()
+    }
+
     fun close() {
         synchronized(this) {
+            if (closed) return
+            references--
+            if (references > 0) return
             closed = true
             image = null
             activities.clear()

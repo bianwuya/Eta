@@ -5,6 +5,7 @@ import io.github.mangi.eta.agent.runtime.GuiControlStatus
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -97,6 +98,24 @@ class AgentRunStoreTest {
         assertFalse(store.register("next-a", "conversation-a"))
         store.remove("a")
         assertTrue(store.register("next-a", "conversation-a"))
+    }
+
+    @Test
+    fun disconnectedObserverRetainsWriterAndStopButCanAttachExactlyOnceAgain() {
+        assertTrue(store.register("power", "same-key"))
+        store.observe("power", Job())
+        assertFalse(store.register("power", "same-key"))
+        store.disconnected("power")
+        assertEquals("power", store.activeRunId("same-key"))
+        assertFalse(store.register("new-turn", "same-key"))
+        assertTrue(store.requestStop("power", byUser = true))
+        assertTrue(store.register("power", "same-key"))
+        store.observe("power", Job())
+        assertFalse(store.register("power", "same-key"))
+        assertTrue(store.wasStoppedByUser("power"))
+        assertTrue(store.beginSettlement("power"))
+        store.disconnected("power")
+        assertFalse(store.register("power", "same-key"))
     }
 
     private fun delta(text: String) = AgentEvent.AssistantBlockDelta(

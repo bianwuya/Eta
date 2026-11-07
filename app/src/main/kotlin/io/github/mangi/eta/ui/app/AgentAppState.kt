@@ -57,6 +57,7 @@ import io.github.mangi.eta.ui.model.AgentMessageUi
 import io.github.mangi.eta.ui.model.AgentModelPickerProjector
 import io.github.mangi.eta.ui.model.AgentModelPickerUiState
 import io.github.mangi.eta.ui.model.ConversationModeUi
+import io.github.mangi.eta.ui.model.ActiveTaskUi
 import io.github.mangi.eta.ui.model.ConversationPaneUiState
 import io.github.mangi.eta.ui.model.ConversationSummaryUi
 import io.github.mangi.eta.ui.model.ConversationHistoryLoadState
@@ -85,9 +86,11 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.retryWhen
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.sync.Mutex
@@ -117,6 +120,13 @@ internal class AgentAppState(
     // 导入期间暂停保存：旧状态的增量保存会删除刚导入的会话；导入成功后整体重载，失败时数据库已回滚。
     private var persistencePaused = false
     private val runtimeRecoveryInProgress = AtomicBoolean(false)
+    private val runtimeRecoveryPending = AtomicBoolean(false)
+    private val externalProjectionMutex = Mutex()
+    private val runtimeReconcileMutex = Mutex()
+    private val externalRunIds = mutableSetOf<String>()
+    private val runConversationHints = mutableMapOf<String, String>()
+    private data class PendingQueueResume(val runId: String, val stoppedByUser: Boolean)
+    private val pendingQueueResumes = mutableMapOf<String, PendingQueueResume>()
     private val defaultThinkingEnabled = agentBooleanForUi(Prefs.Keys.AGENT_THINKING_ENABLED)
     @Volatile
     private var conversationPersistence = AgentConversationPersistence(initialConversations)
@@ -127,6 +137,8 @@ internal class AgentAppState(
     private var fileAttachmentOwnerVersion = 0L
     private val conversationLoadMutex = Mutex()
     private val conversationContentPins = mutableMapOf<String, Int>()
+    @androidx.annotation.VisibleForTesting
+    internal var beforeRunConversationSelectionForTest: (suspend (String) -> Unit)? = null
     private var conversationSelectionJob: Job? = null
     private var conversationSelectionVersion = 0L
     private var historyPageJob: Job? = null
@@ -165,7 +177,10 @@ internal class AgentAppState(
     )
         private set
 
+    private var activeRunSnapshots by mutableStateOf<List<AgentRuntimeWire.ActiveRunSnapshot>>(emptyList())
+
     init {
+        observeActiveRuns()
         refreshConversationSummaries()
         observeRuntimeSelection()
         runtimeRecoveryInProgress.set(true)
@@ -175,9 +190,73 @@ internal class AgentAppState(
                 importArchivedExternalRuns()
             } finally {
                 runtimeRecoveryInProgress.set(false)
+                if (runtimeRecoveryPending.getAndSet(false)) refreshRuntimeResults()
             }
         }
     }
+
+    private fun observeActiveRuns() {
+        scope.launch {
+            var terminalRevision = 0L
+            AgentRuntimeClient(appContext, AndroidAgentLogger).observeActiveRuns()
+                .retryWhen { _, _ ->
+                    terminalRevision = 0L
+                    conversationPaneState = conversationPaneState.copy(tasksConnected = false)
+                    delay(2000) // only after a failed connection, not periodic task polling
+                    true
+                }
+                .collect { update ->
+                    val snapshots = update.snapshots
+                    val terminalChanged = update.terminalRevision != terminalRevision
+                    terminalRevision = update.terminalRevision
+                    val wasDisconnected = !conversationPaneState.tasksConnected
+                    val previous = activeRunSnapshots
+                    val previousIds = previous.map { it.runId }.toSet()
+                    activeRunSnapshots = snapshots
+                    conversationPaneState = conversationPaneState.copy(tasksConnected = true)
+                    refreshConversationSummaries()
+                    if (pendingQueueResumes.isNotEmpty()) scope.launch {
+                        resumeSettledQueues(AgentRuntimeClient.ActiveRunsQuery.Known(snapshots))
+                    }
+                    // Admission and Preparing -> Running are authoritative changes, not polling.
+                    val changed = snapshots.filter { run ->
+                        run.handoffSource != AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE &&
+                            (wasDisconnected || previous.firstOrNull { it.runId == run.runId } != run)
+                    }
+                    if (changed.isNotEmpty()) scope.launch(Dispatchers.IO) {
+                        changed.forEach { ensureRunConversation(it.runId) }
+                    }
+                    // Archive is written before the terminal registry removal; import once on disappearance.
+                    if (wasDisconnected || terminalChanged || (previousIds - snapshots.map { it.runId }.toSet()).isNotEmpty()) refreshRuntimeResults()
+                }
+        }
+    }
+
+    private fun activeTaskUi(run: AgentRuntimeWire.ActiveRunSnapshot): ActiveTaskUi = ActiveTaskUi(
+        runId = run.runId,
+        conversationId = run.conversationId,
+        source = run.handoffSource,
+        conversationKey = run.conversationKey,
+        title = conversationTitles[run.conversationId]?.takeIf { it.isNotBlank() }
+            ?: run.title.ifBlank { appContext.getString(R.string.task_preparing) },
+        status = when {
+            run.guiStatus == GuiControlStatus.Acquired -> appContext.getString(R.string.task_gui_active)
+            run.guiStatus == GuiControlStatus.UserPaused -> appContext.getString(R.string.task_gui_paused)
+            run.phase == AgentRuntimeWire.RunPhase.WaitingForGui -> appContext.getString(R.string.run_waiting_for_gui)
+            run.phase == AgentRuntimeWire.RunPhase.Preparing -> appContext.getString(R.string.task_preparing)
+            run.phase == AgentRuntimeWire.RunPhase.Paused -> appContext.getString(R.string.task_paused)
+            run.phase == AgentRuntimeWire.RunPhase.Committing -> appContext.getString(R.string.task_archiving)
+            else -> appContext.getString(R.string.task_running)
+        },
+        createdAt = run.createdAt,
+    )
+
+    fun activeTask(runId: String): ActiveTaskUi? = activeRunSnapshots.firstOrNull { it.runId == runId }?.let(::activeTaskUi)
+
+    val selectedRunStatus: String?
+        get() = activeRunSnapshots.firstOrNull {
+            it.runId == runStore.activeRunId(selectedConversationId) && it.phase == AgentRuntimeWire.RunPhase.Preparing
+        }?.let { appContext.getString(R.string.task_preparing) }
 
     private fun observeRuntimeSelection() {
         scope.launch(Dispatchers.IO) {
@@ -238,13 +317,19 @@ internal class AgentAppState(
             ?: AgentModelPickerProjector.project(providers, defaultProviderId, defaultModelId).selectedModel?.id
 
     fun refreshRuntimeResults() {
-        if (!runtimeRecoveryInProgress.compareAndSet(false, true)) return
+        if (!runtimeRecoveryInProgress.compareAndSet(false, true)) {
+            runtimeRecoveryPending.set(true)
+            // Recovery may have just completed between the failed CAS and setting pending.
+            if (!runtimeRecoveryInProgress.get() && runtimeRecoveryPending.getAndSet(false)) refreshRuntimeResults()
+            return
+        }
         scope.launch(Dispatchers.IO) {
             try {
                 recoverRuntimeRuns()
                 importArchivedExternalRuns()
             } finally {
                 runtimeRecoveryInProgress.set(false)
+                if (runtimeRecoveryPending.getAndSet(false)) refreshRuntimeResults()
             }
         }
     }
@@ -343,7 +428,7 @@ internal class AgentAppState(
     }
 
     /** 用 checkpoint、终态 outbox 与 active session 一次性对账，避免用进程存活推断 run 状态。 */
-    private suspend fun recoverRuntimeRuns() {
+    private suspend fun recoverRuntimeRuns(): Unit = runtimeReconcileMutex.withLock {
         val client = AgentRuntimeClient(appContext, AndroidAgentLogger)
         val checkpoints = withContext(Dispatchers.IO) {
             AgentRunCheckpointStore.list(appContext)
@@ -359,6 +444,9 @@ internal class AgentAppState(
                 ?.runs
                 .orEmpty()
         val activeRunQuery = client.queryActiveRuns()
+        (activeRunQuery as? AgentRuntimeClient.ActiveRunsQuery.Known)?.runs.orEmpty()
+            .filter { it.handoffSource != AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE }
+            .forEach { ensureRunConversation(it.runId) }
         val terminalRaceQuery = if (
             activeRunQuery is AgentRuntimeClient.ActiveRunsQuery.Known
         ) {
@@ -376,9 +464,52 @@ internal class AgentAppState(
             }
             .values
             .toList()
+        // Outbox commits before archive. Recover a failed archive write from its full owned
+        // result rather than leaving an external result permanently unimportable/unacknowledged.
+        val archivedIds = AgentRunArchiveStore.list(appContext).mapTo(mutableSetOf()) { it.result.runId }
+        completedRuns.filter { completed ->
+            completed.handoff.source != AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE &&
+                completed.result.contextSnapshotRef.isBlank() && completed.result.runId !in archivedIds &&
+                AgentExternalArchivePayload.from(completed.handoff.payload) != null
+        }.forEach { completed ->
+            val checkpoint = checkpoints.firstOrNull { it.runId == completed.result.runId }
+            AgentRunArchiveStore.add(appContext, AgentRunArchiveStore.ArchivedRun(
+                completed.handoff, checkpoint?.events.orEmpty(), completed.result, completed.createdAt,
+            ))
+        }
+        // External handoffs are not AGENT_UI payloads. Resolve their owned terminal result
+        // into the already projected run before the generic archive importer sees it.
+        externalProjectionMutex.withLock {
+            val archives = AgentRunArchiveStore.list(appContext).associateBy { it.result.runId }
+            completedRuns.filter { it.handoff.source != AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE &&
+                it.result.contextSnapshotRef.isBlank() }.forEach { completed ->
+                val runId = completed.result.runId
+                val payload = AgentExternalArchivePayload.from(completed.handoff.payload) ?: return@forEach
+                val id = archiveConversationId(completed.handoff.source, payload.conversationKey)
+                withLoadedConversations(setOf(id)) {
+                    withContext(Dispatchers.Main) {
+                        if (runStore.activeRunId(id) == runId && !runStore.isSettling(runId)) {
+                            val current = conversationsById[id] ?: return@withContext
+                            updateConversation(id, AgentExternalRunProjection.withInput(current, runId,
+                                payload.userText, archives[runId]?.userImagePreviews.orEmpty()))
+                            archives[runId]?.let { restoreRunEvents(runId, it.events) }
+                            applyRunResult(runId, completed.result, acknowledgeRuntimeResult = true)
+                        }
+                    }
+                }
+            }
+        }
         val activeStateKnown = activeRunQuery is AgentRuntimeClient.ActiveRunsQuery.Known
         val terminalStateKnown = terminalRaceQuery is AgentRuntimeClient.CompletedRunsQuery.Known
         val activeRunIds = (activeRunQuery as? AgentRuntimeClient.ActiveRunsQuery.Known)?.runIds.orEmpty()
+        if (activeStateKnown && terminalStateKnown) withContext(Dispatchers.Main) {
+            val completedIds = completedRuns.mapTo(mutableSetOf()) { it.result.runId }
+            (runStore.disconnectedRunIds - activeRunIds - completedIds).forEach { runId ->
+                setConversationStreaming(runId, false)
+                runStore.remove(runId)
+                externalRunIds.remove(runId)
+            }
+        }
         val locallyObservedRunIds = withContext(Dispatchers.Main) { runStore.observedRunIds }
         if (activeStateKnown && terminalStateKnown) {
             AgentRunCheckpointStore.archiveInterruptedExternal(
@@ -529,6 +660,7 @@ internal class AgentAppState(
                 withContext(Dispatchers.Main) { startReattachedRun(run.runId, run.conversationId, run.operation) }
             }
         }
+        resumeSettledQueues(activeRunQuery)
     }
 
     /** 把安全事件恢复为 UI 轨迹；半截回复不进入模型 history，设备工具也不会重放。 */
@@ -552,7 +684,7 @@ internal class AgentAppState(
             return interrupted || restored != existing
         }
 
-        if (!runStore.register(runId, conversationId, observed = false)) return false
+        if (!registerConversationWriter(runId, conversationId, observed = false)) return false
         updateConversation(conversationId, existing.copy(isStreaming = true, isCompacting = checkpoint.operation == AgentRuntimeWire.OP_COMPACT))
         restoreRunEvents(runId, checkpoint.events)
         flushPendingRunDelta(runId)
@@ -599,7 +731,8 @@ internal class AgentAppState(
     ) {
         val existing = conversationsById[conversationId] ?: return
         if (AgentRuntimeHistoryReducer.wasApplied(existing, runId) ||
-            !runStore.register(runId, conversationId)) return
+            !registerConversationWriter(runId, conversationId)) return
+        runConversationHints[runId] = conversationId
         val restored = if (operation == AgentRuntimeWire.OP_REWRITE_REPLY) {
             RoleplayConversationReducer.restorePendingRewrite(existing, runId, rewriteTargetMessageId)
         } else existing
@@ -607,32 +740,63 @@ internal class AgentAppState(
         refreshConversationSummaries()
         val observationJob = scope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
             val client = AgentRuntimeClient(appContext, AndroidAgentLogger)
-            val outcome = client.attachRun(
+            val outcome = runInterruptible {
+                client.attachRun(
                 runId = runId,
                 onReplay = { events -> restoreRunEvents(runId, events) },
                 onEvent = { event -> enqueueRunEvent(runId, event) },
-            )
+                )
+            }
             when (outcome) {
-                is AgentRuntimeClient.AttachOutcome.Completed -> withContext(Dispatchers.Main) {
-                    applyRunResult(
-                        runId = runId,
-                        result = outcome.result,
-                        acknowledgeRuntimeResult = true,
-                    )
+                is AgentRuntimeClient.AttachOutcome.Completed -> {
+                    // A live callback may be a result reference. Resolve it using the original
+                    // owned outbox path; never commit or acknowledge a synthetic disconnect.
+                    val resolved = if (outcome.result.contextSnapshotRef.isBlank()) outcome.result else {
+                        (client.queryCompletedRuns() as? AgentRuntimeClient.CompletedRunsQuery.Known)
+                            ?.runs?.firstOrNull { it.result.runId == runId }?.result
+                    }
+                    if (resolved == null || resolved.contextSnapshotRef.isNotBlank()) {
+                        withContext(Dispatchers.Main) {
+                            if (runId in externalRunIds) runStore.disconnected(runId) else {
+                                setConversationStreaming(runId, false)
+                                runStore.remove(runId)
+                            }
+                        }
+                        refreshRuntimeResults()
+                        return@launch
+                    }
+                    // Refresh deferred input before the terminal result removes its presentation.
+                    if (withContext(Dispatchers.Main) { runId in externalRunIds }) ensureRunConversation(runId)
+                    withContext(Dispatchers.Main) {
+                        applyRunResult(
+                            runId = runId,
+                            result = resolved,
+                            acknowledgeRuntimeResult = true,
+                        )
+                    }
                 }
                 AgentRuntimeClient.AttachOutcome.NotActive -> {
+                    val external = withContext(Dispatchers.Main) { runId in externalRunIds }
                     withContext(Dispatchers.Main) {
-                        setConversationStreaming(runId, false)
+                        if (!external) setConversationStreaming(runId, false)
                         runStore.remove(runId)
                     }
                     recoverRuntimeRuns()
+                    importArchivedExternalRuns()
                     withContext(Dispatchers.Main) {
-                        if (runStore.activeRunId(conversationId) == null) abortPendingConversationDelete(conversationId)
+                        if (runStore.activeRunId(conversationId) == null) {
+                            if (external) conversationsById[conversationId]?.let {
+                                updateConversation(conversationId, it.copy(isStreaming = false), updateTimestamp = false)
+                            }
+                            abortPendingConversationDelete(conversationId)
+                        }
                     }
                 }
                 AgentRuntimeClient.AttachOutcome.Unavailable -> withContext(Dispatchers.Main) {
-                    setConversationStreaming(runId, false)
-                    runStore.remove(runId)
+                    if (runId in externalRunIds) runStore.disconnected(runId) else {
+                        setConversationStreaming(runId, false)
+                        runStore.remove(runId)
+                    }
                     abortPendingConversationDelete(conversationId)
                     refreshConversationSummaries()
                 }
@@ -642,26 +806,154 @@ internal class AgentAppState(
         observationJob.start()
     }
 
-    private suspend fun importArchivedExternalRuns() {
+    private suspend fun importArchivedExternalRuns(): Unit = externalProjectionMutex.withLock {
         val archivedRuns = withContext(Dispatchers.IO) {
             AgentRunArchiveStore.list(appContext)
                 .filter { AgentExternalArchivePayload.from(it.handoff.payload) != null }
         }
-        if (archivedRuns.isEmpty()) return
+        if (archivedRuns.isEmpty()) return@withLock
 
         for (archivedRun in archivedRuns) {
             val payload = AgentExternalArchivePayload.from(archivedRun.handoff.payload) ?: continue
             val conversationId = archiveConversationId(archivedRun.handoff.source, payload.conversationKey)
             val saved = withLoadedConversations(setOf(conversationId)) {
-                val importedRunId = withContext(Dispatchers.Main) {
+                val imported = withContext(Dispatchers.Main) {
                     importExternalRun(archivedRun).also { refreshConversationSummaries() }
-                } ?: return@withLoadedConversations true
+                }
+                // A predecessor blocked by a same-key writer does not block independent
+                // conversations. Real persistence/ACK failure still stops the batch below.
+                if (imported !is ExternalImport.Imported) return@withLoadedConversations true
+                val importedRunId = imported.runId
                 if (!withContext(Dispatchers.Main) { persistConversations() }.await()) return@withLoadedConversations false
-                AgentRunArchiveStore.remove(appContext, importedRunId)
+                // Only acknowledge after the imported conversation is durably saved.
+                val acknowledged = withContext(Dispatchers.IO) {
+                    AgentRuntimeClient(appContext, AndroidAgentLogger).ackResult(importedRunId).also {
+                        if (it) AgentRunArchiveStore.remove(appContext, importedRunId)
+                    }
+                }
+                if (!acknowledged) return@withLoadedConversations false
                 true
             }
             if (!saved) break
         }
+    }
+
+    /** Read-only presentation + original run subscription. No START/config/history request. */
+    private suspend fun ensureRunConversation(runId: String): String? = externalProjectionMutex.withLock {
+        val query = withContext(Dispatchers.IO) {
+            AgentRuntimeClient(appContext, AndroidAgentLogger).queryRunPresentation(runId)
+        }
+        val presentation = (query as? AgentRuntimeClient.RunPresentationQuery.Known)?.run ?: return@withLock null
+        val run = presentation.snapshot
+        if (run.runId != runId) return@withLock null
+        val active = withContext(Dispatchers.IO) {
+            AgentRuntimeClient(appContext, AndroidAgentLogger).queryActiveRuns()
+        }
+        val isActive = (active as? AgentRuntimeClient.ActiveRunsQuery.Known)?.runIds?.contains(runId) == true
+        if (!isActive) {
+            // Terminal presentation uses Committing only because the wire has no terminal phase.
+            // It can refresh a late deferred input, but never establishes an active observer.
+            withContext(Dispatchers.Main) {
+                val id = runStore.conversationId(runId)
+                val current = conversationsById[id]
+                if (id != null && current != null && runId in externalRunIds && !runStore.isSettling(runId)) {
+                    updateConversation(id, AgentExternalRunProjection.withInput(current, runId,
+                        presentation.userText, presentation.userImagePreviews), updateTimestamp = false)
+                }
+            }
+            return@withLock null
+        }
+        if (run.handoffSource == AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE) {
+            return@withLock withLoadedConversations(setOf(run.conversationId)) {
+                withContext(Dispatchers.Main) {
+                    if (run.conversationId !in conversationsById) null else {
+                        startReattachedRun(runId, run.conversationId, run.operation)
+                        run.conversationId
+                    }
+                }
+            }
+        }
+        val handoff = presentation.handoff
+        val payload = handoff?.let { AgentExternalArchivePayload.from(it.payload) }
+        val source = handoff?.source ?: run.handoffSource
+        val key = payload?.conversationKey ?: run.conversationKey
+        if (source.isBlank() || key.isBlank()) return@withLock null
+        val id = archiveConversationId(source, key)
+        if (run.conversationId != id) return@withLock null
+        withLoadedConversations(setOf(id)) {
+            withContext(Dispatchers.Main) {
+                val current = conversationsById[id]
+                val active = runStore.activeRunId(id)
+                if (active != null && active != runId) return@withContext null
+                runConversationHints[runId] = id
+                if (current != null && AgentRuntimeHistoryReducer.wasApplied(current, runId)) return@withContext id
+                externalRunIds += runId
+                val effort = payload?.reasoningEffort ?: payload?.thinkingEnabled?.let(ReasoningEffort::fromLegacy)
+                    ?: ReasoningEffort.fromLegacy(defaultThinkingEnabled)
+                val state = current ?: emptyChatState(effort.enablesReasoning).copy(reasoningEffort = effort)
+                updateConversation(id, AgentExternalRunProjection.withInput(
+                    state, runId, presentation.userText, presentation.userImagePreviews,
+                ), updateTimestamp = false)
+                if (conversationTitles[id].isNullOrBlank()) conversationTitles = conversationTitles +
+                    (id to (payload?.title ?: run.title))
+                if (id !in conversationUpdatedAt) conversationUpdatedAt = conversationUpdatedAt + (id to run.createdAt)
+                startReattachedRun(runId, id, run.operation)
+                refreshConversationSummaries()
+                id
+            }
+        }
+    }
+
+    suspend fun openRunConversation(
+        runId: String,
+        source: String = "",
+        conversationKey: String = "",
+        conversationId: String = "",
+    ): Boolean = try {
+        openRunConversationInternal(runId, source, conversationKey, conversationId)
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (failure: Exception) {
+        AndroidAgentLogger.warn("Agent run conversation unavailable: type=${failure.safeLogType()}")
+        false
+    }
+
+    private suspend fun openRunConversationInternal(
+        runId: String,
+        source: String,
+        conversationKey: String,
+        conversationId: String,
+    ): Boolean {
+        if (runId.isBlank()) return false
+        val projected = ensureRunConversation(runId)
+        if (projected == null) {
+            // Completed entries may already have been acknowledged and removed from Runtime.
+            withContext(Dispatchers.IO) { recoverRuntimeRuns() }
+            importArchivedExternalRuns()
+        }
+        val persistedId = if (projected == null) withContext(Dispatchers.IO) {
+            io.github.mangi.eta.data.db.EtaDatabase.get(appContext).conversationDao().conversations()
+                .firstOrNull { row ->
+                    val ids = org.json.JSONArray(row.appliedRuntimeRunIdsJson)
+                    (0 until ids.length()).any { ids.optString(it) == runId }
+                }?.id
+        } else null
+        val fallbackId = if (source.isNotBlank() && conversationKey.isNotBlank()) archiveConversationId(source, conversationKey)
+            else conversationId.takeIf(String::isNotBlank)
+        val id = projected ?: persistedId ?: withContext(Dispatchers.Main) { runConversationHints[runId] }
+            ?: fallbackId ?: return false
+        val opened = withLoadedConversations(setOf(id)) {
+            beforeRunConversationSelectionForTest?.invoke(id)
+            withContext(Dispatchers.Main) {
+                val state = conversationsById[id] ?: return@withContext false
+                if (runStore.activeRunId(id) != runId && !AgentRuntimeHistoryReducer.wasApplied(state, runId)) return@withContext false
+                selectConversation(id)
+                true
+            }
+        }
+        // Explicit selection is an interaction; passive subscriptions never change priority.
+        if (opened) withContext(Dispatchers.IO) { AgentRuntimeClient(appContext, AndroidAgentLogger).preferRun(runId) }
+        return opened
     }
 
     suspend fun openAssistantConversation(conversationKey: String): Boolean =
@@ -670,6 +962,11 @@ internal class AgentAppState(
     /** 打开外部入口按 [source] 与 [conversationKey] 归档的会话；先导入尚未入库的归档结果。 */
     suspend fun openArchivedConversation(source: String, conversationKey: String): Boolean {
         if (source.isBlank() || conversationKey.isBlank()) return false
+        val active = withContext(Dispatchers.IO) {
+            (AgentRuntimeClient(appContext, AndroidAgentLogger).queryActiveRuns() as? AgentRuntimeClient.ActiveRunsQuery.Known)
+                ?.runs?.firstOrNull { it.handoffSource == source && it.conversationKey == conversationKey }
+        }
+        if (active != null) return openRunConversation(active.runId, source, conversationKey)
         importArchivedExternalRuns()
         return withContext(Dispatchers.Main.immediate) {
             val conversationId = archiveConversationId(
@@ -685,10 +982,16 @@ internal class AgentAppState(
         }
     }
 
-    private fun importExternalRun(archivedRun: AgentRunArchiveStore.ArchivedRun): String? {
+    private sealed interface ExternalImport {
+        data class Imported(val runId: String) : ExternalImport
+        data object Deferred : ExternalImport
+        data object Invalid : ExternalImport
+    }
+
+    private fun importExternalRun(archivedRun: AgentRunArchiveStore.ArchivedRun): ExternalImport {
         val runId = archivedRun.result.runId.ifBlank { archivedRun.handoff.id }
-        if (runId.isBlank()) return null
-        val payload = AgentExternalArchivePayload.from(archivedRun.handoff.payload) ?: return null
+        if (runId.isBlank()) return ExternalImport.Invalid
+        val payload = AgentExternalArchivePayload.from(archivedRun.handoff.payload) ?: return ExternalImport.Invalid
         val conversationId = archiveConversationId(
             source = archivedRun.handoff.source,
             conversationKey = payload.conversationKey,
@@ -699,45 +1002,29 @@ internal class AgentAppState(
         val existingState = conversationsById[conversationId] ?: emptyChatState(
             archivedEffort.enablesReasoning
         ).copy(reasoningEffort = archivedEffort)
-        val alreadyImported = AgentRuntimeHistoryReducer.wasApplied(existingState, runId) ||
-            existingState.messages.any {
-                it is AgentMessageUi &&
-                    (it.id == "assistant-$runId" || it.id.startsWith("assistant-$runId-")) &&
-                    !it.isStreaming
-            }
-        if (alreadyImported) return runId
+        // A completed text block can exist while tools/model execution are still running.
+        val alreadyImported = AgentRuntimeHistoryReducer.wasApplied(existingState, runId)
+        if (alreadyImported) return ExternalImport.Imported(runId)
 
         if (conversationTitles[conversationId].isNullOrBlank()) {
             conversationTitles = conversationTitles + (conversationId to payload.title)
         }
         if (runStore.activeRunId(conversationId) != null ||
-            !runStore.register(runId, conversationId, observed = false)) return null
+            !registerConversationWriter(runId, conversationId, observed = false)) return ExternalImport.Deferred
+        externalRunIds += runId
+        runConversationHints[runId] = conversationId
         updateConversation(
             conversationId,
-            existingState.copy(
-                input = "",
+            AgentExternalRunProjection.withInput(existingState, runId, payload.userText, archivedRun.userImagePreviews).copy(
                 isStreaming = true,
                 thinkingEnabled = archivedEffort.enablesReasoning,
                 reasoningEffort = archivedEffort,
-                pendingImages = emptyList(),
-                messages = existingState.messages +
-                    UserMessageUi(
-                        id = "user-$runId",
-                        content = payload.userText,
-                        images = archivedRun.userImagePreviews,
-                    ) +
-                    AgentMessageUi(
-                        id = "assistant-$runId",
-                        content = "",
-                        isStreaming = true,
-                        renderMarkdown = false,
-                    ),
             )
         )
-        archivedRun.events.forEach { event -> applyRunEvent(runId, event) }
+        restoreRunEvents(runId, archivedRun.events)
         applyRunResult(runId, archivedRun.result)
         conversationUpdatedAt = conversationUpdatedAt + (conversationId to archivedRun.createdAt)
-        return runId
+        return ExternalImport.Imported(runId)
     }
 
     fun updateThinkingEnabled(enabled: Boolean) {
@@ -810,6 +1097,8 @@ internal class AgentAppState(
             }
         }
     }
+
+    fun hasConversation(conversationId: String): Boolean = conversationsById.containsKey(conversationId)
 
     fun selectConversation(conversationId: String) {
         if (homeState.messageEdit != null) cancelMessageEdit()
@@ -1660,7 +1949,7 @@ internal class AgentAppState(
         rewriteTargetMessageId: String? = null,
         requestMode: String = "normal",
     ) {
-        if (conversationId in pendingConversationDeletes || !runStore.register(runId, conversationId)) return
+        if (conversationId in pendingConversationDeletes || !registerConversationWriter(runId, conversationId)) return
         // 发送即绑定：会话记住本轮实际使用的模型，回落到默认模型时也随之更新。
         val runModelId = state.effectiveModelId
         val runReasoningEffort = providers.enabledModel(runModelId)?.let { (provider, model) ->
@@ -2254,10 +2543,12 @@ internal class AgentAppState(
         resumeQueue: Boolean,
     ) {
         var acknowledged = !acknowledgeRuntimeResult
+        val external = runId in externalRunIds
         val saved = persistConversations(
             onSaved = if (acknowledgeRuntimeResult && result.contextSnapshotRef.isBlank()) {
                 {
                     acknowledged = AgentRuntimeClient(appContext, AndroidAgentLogger).ackResult(runId)
+                    if (acknowledged && external) AgentRunArchiveStore.remove(appContext, runId)
                 }
             } else {
                 null
@@ -2270,8 +2561,12 @@ internal class AgentAppState(
             val stoppedDuringSettlement = runStore.wasStoppedByUser(runId)
             setConversationStreaming(runId, false)
             runStore.remove(runId)
+            externalRunIds.remove(runId)
             settleAutoTitle(runId, result, resultSaved && !explicitlyStoppedByUser && !stoppedDuringSettlement)
             refreshConversationSummaries()
+            if (external && activeRunSnapshots.any { it.conversationId == conversationId && it.runId != runId }) {
+                refreshRuntimeResults()
+            }
             if (conversationId in pendingConversationDeletes) {
                 if (resultSaved && acknowledged) {
                     deleteSettledConversation(conversationId)
@@ -2281,21 +2576,62 @@ internal class AgentAppState(
                 return@launch
             }
             if (!resultSaved || !resumeQueue || runStore.activeRunId(conversationId) != null) return@launch
-            val finishedState = conversationsById[conversationId]
-            if (finishedState != null && finishedState.queuedMessages.isNotEmpty()) {
-                if (finishedState.queuedMessages.any { it.id in unconfirmedSteering }) return@launch
-                val stoppedByUser = explicitlyStoppedByUser || stoppedDuringSettlement ||
-                    (!result.ok && (result.error == LEGACY_STOPPED_ERROR || result.error == SYNTHETIC_STATUS_STOPPED))
-                val (afterPopState, nextQueued) = AgentMessageQueueReducer.pollNextToSendAfterRun(
-                    state = finishedState,
-                    stoppedByUser = stoppedByUser,
-                )
-                updateConversation(conversationId, afterPopState, updateTimestamp = false)
-                if (nextQueued != null) {
-                    dispatchQueuedMessage(conversationId, nextQueued)
+            val stoppedByUser = explicitlyStoppedByUser || stoppedDuringSettlement ||
+                (!result.ok && (result.error == LEGACY_STOPPED_ERROR || result.error == SYNTHETIC_STATUS_STOPPED))
+            if (external) {
+                pendingQueueResumes[conversationId] = PendingQueueResume(runId, stoppedByUser)
+                val active = withContext(Dispatchers.IO) {
+                    AgentRuntimeClient(appContext, AndroidAgentLogger).queryActiveRuns()
+                }
+                resumeSettledQueues(active)
+                if (conversationId in pendingQueueResumes) refreshRuntimeResults()
+                return@launch
+            }
+            resumeConversationQueue(conversationId, stoppedByUser)
+        }
+    }
+
+    private fun registerConversationWriter(runId: String, conversationId: String, observed: Boolean = true): Boolean {
+        if (!runStore.register(runId, conversationId, observed)) return false
+        // A successor owns this queue's stop/save decision. A same-run reconnect is not
+        // a successor and must not invalidate its own deferred settlement state.
+        if (pendingQueueResumes[conversationId]?.runId != runId) pendingQueueResumes.remove(conversationId)
+        return true
+    }
+
+    private suspend fun resumeSettledQueues(active: AgentRuntimeClient.ActiveRunsQuery) {
+        if (active !is AgentRuntimeClient.ActiveRunsQuery.Known) return
+        val pending = withContext(Dispatchers.Main) { pendingQueueResumes.toMap() }
+        for ((id, candidate) in pending) {
+            if (active.runs.any { it.conversationId == id }) continue
+            withLoadedConversations(setOf(id)) {
+                withContext(Dispatchers.Main) {
+                    // Loading and the Runtime query both suspend. Revalidate the latest
+                    // local writer and state in the same non-suspending section as poll.
+                    if (pendingQueueResumes[id] != candidate) return@withContext
+                    if (resumeConversationQueue(id, candidate.stoppedByUser)) pendingQueueResumes.remove(id)
                 }
             }
         }
+    }
+
+    /** Main-thread atomic guard/poll/dispatch: no queue removal across an IO window. */
+    private fun resumeConversationQueue(conversationId: String, stoppedByUser: Boolean): Boolean {
+        if (conversationId in pendingConversationDeletes || runStore.activeRunId(conversationId) != null) return false
+        val finishedState = conversationsById[conversationId]
+        if (finishedState?.isStreaming == true || finishedState?.isCompacting == true) return false
+        if (finishedState != null && finishedState.queuedMessages.isNotEmpty()) {
+            if (finishedState.queuedMessages.any { it.id in unconfirmedSteering }) return false
+            val (afterPopState, nextQueued) = AgentMessageQueueReducer.pollNextToSendAfterRun(
+                state = finishedState,
+                stoppedByUser = stoppedByUser,
+            )
+            updateConversation(conversationId, afterPopState, updateTimestamp = false)
+            if (nextQueued != null) {
+                dispatchQueuedMessage(conversationId, nextQueued)
+            }
+        }
+        return true
     }
 
     private fun updateRunTrace(
@@ -2415,7 +2751,9 @@ internal class AgentAppState(
     }
 
     private fun refreshConversationSummaries() {
+        val activeConversationIds = activeRunSnapshots.mapTo(hashSetOf()) { it.conversationId }
         val summaries = conversationsById.entries
+            .filterNot { it.key in activeConversationIds }
             .sortedByDescending { (id, _) ->
                 conversationUpdatedAt[id] ?: 0L
             }
@@ -2474,6 +2812,9 @@ internal class AgentAppState(
         val query = conversationPaneState.searchQuery.trim()
         conversationPaneState = conversationPaneState.copy(
             selectedConversationId = selectedConversationId,
+            activeTasks = activeRunSnapshots.map(::activeTaskUi).filter {
+                query.isBlank() || it.title.contains(query, ignoreCase = true)
+            },
             conversations = if (query.isBlank()) {
                 summaries
             } else {

@@ -7,6 +7,46 @@ import org.junit.Test
 
 class ExecutionLeaseRegistryTest {
     @Test
+    fun targetedStopKeepsLeaseUntilTerminalAndDoesNotStopAnotherLease() {
+        val registry = ExecutionLeaseRegistry()
+        val stopped = mutableListOf<String>()
+        registry.acquire("run:a") { stopped += "a" }
+        registry.acquire("run:b") { stopped += "b" }
+        registry.acquire("user:pty") { stopped += "pty" }
+        registry.requestStop("run:a")?.invoke()
+        registry.requestStop("run:a")?.invoke()
+        registry.requestStop("run:expired")?.invoke()
+        assertEquals(listOf("a"), stopped)
+        assertEquals(3, registry.count())
+        assertFalse(registry.closeOwnerIfIdle(1))
+        registry.requestStop("run:b")?.invoke()
+        assertEquals(listOf("a", "b"), stopped)
+        registry.release("run:a")
+        assertEquals(2, registry.count())
+        registry.release("run:b")
+        assertEquals(1, registry.count())
+        registry.release("user:pty")
+        assertTrue(registry.closeOwnerIfIdle(1))
+    }
+
+    @Test
+    fun staleStopTokenCannotStopReplacementWithSameId() {
+        val registry = ExecutionLeaseRegistry()
+        var stopped = 0
+        registry.acquire("run:reused") { stopped++ }
+        val old = registry.token("run:reused")!!
+        registry.release("run:reused")
+        registry.acquire("run:reused") { stopped++ }
+        val current = registry.token("run:reused")!!
+        assertTrue(old != current)
+        assertEquals(null, registry.requestStop("run:reused", old))
+        assertEquals(0, stopped)
+        registry.requestStop("run:reused", current)?.invoke()
+        assertEquals(1, stopped)
+        assertEquals(1, registry.count())
+    }
+
+    @Test
     fun taskAcquiredDuringServiceRestartIsNotDrainedByThePreviousOwner() {
         val registry = ExecutionLeaseRegistry()
         registry.attachOwner(1)

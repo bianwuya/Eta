@@ -2,7 +2,8 @@ package io.github.mangi.eta.agent.runtime
 
 /** 用户任务的运行引用；通知停止只消费这里登记的任务，不接管 Root daemon。 */
 internal class ExecutionLeaseRegistry {
-    private data class Lease(val owner: Long?, val allowBoundFallback: Boolean, val onStop: () -> Unit)
+    private data class Lease(val owner: Long?, val allowBoundFallback: Boolean, val onStop: () -> Unit,
+        val stopRequested: Boolean = false, val token: String = java.util.UUID.randomUUID().toString())
     private val leases = linkedMapOf<String, Lease>()
     private var activeOwner: Long? = null
 
@@ -15,6 +16,16 @@ internal class ExecutionLeaseRegistry {
 
     @Synchronized fun release(id: String) { leases.remove(id) }
     @Synchronized fun count(): Int = leases.size
+
+    /** Claim one explicit stop once; keep its lease until the runtime's terminal release. */
+    @Synchronized fun token(id: String): String? = leases[id]?.token
+
+    @Synchronized fun requestStop(id: String, token: String? = null): (() -> Unit)? {
+        val lease = leases[id] ?: return null
+        if (lease.stopRequested || (token != null && lease.token != token)) return null
+        leases[id] = lease.copy(stopRequested = true)
+        return lease.onStop
+    }
 
     @Synchronized fun attachOwner(owner: Long) {
         activeOwner = owner

@@ -21,6 +21,70 @@ import org.robolectric.annotation.Config
 @Config(sdk = [36], application = Application::class)
 class RuntimeRunRegistryTest {
     @Test
+    fun explicitPreferenceChangesOnlyPresentationAndAdmissionIsMonotonic() {
+        val registry = RuntimeRunRegistry()
+        val a = registry.accept("a", "conversation-a")
+        val b = registry.accept("b", "conversation-b")
+        assertTrue(b.snapshot().interactionAt > a.snapshot().interactionAt)
+        a.guiStatus = GuiControlStatus.Acquired
+        val before = a.snapshot()
+        val request = a.request
+        assertTrue(registry.preferRun("a"))
+        assertTrue(a.snapshot().interactionAt > b.snapshot().interactionAt)
+        assertEquals(before, a.snapshot().copy(interactionAt = before.interactionAt))
+        assertSame(request, a.request)
+        assertFalse(a.session.controller.isCancelled)
+        assertFalse(b.session.controller.isCancelled)
+        assertFalse(registry.preferRun("wake-without-run"))
+        a.session.complete(AgentRuntimeWire.RunResult("a", true, "done"))
+        assertFalse(registry.preferRun("a"))
+    }
+
+    @Test
+    fun acceptedSnapshotRetainsIdentityTimeAndReflectsGuiState() {
+        val registry = RuntimeRunRegistry()
+        val run = registry.accept("run", "conversation")
+        val initial = registry.snapshots().single()
+        assertEquals("run", initial.runId)
+        assertEquals("conversation", initial.conversationId)
+        assertEquals("", initial.title)
+        assertTrue(initial.createdAt > 0L)
+        assertEquals(AgentRuntimeWire.RunPhase.Preparing, initial.phase)
+        run.prepared(run.request)
+        run.guiStatus = GuiControlStatus.Waiting
+        val waiting = registry.snapshots().single()
+        assertEquals(initial.createdAt, waiting.createdAt)
+        assertEquals(AgentRuntimeWire.RunPhase.WaitingForGui, waiting.phase)
+        assertEquals(GuiControlStatus.Waiting, waiting.guiStatus)
+    }
+
+    @Test
+    fun snapshotCachesPresentationAndPreparedRequestRefreshesTitleWithoutChangingIdentity() {
+        val registry = RuntimeRunRegistry()
+        val initial = request("prepared", "conversation").copy(prompt = "")
+        val run = (registry.admit(initial) { RuntimeRunRegistry.Run(initial, AgentRuntimeSession(initial.runId)) }
+            as RuntimeRunRegistry.Admission.Accepted).run
+        val before = run.snapshot()
+        assertEquals("", before.title)
+        repeat(100) { assertEquals(before, run.snapshot()) }
+        run.prepared(initial.copy(prompt = " 实际\n标题 "))
+        val after = run.snapshot()
+        assertEquals("实际 标题", after.title)
+        assertEquals(before.runId, after.runId)
+        assertEquals(before.conversationId, after.conversationId)
+        assertEquals(before.createdAt, after.createdAt)
+    }
+
+    @Test
+    fun presentationTitleIsBoundedAndRemovesControlCharacters() {
+        val request = request("run", "conversation").copy(prompt = "  第一行\n第二行\u0000" + "长".repeat(100))
+        val title = RuntimeRunRegistry.presentationTitle(request)
+        assertEquals(60, title.length)
+        assertTrue(title.startsWith("第一行 第二行 "))
+        assertFalse(title.contains('\u0000'))
+    }
+
+    @Test
     fun queuedSteeringKeepsTheRunAndDeduplicatesTheSameQueueMessage() {
         val registry = RuntimeRunRegistry()
         val run = registry.accept("steer", "conversation")

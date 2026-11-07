@@ -13,6 +13,13 @@ import io.github.mangi.eta.core.safeLogType
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.buffer
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.withContext
 
 /**
  * 入口进程侧的 Runtime 客户端。
@@ -47,9 +54,60 @@ internal class AgentRuntimeClient(
         data object Unavailable : CompletedRunsQuery
     }
 
+    sealed interface RunPresentationQuery {
+        data class Known(val run: AgentRuntimeWire.RunPresentation) : RunPresentationQuery
+        data object Unavailable : RunPresentationQuery
+        data object NotFound : RunPresentationQuery
+    }
+
+    /** Blocking API: call on IO, just like attach/queryCompletedRuns. Handler never reads FDs. */
+    fun queryRunPresentation(runId: String): RunPresentationQuery {
+        if (runId.isBlank()) return RunPresentationQuery.NotFound
+        return AgentResultMailbox().use { mailbox ->
+            val received = CountDownLatch(1)
+            val receiver = Messenger(object : Handler(Looper.getMainLooper()) {
+                override fun handleMessage(msg: Message) {
+                    if (msg.what != AgentRuntimeWire.MSG_QUERY_RUN_PRESENTATION_RESPONSE) return
+                    val data = msg.data ?: return
+                    if (AgentRuntimeWire.runIdFromBundle(data) != runId) {
+                        AgentWireText.close(data)
+                        return
+                    }
+                    mailbox.set(data)
+                    received.countDown()
+                }
+            })
+            withRuntimeMessenger<RunPresentationQuery>(RunPresentationQuery.Unavailable) { service ->
+                service.send(Message.obtain(null, AgentRuntimeWire.MSG_QUERY_RUN_PRESENTATION).apply {
+                    replyTo = receiver
+                    data = AgentRuntimeWire.ackBundle(runId)
+                })
+                if (!received.await(RESPONSE_TIMEOUT_SECONDS, TimeUnit.SECONDS)) RunPresentationQuery.Unavailable
+                else mailbox.get()?.let { data ->
+                    AgentRuntimeWire.runPresentationFromBundle(data)?.let { run ->
+                        if (run.snapshot.runId != runId) RunPresentationQuery.Unavailable
+                        else RunPresentationQuery.Known(run)
+                    } ?: RunPresentationQuery.NotFound
+                } ?: RunPresentationQuery.Unavailable
+            }
+        }
+    }
+
+    /** Explicit user continuation, not a wake/attach side effect. */
+    fun preferRun(runId: String) {
+        if (runId.isBlank()) return
+        withRuntimeMessenger(Unit) { service ->
+            service.send(Message.obtain(null, AgentRuntimeWire.MSG_PREFER_RUN).apply {
+                data = AgentRuntimeWire.ackBundle(runId)
+            })
+        }
+    }
+
     fun run(
         request: AgentRuntimeWire.RunRequest,
-        onEvent: (AgentEvent) -> Unit
+        onRequestIngested: () -> Unit = {},
+        stopRequested: () -> Boolean = { false },
+        onEvent: (AgentEvent) -> Unit,
     ): AgentRuntimeWire.RunResult {
         val resultLatch = CountDownLatch(1)
         val resultRef = AgentResultMailbox()
@@ -63,6 +121,7 @@ internal class AgentRuntimeClient(
                 },
                 onRequestIngested = {
                     preparedImagesRef.getAndSet(null)?.close()
+                    onRequestIngested()
                 },
             )
         )
@@ -87,6 +146,10 @@ internal class AgentRuntimeClient(
             preparedImagesRef.set(preparedImages)
             msg.data = AgentRuntimeWire.toBundle(request, preparedImages.images, context.cacheDir)
             AgentWireText.send(serviceMessenger, msg)
+            // Same Messenger ordering closes the stop-before-admission gap without replaying START.
+            if (stopRequested()) serviceMessenger.send(Message.obtain(null, AgentRuntimeWire.MSG_CANCEL).apply {
+                data = AgentRuntimeWire.ackBundle(request.runId)
+            })
             // 最终结果或 Binder 断连负责唤醒；正常长任务不因客户端等待时长被取消。
             resultLatch.await()
             return resultRef.get()?.let(AgentRuntimeWire::runResultFromBundle) ?: AgentRuntimeWire.RunResult("", false, "", "Agent Runtime 未返回结果")
@@ -256,6 +319,49 @@ internal class AgentRuntimeClient(
         }
     }
 
+    /** A new subscription atomically registers and receives the current snapshot from the service.
+     * The caller may re-collect after disconnect; this method never polls Runtime.
+     */
+    data class ActiveRunsUpdate(val snapshots: List<AgentRuntimeWire.ActiveRunSnapshot>, val terminalRevision: Long)
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    fun observeActiveRuns(): Flow<ActiveRunsUpdate> = callbackFlow {
+        val tracker = ActiveRunsChangeTracker()
+        val lease = withContext(Dispatchers.IO) { AgentRuntimeConnection.acquire(context, logger) }
+        if (lease == null) {
+            close(IllegalStateException("Agent Runtime 服务绑定失败"))
+            return@callbackFlow
+        }
+        val receiver = Messenger(object : Handler(Looper.getMainLooper()) {
+            override fun handleMessage(msg: Message) {
+                if (msg.what == AgentRuntimeWire.MSG_ACTIVE_RUNS_CHANGED) {
+                    val snapshots = AgentRuntimeWire.activeRunsFromBundle(msg.data ?: Bundle())
+                    trySend(tracker.update(snapshots))
+                }
+            }
+        })
+        val death = IBinder.DeathRecipient { close(IllegalStateException("Agent Runtime 服务连接已断开")) }
+        try {
+            lease.binder.linkToDeath(death, 0)
+            lease.messenger.send(Message.obtain(null, AgentRuntimeWire.MSG_SUBSCRIBE_ACTIVE_RUNS).apply {
+                replyTo = receiver
+            })
+        } catch (failure: Exception) {
+            lease.close()
+            close(failure)
+            return@callbackFlow
+        }
+        awaitClose {
+            runCatching {
+                lease.messenger.send(Message.obtain(null, AgentRuntimeWire.MSG_UNSUBSCRIBE_ACTIVE_RUNS).apply {
+                    replyTo = receiver
+                })
+            }
+            runCatching { lease.binder.unlinkToDeath(death, 0) }
+            lease.close()
+        }
+    }.buffer(Channel.CONFLATED)
+
     fun queryActiveRuns(): ActiveRunsQuery {
         val responseLatch = CountDownLatch(1)
         val response = AtomicReference<List<AgentRuntimeWire.ActiveRunSnapshot>>()
@@ -289,8 +395,10 @@ internal class AgentRuntimeClient(
         val attachLatch = CountDownLatch(1)
         val attachedRef = AtomicReference<Boolean?>(null)
         val resultRef = AgentResultMailbox()
+        val observing = java.util.concurrent.atomic.AtomicBoolean(true)
         val clientMessenger = Messenger(
             AttachHandler(
+                observing = observing,
                 onReplay = onReplay,
                 onEvent = onEvent,
                 onAttachResponse = { attached ->
@@ -335,6 +443,13 @@ internal class AgentRuntimeClient(
             logger.warn("Agent runtime attach failed: type=${throwable.safeLogType()}")
             return AttachOutcome.Unavailable
         } finally {
+            observing.set(false)
+            runCatching {
+                lease.messenger.send(Message.obtain(null, AgentRuntimeWire.MSG_DETACH_RUN).apply {
+                    replyTo = clientMessenger
+                    data = AgentRuntimeWire.ackBundle(runId)
+                })
+            }
             resultRef.close()
             runCatching { lease.binder.unlinkToDeath(deathRecipient, 0) }
             lease.close()
@@ -397,6 +512,7 @@ internal class AgentRuntimeClient(
     }
 
     private class AttachHandler(
+        private val observing: java.util.concurrent.atomic.AtomicBoolean,
         onReplay: ((List<AgentEvent>) -> Unit)?,
         onEvent: (AgentEvent) -> Unit,
         onAttachResponse: (Boolean) -> Unit,
@@ -410,6 +526,10 @@ internal class AgentRuntimeClient(
         )
 
         override fun handleMessage(msg: Message) {
+            if (!observing.get()) {
+                msg.data?.let(AgentWireText::close)
+                return
+            }
             when (msg.what) {
                 AgentRuntimeWire.MSG_EVENT ->
                     AgentRuntimeWire.eventFromBundle(msg.data ?: return)?.let(delivery::event)
@@ -423,5 +543,17 @@ internal class AgentRuntimeClient(
 
     private companion object {
         const val RESPONSE_TIMEOUT_SECONDS = 8L
+    }
+}
+
+/** Tracks terminal transitions before the conflated channel can skip intermediate snapshots. */
+internal class ActiveRunsChangeTracker {
+    private var previousIds = emptySet<String>()
+    private var terminalRevision = 0L
+    fun update(snapshots: List<AgentRuntimeWire.ActiveRunSnapshot>): AgentRuntimeClient.ActiveRunsUpdate {
+        val nextIds = snapshots.mapTo(mutableSetOf()) { it.runId }
+        if ((previousIds - nextIds).isNotEmpty()) terminalRevision++
+        previousIds = nextIds
+        return AgentRuntimeClient.ActiveRunsUpdate(snapshots, terminalRevision)
     }
 }

@@ -29,6 +29,36 @@ import org.robolectric.annotation.Config
 @Config(sdk = [33, 36])
 class AgentRuntimeWireTest {
     @Test
+    fun legacyActiveRunSnapshotDefaultsInteractionTimeToCreation() {
+        val run = AgentRuntimeWire.ActiveRunSnapshot("legacy", "conversation", createdAt = 123L)
+        val bundle = AgentRuntimeWire.activeRunsToBundle(listOf(run))
+        bundle.getParcelableArrayList("active_runs", android.os.Bundle::class.java)!!.single().remove("interaction_at")
+        assertEquals(run, AgentRuntimeWire.activeRunsFromBundle(bundle).single())
+    }
+
+    @Test
+    fun presentationTransfersLongTextHandoffAndPreviewsWithoutInlineBinderBody() {
+        val text = "user text ".repeat(80_000)
+        val handoff = AgentRuntimeWire.EntryHandoff("h", AgentRuntimeWire.ETA_VOICE_HANDOFF_SOURCE,
+            AgentExternalArchivePayload(text, "key", "title").toJson())
+        val run = AgentRuntimeWire.RunPresentation(
+            AgentRuntimeWire.ActiveRunSnapshot("run", "conversation", createdAt = 7, interactionAt = 11),
+            handoff, text, listOf("data:image/png;base64," + "x".repeat(200_000)))
+        val bundle = AgentRuntimeWire.runPresentationToBundle("run", run, RuntimeEnvironment.getApplication().cacheDir)
+        try {
+            assertTrue(AgentWireText.hasDescriptor(bundle, "presentation_user_text"))
+            assertTrue(AgentWireText.hasDescriptor(bundle, "presentation_handoff"))
+            assertTrue(AgentWireText.hasDescriptor(bundle, "presentation_previews"))
+            assertFalse(bundle.containsKey("config"))
+            assertFalse(bundle.containsKey("api_key"))
+            val parcel = Parcel.obtain()
+            try { parcel.writeBundle(bundle); assertTrue(parcel.dataSize() < 16_384) } finally { parcel.recycle() }
+            assertEquals(run, AgentRuntimeWire.runPresentationFromBundle(bundle))
+            assertFalse(AgentWireText.hasDescriptor(bundle, "presentation_user_text"))
+        } finally { AgentWireText.close(bundle) }
+    }
+
+    @Test
     fun queuedSteeringIdentitySurvivesIpcAndDurableRecovery() {
         val event = AgentEvent.UserSupplementReceived(3, "调整方向", "queue-3")
         assertEquals(event, AgentRuntimeWire.eventFromBundle(AgentRuntimeWire.eventToBundle(event)))

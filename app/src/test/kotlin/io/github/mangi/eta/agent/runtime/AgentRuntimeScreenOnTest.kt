@@ -1,6 +1,7 @@
 package io.github.mangi.eta.agent.runtime
 
 import android.app.Application
+import android.app.NotificationManager
 import android.os.Looper
 import android.content.Context
 import android.view.WindowManager
@@ -26,6 +27,47 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [36], application = Application::class)
 class AgentRuntimeScreenOnTest {
+    @Test
+    fun activeRunSubscriberGetsInitialSnapshotAndOnlyChangedUpdates() {
+        val controller = Robolectric.buildService(AgentRuntimeService::class.java).create()
+        try {
+            val service = controller.get()
+            val received = mutableListOf<List<AgentRuntimeWire.ActiveRunSnapshot>>()
+            val subscriber = android.os.Messenger(object : android.os.Handler(Looper.getMainLooper()) {
+                override fun handleMessage(msg: android.os.Message) {
+                    if (msg.what == AgentRuntimeWire.MSG_ACTIVE_RUNS_CHANGED) {
+                        received += AgentRuntimeWire.activeRunsFromBundle(msg.data)
+                    }
+                }
+            })
+            val binder = service.onBind(android.content.Intent(AgentRuntimeWire.ACTION_BIND))!!
+            val server = android.os.Messenger(binder)
+            server.send(android.os.Message.obtain(null, AgentRuntimeWire.MSG_SUBSCRIBE_ACTIVE_RUNS).apply {
+                replyTo = subscriber
+            })
+            shadowOf(Looper.getMainLooper()).idle()
+            assertEquals(listOf(emptyList<AgentRuntimeWire.ActiveRunSnapshot>()), received)
+            service.registerRun("a", ownsGui = false)
+            service.invoke("publishExecutionState")
+            shadowOf(Looper.getMainLooper()).idle()
+            assertEquals("a", received.last().single().runId)
+            val count = received.size
+            service.invoke("publishExecutionState")
+            shadowOf(Looper.getMainLooper()).idle()
+            assertEquals(count, received.size)
+            server.send(android.os.Message.obtain(null, AgentRuntimeWire.MSG_UNSUBSCRIBE_ACTIVE_RUNS).apply {
+                replyTo = subscriber
+            })
+            shadowOf(Looper.getMainLooper()).idle()
+            service.registerRun("b", ownsGui = false)
+            service.invoke("publishExecutionState")
+            shadowOf(Looper.getMainLooper()).idle()
+            assertEquals(count, received.size)
+        } finally {
+            controller.destroy()
+        }
+    }
+
     @Test
     fun pauseResumeAndCancellationUpdateBothAppAndGuiWindowState() {
         val serviceController = Robolectric.buildService(AgentRuntimeService::class.java).create()
@@ -143,7 +185,7 @@ class AgentRuntimeScreenOnTest {
     }
 
     @Test
-    fun executionStatusFollowsGuiOwnershipWithoutGivingBackgroundRunsScreenControl() {
+    fun executionStatusFollowsRecentInteractionWithoutGivingSelectedBackgroundRunScreenControl() {
         val serviceController = Robolectric.buildService(AgentRuntimeService::class.java).create()
         try {
             val service = serviceController.get()
@@ -151,21 +193,45 @@ class AgentRuntimeScreenOnTest {
                 overlayState = overlayState.copy(status = AgentOverlayStatus.RunningTool("terminal_job"))
             }
             val guiCoordinator = service.field<GuiControlCoordinator>("guiControl")
-            service.assertExecutionStatus(background.overlayState.status, 1)
+            service.assertExecutionStatus(background.overlayState.status, 1, background.runId)
             assertNull(guiCoordinator.state.value.ownerRunId)
             assertFalse(AgentRuntimeService.keepScreenOn.value)
 
             val guiRun = service.registerRun("gui-run", ownsGui = false).apply {
                 overlayState = overlayState.copy(status = AgentOverlayStatus.GeneratingAnswer)
             }
+            val registry = service.field<RuntimeRunRegistry>("runs")
+            assertTrue(guiRun.snapshot().interactionAt > background.snapshot().interactionAt)
+            service.assertExecutionStatus(guiRun.overlayState.status, 2, guiRun.runId)
+            assertNull(guiCoordinator.state.value.ownerRunId)
+            assertFalse(AgentRuntimeService.keepScreenOn.value)
             val guiControl = guiCoordinator.openRun(guiRun.runId, guiRun.session.controller)
             guiControl.withAction { }
-            service.assertExecutionStatus(AgentOverlayStatus.GeneratingAnswer, 2)
+            service.assertExecutionStatus(guiRun.overlayState.status, 2, guiRun.runId)
             assertEquals(guiRun.runId, guiCoordinator.state.value.ownerRunId)
             assertTrue(AgentRuntimeService.keepScreenOn.value)
 
+            assertTrue(registry.preferRun(background.runId))
+            service.assertExecutionStatus(background.overlayState.status, 2, background.runId)
+            assertEquals(guiRun.runId, guiCoordinator.state.value.ownerRunId)
+            assertTrue(AgentRuntimeService.keepScreenOn.value)
+            assertFalse(background.session.controller.isPaused)
+            assertFalse(background.session.controller.isCancelled)
+            assertFalse(guiRun.session.controller.isCancelled)
+
+            assertTrue(registry.preferRun(guiRun.runId))
+            service.assertExecutionStatus(guiRun.overlayState.status, 2, guiRun.runId)
             guiControl.release()
-            service.assertExecutionStatus(background.overlayState.status, 2)
+            service.assertExecutionStatus(guiRun.overlayState.status, 2, guiRun.runId)
+            assertNull(guiCoordinator.state.value.ownerRunId)
+            assertFalse(AgentRuntimeService.keepScreenOn.value)
+
+            guiRun.session.complete(AgentRuntimeWire.RunResult(guiRun.runId, true, "完成"))
+            service.assertExecutionStatus(background.overlayState.status, 1, background.runId)
+            assertNull(guiCoordinator.state.value.ownerRunId)
+            assertFalse(AgentRuntimeService.keepScreenOn.value)
+            background.session.complete(AgentRuntimeWire.RunResult(background.runId, true, "完成"))
+            service.assertExecutionStatus(null, 0, null)
             assertNull(guiCoordinator.state.value.ownerRunId)
             assertFalse(AgentRuntimeService.keepScreenOn.value)
         } finally {
@@ -176,33 +242,75 @@ class AgentRuntimeScreenOnTest {
     @Test
     fun retainedGuiPauseDoesNotPauseBackgroundNotificationOrKeepFinishedRunsPromoted() {
         val serviceController = Robolectric.buildService(AgentRuntimeService::class.java).create()
+        val terminalLeaseId = "terminal:screen-status"
+        var executionController: org.robolectric.android.controller.ServiceController<AgentExecutionService>? = null
         try {
             val service = serviceController.get()
+            assertTrue(AgentExecutionService.acquire(service, terminalLeaseId) {})
+            executionController = Robolectric.buildService(AgentExecutionService::class.java).create()
             val guiRun = service.registerRun("paused-run")
             service.invokeForRun("requestPause", guiRun.runId)
+            service.assertExecutionStatus(AgentOverlayStatus.Paused, 1, guiRun.runId)
+            val guiCoordinator = service.field<GuiControlCoordinator>("guiControl")
+            assertEquals(guiRun.runId, guiCoordinator.state.value.ownerRunId)
+            assertTrue(guiCoordinator.state.value.userPaused)
+            assertTrue(guiRun.session.controller.isPaused)
+            assertFalse(AgentRuntimeService.keepScreenOn.value)
             val background = service.registerRun("background-run", ownsGui = false).apply {
                 overlayState = overlayState.copy(status = AgentOverlayStatus.RunningTool("terminal_job"))
             }
-            service.assertExecutionStatus(AgentOverlayStatus.Paused, 2)
+            assertTrue(background.snapshot().interactionAt > guiRun.snapshot().interactionAt)
+            service.assertExecutionStatus(background.overlayState.status, 2, background.runId)
+            val selectedNotification = service.getSystemService(NotificationManager::class.java)
+                .activeNotifications.single().notification
+            assertEquals(background.runId, shadowOf(selectedNotification.contentIntent).savedIntent
+                .getStringExtra(io.github.mangi.eta.ui.MainActivity.EXTRA_RUN_ID))
+            assertEquals(guiRun.runId, guiCoordinator.state.value.ownerRunId)
+            assertTrue(guiCoordinator.state.value.userPaused)
+            assertTrue(guiRun.session.controller.isPaused)
+            assertFalse(background.session.controller.isPaused)
+            assertFalse(background.session.controller.isCancelled)
+            assertEquals(AgentOverlayPhase.PAUSED, service.field<MutableState<AgentOverlayState>>("state").value.phase)
+            assertFalse(AgentRuntimeService.keepScreenOn.value)
 
             guiRun.session.controller.cancel()
             guiRun.session.complete(AgentRuntimeWire.RunResult(guiRun.runId, true, "完成"))
-            service.assertExecutionStatus(background.overlayState.status, 1)
-            val guiCoordinator = service.field<GuiControlCoordinator>("guiControl")
+            service.assertExecutionStatus(background.overlayState.status, 1, background.runId)
             assertTrue(guiCoordinator.state.value.userPaused)
             assertNull(guiCoordinator.state.value.ownerRunId)
             assertEquals(AgentOverlayPhase.PAUSED, service.field<MutableState<AgentOverlayState>>("state").value.phase)
             assertFalse(AgentRuntimeService.keepScreenOn.value)
 
             background.session.complete(AgentRuntimeWire.RunResult(background.runId, true, "完成"))
-            service.assertExecutionStatus(null, 0)
+            service.assertExecutionStatus(null, 0, null)
             assertTrue(guiCoordinator.state.value.userPaused)
+            assertNull(guiCoordinator.state.value.ownerRunId)
+            assertFalse(AgentRuntimeService.keepScreenOn.value)
+            val notification = service.getSystemService(NotificationManager::class.java)
+                .activeNotifications.single().notification
+            assertFalse(notification.extras.getBoolean("android.requestPromotedOngoing"))
+            assertFalse(notification.extras.containsKey("android.shortCriticalText"))
+            assertTrue(notification.actions.isNullOrEmpty())
+            assertFalse(shadowOf(notification.contentIntent).savedIntent
+                .hasExtra(io.github.mangi.eta.ui.MainActivity.EXTRA_RUN_ID))
+            val leases = AgentExecutionService::class.java.getDeclaredField("leases").apply {
+                isAccessible = true
+            }.get(null) as ExecutionLeaseRegistry
+            assertEquals(1, leases.count())
+            assertTrue(leases.token(terminalLeaseId) != null)
         } finally {
+            AgentExecutionService.release(terminalLeaseId)
             serviceController.destroy()
+            shadowOf(Looper.getMainLooper()).idle()
+            executionController?.destroy()
         }
     }
 
-    private fun AgentRuntimeService.assertExecutionStatus(status: AgentOverlayStatus?, activeRunCount: Int) {
+    private fun AgentRuntimeService.assertExecutionStatus(
+        status: AgentOverlayStatus?,
+        activeRunCount: Int,
+        selectedRunId: String?,
+    ) {
         invoke("publishExecutionState")
         shadowOf(Looper.getMainLooper()).idle()
         assertEquals(status, AgentExecutionService::class.java.getDeclaredField("runStatus").apply {
@@ -211,6 +319,12 @@ class AgentRuntimeScreenOnTest {
         assertEquals(activeRunCount, AgentExecutionService::class.java.getDeclaredField("activeRunCount").apply {
             isAccessible = true
         }.getInt(null))
+        @Suppress("UNCHECKED_CAST")
+        val snapshots = AgentExecutionService::class.java.getDeclaredField("activeRunSnapshots").apply {
+            isAccessible = true
+        }.get(null) as List<AgentRuntimeWire.ActiveRunSnapshot>
+        assertEquals(activeRunCount, snapshots.size)
+        assertEquals(selectedRunId, RuntimeNotificationSelection.select(snapshots)?.runId)
     }
 
     private fun AgentRuntimeService.registerRun(runId: String, ownsGui: Boolean = true): RuntimeRunRegistry.Run {

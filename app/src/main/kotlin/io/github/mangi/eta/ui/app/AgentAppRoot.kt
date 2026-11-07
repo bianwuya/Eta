@@ -98,6 +98,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.TextField
+import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.layout.DialogDefaults
 import top.yukonga.miuix.kmp.nav.core.NavDisplay
 import top.yukonga.miuix.kmp.nav.core.NavDisplayEffects
@@ -112,6 +114,10 @@ import top.yukonga.miuix.kmp.window.WindowDialog
 @Composable
 fun AgentAppRoot(
     assistantConversationKey: String? = null,
+    openActiveTasks: Boolean = false,
+    onActiveTasksOpened: () -> Unit = {},
+    requestedRunId: String? = null,
+    onRequestedRunOpened: () -> Unit = {},
     requestedConversationId: String? = null,
     onRequestedConversationOpened: () -> Unit = {},
     requestedArchivedConversation: ArchivedConversationRequest? = null,
@@ -220,6 +226,26 @@ fun AgentAppRoot(
         RuntimeConfigRepository.ensureDefaults(EtaApp.serviceInstance)
     }
 
+    LaunchedEffect(openActiveTasks) {
+        if (openActiveTasks) {
+            navigator.popToHome()
+            conversationPaneOpen = true
+            onActiveTasksOpened()
+        }
+    }
+
+    LaunchedEffect(requestedRunId, agentState.conversationPaneState.tasksConnected) {
+        val runId = requestedRunId ?: return@LaunchedEffect
+        if (!agentState.conversationPaneState.tasksConnected) return@LaunchedEffect
+        if (agentState.openRunConversation(runId)) {
+            conversationPaneOpen = false
+            navigator.popToHome()
+        } else {
+            Toast.makeText(context, resources.getString(R.string.task_old_notification), Toast.LENGTH_SHORT).show()
+        }
+        onRequestedRunOpened()
+    }
+
     LaunchedEffect(requestedConversationId) {
         val conversationId = requestedConversationId ?: return@LaunchedEffect
         agentState.selectConversation(conversationId)
@@ -234,6 +260,8 @@ fun AgentAppRoot(
         if (agentState.openArchivedConversation(request.source, request.conversationKey)) {
             conversationPaneOpen = false
             navigator.popToHome()
+        } else {
+            Toast.makeText(context, resources.getString(R.string.task_not_archived), Toast.LENGTH_SHORT).show()
         }
         onArchivedConversationOpened()
     }
@@ -322,6 +350,14 @@ fun AgentAppRoot(
             onRefreshKimiWeb = appViewModel::refreshKimiWeb,
             onOpenBrowser = { openConversationBrowser() },
             onSelectConversation = { conversationId -> selectConversation(conversationId) },
+            onSelectActiveTask = { task ->
+                uiScope.launch {
+                    if (agentState.openRunConversation(task.runId, task.source, task.conversationKey, task.conversationId)) {
+                        conversationPaneOpen = false
+                        navigator.popToHome()
+                    } else Toast.makeText(context, resources.getString(R.string.task_not_available), Toast.LENGTH_SHORT).show()
+                }
+            },
             onConversationRename = { conversation ->
                 conversationRenameTarget = conversation
             },
@@ -389,7 +425,14 @@ fun AgentAppRoot(
         ) {
             entry<AppRoute.Home>(swipeDismiss = swipeDismiss) {
                 RoutedShell(route = AppRoute.Home) {
+                    Column(Modifier.fillMaxSize()) {
+                        agentState.selectedRunStatus?.let { status ->
+                            Text(text = status, style = MiuixTheme.textStyles.footnote1,
+                                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
+                        }
                     AgentHomeScreen(
+                        modifier = Modifier.weight(1f),
                         state = agentState.homeState,
                         modelPickerState = agentState.modelPickerState,
                         conversationKey = agentState.conversationPaneState.selectedConversationId,
@@ -445,6 +488,7 @@ fun AgentAppRoot(
                         historyLoadState = agentState.historyLoadState,
                         isDrawerOpen = conversationPaneOpen,
                     )
+                    }
                 }
             }
             entry<AppRoute.Browser> { route ->

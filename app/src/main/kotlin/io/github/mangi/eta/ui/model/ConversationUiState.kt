@@ -7,6 +7,19 @@ data class ConversationPaneUiState(
     val conversations: List<ConversationSummaryUi>,
     val selectedConversationId: String?,
     val searchQuery: String,
+    val activeTasks: List<ActiveTaskUi> = emptyList(),
+    val tasksConnected: Boolean = false,
+)
+
+@Immutable
+data class ActiveTaskUi(
+    val runId: String,
+    val conversationId: String,
+    val source: String,
+    val conversationKey: String,
+    val title: String,
+    val status: String,
+    val createdAt: Long,
 )
 
 @Immutable
