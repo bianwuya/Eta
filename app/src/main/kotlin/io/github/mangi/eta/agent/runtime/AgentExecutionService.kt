@@ -66,7 +66,7 @@ internal class AgentExecutionService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP_RUN) {
             val runId = intent.getStringExtra(EXTRA_RUN_ID).orEmpty()
-            val stop = if (runId.isBlank()) null else leases.take("run:$runId")
+            val stop = if (runId.isBlank()) null else leases.requestStop("run:$runId")
             if (stop != null) stopQueue.submit(listOf(stop)) {
                 mainHandler.post { if (instance === this) refreshNotification() }
             }
@@ -133,7 +133,7 @@ internal class AgentExecutionService : Service() {
         val builder = Notification.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(when {
-                run != null -> run.title.ifBlank { getString(R.string.execution_title) }
+                run != null -> notificationRunTitle(run)
                 activeRunSnapshots.size > 1 -> getString(R.string.task_notification_multiple, activeRunSnapshots.size)
                 else -> getString(R.string.execution_title)
             })
@@ -160,6 +160,18 @@ internal class AgentExecutionService : Service() {
             builder.extras.putBoolean("android.requestPromotedOngoing", true)
         }
         return builder.build()
+    }
+
+    private fun notificationRunTitle(run: AgentRuntimeWire.ActiveRunSnapshot): String {
+        // Presentation titles can be raw prompts or filenames; never send them to system UI.
+        val label = when (run.handoffSource) {
+            AgentRuntimeWire.ETA_VOICE_HANDOFF_SOURCE -> getString(R.string.task_source_assistant)
+            AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE -> getString(R.string.task_source_chat)
+            else -> getString(R.string.task_source_external)
+        }
+        val id = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(run.runId.toByteArray(Charsets.UTF_8)).take(4).joinToString("") { "%02x".format(it) }
+        return "$label · $id"
     }
 
     /** 状态栏胶囊约 7 个字符可完整显示；更长时只取动作，工具名留在展开态。 */
@@ -204,7 +216,7 @@ internal class AgentExecutionService : Service() {
                 val previousRuns = this.activeRunSnapshots
                 this.activeRunSnapshots = snapshots
                 val count = if (activeRunCount > 0) activeRunCount else leases.count()
-                val text = executionText(context, status, count) + snapshots.joinToString { "${it.runId}:${it.title}:${it.guiStatus}" }
+                val text = executionText(context, status, count) + snapshots.joinToString { "${it.runId}:${it.handoffSource}:${it.guiStatus}" }
                 if (text == publishedStatusText) return@post
                 publishedStatusText = text
                 val critical = previousCount != activeRunCount ||

@@ -1,5 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <resources>
+    <string name="task_source_assistant">Assistant task</string>
+    <string name="task_source_chat">Chat task</string>
+    <string name="task_source_external">External task</string>
     <string name="task_connected">Connecting to tasks</string>
     <string name="task_section">In progress · %1$d</string>
     <string name="task_gui_active">Controlling phone</string>

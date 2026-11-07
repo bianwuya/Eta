@@ -36,7 +36,7 @@ class AgentExecutionServiceTest {
         val controller = Robolectric.buildService(AgentExecutionService::class.java).create()
         try {
             val notification = requireNotNull(shadowOf(controller.get()).lastForegroundNotification)
-            assertEquals("私人标题", notification.extras.getString(Notification.EXTRA_TITLE))
+            assertFalse(notification.extras.getString(Notification.EXTRA_TITLE).orEmpty().contains("私人标题"))
             assertEquals(Notification.VISIBILITY_PRIVATE, notification.visibility)
             assertNotNull(notification.publicVersion)
             assertFalse(notification.publicVersion.extras.getString(Notification.EXTRA_TITLE).orEmpty().contains("私人标题"))
@@ -47,6 +47,33 @@ class AgentExecutionServiceTest {
             assertEquals("notification-single", stopIntent.data?.lastPathSegment)
             val openIntent = shadowOf(notification.contentIntent).savedIntent
             assertEquals("notification-single", openIntent.getStringExtra(io.github.mangi.eta.ui.MainActivity.EXTRA_RUN_ID))
+        } finally {
+            AgentExecutionService.release(leaseId)
+            AgentExecutionService.updateRunStatus(context, null, 0)
+            shadowOf(Looper.getMainLooper()).idle()
+            controller.destroy()
+        }
+    }
+
+    @Test
+    fun notificationNeverUsesPromptDerivedTitles() {
+        val context = RuntimeEnvironment.getApplication()
+        val leaseId = "run:privacy"
+        assertTrue(AgentExecutionService.acquire(context, leaseId) {})
+        val controller = Robolectric.buildService(AgentExecutionService::class.java).create()
+        try {
+            val method = AgentExecutionService::class.java.getDeclaredMethod("notification").apply { isAccessible = true }
+            listOf("短私密提示", "https://example.invalid/?token=secret", "/storage/private/file.txt", "token=secret").forEach { prompt ->
+                val run = AgentRuntimeWire.ActiveRunSnapshot("privacy", "conversation", title = prompt,
+                    handoffSource = AgentRuntimeWire.ETA_VOICE_HANDOFF_SOURCE)
+                AgentExecutionService.updateRunStatus(context, AgentOverlayStatus.Reasoning, 1, listOf(run))
+                shadowOf(Looper.getMainLooper()).idle()
+                val notification = method.invoke(controller.get()) as Notification
+                val title = notification.extras.getString(Notification.EXTRA_TITLE).orEmpty()
+                val text = notification.extras.getString(Notification.EXTRA_TEXT).orEmpty()
+                assertFalse(title.contains(prompt))
+                assertFalse(text.contains(prompt))
+            }
         } finally {
             AgentExecutionService.release(leaseId)
             AgentExecutionService.updateRunStatus(context, null, 0)

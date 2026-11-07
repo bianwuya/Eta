@@ -1,5 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <resources>
+    <string name="task_source_assistant">助理任務</string>
+    <string name="task_source_chat">聊天任務</string>
+    <string name="task_source_external">外部任務</string>
     <string name="task_connected">任務連線中</string>
     <string name="task_section">進行中 · %1$d</string>
     <string name="task_gui_active">正在操作手機</string>
