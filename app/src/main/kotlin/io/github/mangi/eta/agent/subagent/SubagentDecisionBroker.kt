@@ -83,16 +83,34 @@ internal class SubagentDecisionBroker(
                 now() >= stored.optLong("deadline") -> "timed_out"
                 else -> "interrupted" // a controller input woke the waiter without an answer
             }
-            return AgentModelClient.ToolResult(finishWait(requestId, terminal).toString())
+            val result = finishWait(requestId, terminal)
+            if (result.optString("status") in setOf("answer", "refuse", "revise", "cancel")) {
+                // Keep a committed result even if cancellation races after this point.
+                child.protectCommittedDecisionUntilToolBatch()
+            }
+            return AgentModelClient.ToolResult(result.toString())
         } catch (failure: java.util.concurrent.CancellationException) {
-            try { finishWait(requestId, "cancelled") } catch (storageFailure: Exception) { failure.addSuppressed(storageFailure) }
-            throw failure
+            return committedDecisionOrThrow(requestId, child, failure)
         } catch (failure: AgentRunCancelledException) {
-            try { finishWait(requestId, "cancelled") } catch (storageFailure: Exception) { failure.addSuppressed(storageFailure) }
-            throw failure
+            return committedDecisionOrThrow(requestId, child, failure)
         } catch (_: Exception) {
             return error("ASK_STORAGE_UNKNOWN", "Response or terminal state could not be confirmed; do not replay.")
         } finally { waiters.remove(requestId, waiter) }
+    }
+
+    /** Cancellation may wake after a response committed. Preserve that exact decision and
+     * stop at the completed tool-batch boundary; cancellation still prevents later work. */
+    private fun committedDecisionOrThrow(id: String, child: AgentRunController, failure: RuntimeException): AgentModelClient.ToolResult {
+        val record = try { finishWait(id, "cancelled") } catch (storageFailure: Exception) {
+            failure.addSuppressed(storageFailure)
+            throw failure
+        }
+        if (record.optString("status") in setOf("answer", "refuse", "revise", "cancel")) {
+            child.protectCommittedDecisionUntilToolBatch()
+            child.requestStopAfterToolBatch()
+            return AgentModelClient.ToolResult(record.toString())
+        }
+        throw failure
     }
 
     private fun finishWait(id: String, terminal: String?): JSONObject = synchronized(lock) {
@@ -113,6 +131,8 @@ internal class SubagentDecisionBroker(
         val text = args.opt("response") as? String ?: ""
         if (action !in setOf("answer", "refuse", "revise", "cancel") || text.length > 4000 ||
             (action != "cancel" && text.isBlank())) return error("ASK_INVALID_ARGUMENTS")
+        var transitioned = false
+        var wake: Waiter? = null
         val result = try {
             // Lock order matches controller pause propagation: parent -> child -> broker.
             // Commit and cancellation/revision therefore have a single first-terminal order.
@@ -140,6 +160,7 @@ internal class SubagentDecisionBroker(
                             }
                             if (now() >= record.optLong("deadline")) {
                                 record.put("status", "timed_out").put("ok", false)
+                                transitioned = true
                                 return@accessRequests problem("ASK_REQUEST_EXPIRED")
                             }
                             if (closed || parentState != null || childState != null || waiters[id] !== waiter) {
@@ -149,18 +170,23 @@ internal class SubagentDecisionBroker(
                                     else -> "interrupted"
                                 }
                                 record.put("status", state).put("ok", false)
+                                transitioned = true
                                 return@accessRequests problem("ASK_REQUEST_TERMINAL")
                             }
                             record.put("status", action).put("response", text)
+                            transitioned = true
                             JSONObject().put("ok", true).put("duplicate", false)
                         }
-                        if (committed.optBoolean("ok")) waiter.ready.set(true)
+                        if (transitioned || committed.optBoolean("ok")) {
+                            waiter.ready.set(true)
+                            wake = waiter
+                        }
                         committed
                     }
                 }
             }
         } catch (_: Exception) { return error("ASK_STORAGE_UNKNOWN", "Response outcome unknown; inspect before retrying the same request.") }
-        if (result.optBoolean("ok")) waiters[id]?.let { it.ready.set(true); it.controller.signalWorkAvailable() }
+        wake?.controller?.signalWorkAvailable()
         return AgentModelClient.ToolResult(result.toString())
     }
 

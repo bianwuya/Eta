@@ -21,12 +21,17 @@ import org.junit.Test
 class SubagentDecisionIntegrationTest {
     private class DecisionMemory : SubagentDecisionBroker.Storage {
         var records = JSONArray()
+        val pendingStored = CountDownLatch(1)
+        @Volatile var afterCommit: (() -> Unit)? = null
         override fun accessRequests(operation: (JSONArray) -> JSONObject): JSONObject = synchronized(this) {
             val copy = JSONArray(records.toString())
             val result = operation(copy)
             records = copy
+            if ((0 until copy.length()).any { copy.getJSONObject(it).optString("status") == "pending" }) pendingStored.countDown()
+            afterCommit?.invoke()
             result
         }
+        fun snapshot(): JSONArray = synchronized(this) { JSONArray(records.toString()) }
     }
     private fun decisionEnvelope(text: String): List<JSONObject> {
         val array = JSONArray(text.substring(text.indexOf('[')))
@@ -225,11 +230,16 @@ class SubagentDecisionIntegrationTest {
                     6 -> {
                         check(childFinished.await(4, TimeUnit.SECONDS))
                         repeat(2) { checkNotNull(store.finished.poll(4, TimeUnit.SECONDS)) }
-                        answer("waiting for child reports")
+                        val delivered = (0 until request.messages.length()).map(request.messages::getJSONObject)
+                            .count { it.optString("role") == "assistant" && it.optString("content").startsWith("[Eta 子代理最终报告") }
+                        answer(if (delivered == 2) "finished" else "waiting for child reports")
                     }
-                    else -> if (parentRound.get() > 10) error("parent loop did not terminate")
-                        else if (request.messages.toString().contains("full_report_ref:")) answer("finished")
-                        else answer("waiting for child reports")
+                    else -> {
+                        check(parentRound.get() <= 10) { "parent loop did not terminate" }
+                        val delivered = (0 until request.messages.length()).map(request.messages::getJSONObject)
+                            .count { it.optString("role") == "assistant" && it.optString("content").startsWith("[Eta 子代理最终报告") }
+                        answer(if (delivered == 2) "finished" else "waiting for child reports")
+                    }
                 }
             }
             try {
@@ -247,6 +257,9 @@ class SubagentDecisionIntegrationTest {
                     sessionId = "stable-session-$signedKind", operationId = "parent-$signedKind")
                 failure.get()?.let { throw AssertionError("provider callback failed", it) }
                 assertEquals("finished", result.content)
+                val deliveredReports = result.transcript.filter { it.messageId.startsWith("subagent-report-") }
+                assertEquals(2, deliveredReports.size)
+                assertEquals(2, deliveredReports.map { it.messageId }.distinct().size)
                 assertEquals(0L, childFinished.count)
                 assertTrue("provider loop must be bounded", parentRound.get() <= 10)
             } finally {
@@ -303,11 +316,7 @@ class SubagentDecisionIntegrationTest {
         }
     }
 
-    @Test fun realChildPlanGateBlocksAskAndExplicitProfilePermissionsRemainEffective() {
-        val base = SubagentProfile.resolve("decision-fixture", emptyList(), "fixture", listOf("ask_parent"))
-        assertTrue(base.isToolAllowed("ask_parent"))
-        assertFalse(base.copy(disallowedTools = setOf("ask_parent")).isToolAllowed("ask_parent"))
-        assertFalse(base.copy(explicitTools = setOf("read_file")).isToolAllowed("ask_parent"))
+    @Test fun realChildPlanGateBlocksExplicitlyAllowedAsk() {
         val parent = AgentRunController(); val gate = io.github.mangi.eta.local.planmode.PlanRunGate("fixture", "parent", parent)
         val memory = DecisionMemory()
         val broker = SubagentDecisionBroker("parent", parent, memory, timeoutMs = 3000)
@@ -340,6 +349,221 @@ class SubagentDecisionIntegrationTest {
             assertTrue(broker.pendingBatch().isEmpty())
             assertEquals(0, memory.records.length())
         } finally { gate.end(); broker.close(); parent.cancel(); failure.get()?.let { throw AssertionError("provider callback failed", it) } }
+    }
+
+    private fun paired(request: ProviderRequest, id: String): JSONObject =
+        (0 until request.messages.length()).map(request.messages::getJSONObject)
+            .single { it.optString("role") == "tool" && it.optString("tool_call_id") == id }
+
+    private fun staleResponse(record: JSONObject) = AgentModelClient.ToolCall("late-parent", "subagent_respond", JSONObject()
+        .put("request_id", record.getString("request_id")).put("task_id", record.getString("task_id"))
+        .put("invocation_id", record.getString("invocation_id")).put("tool_call_id", record.getString("tool_call_id"))
+        .put("action", "answer").put("response", "too late").toString())
+
+    /** Actual Executor and AgentLoop, with a completed effect before the critical request. */
+    private fun pendingChildLifecycle(terminal: String) {
+        val parent = AgentRunController()
+        val memory = DecisionMemory()
+        val broker = SubagentDecisionBroker("lifecycle", parent, memory, timeoutMs = 10000)
+        val key = "lifecycle-${UUID.randomUUID()}"
+        val callbackFailure = AtomicReference<Throwable?>()
+        val childController = AtomicReference<AgentRunController>()
+        val childId = AtomicReference<String>()
+        val rounds = AtomicInteger()
+        val effects = AtomicInteger()
+        val completionBoundary = CountDownLatch(1)
+        val releaseCompletion = CountDownLatch(1)
+        val model = object : AgentProviderClient {
+            override val id = "fixture"
+            override val capabilities = ProviderCapabilities(EndpointKind.CHAT_COMPLETIONS, true, true, true, true, false, false)
+            override fun complete(request: ProviderRequest, runController: AgentRunController,
+                onEvent: (ProviderEvent) -> Unit): ProviderResponse = try {
+                childController.compareAndSet(null, runController)
+                when (rounds.incrementAndGet()) {
+                    1 -> tools(call("effect-call", "fixture_effect", JSONObject()))
+                    2 -> {
+                        assertEquals("EFFECT_DONE", paired(request, "effect-call").getString("content"))
+                        tools(call("real-pending-ask", "ask_parent", JSONObject().put("request_id", "pending")
+                            .put("question", "need decision")))
+                    }
+                    3 -> {
+                        check(terminal != "parent-cancel") { "cancelled parent must not cause another provider round" }
+                        assertEquals("EFFECT_DONE", paired(request, "effect-call").getString("content"))
+                        val result = JSONObject(paired(request, "real-pending-ask").getString("content"))
+                        assertEquals(if (terminal == "revise") "interrupted" else "parent_unavailable", result.getString("status"))
+                        val messages = (0 until request.messages.length()).map(request.messages::getJSONObject)
+                        val askResultIndex = messages.indexOfFirst { it.optString("role") == "tool" && it.optString("tool_call_id") == "real-pending-ask" }
+                        if (terminal == "revise") {
+                            val correctionIndex = messages.indexOfFirst { it.optString("role") == "assistant" && it.optString("content").contains("REVISED_OBJECTIVE") }
+                            assertTrue("correction must be appended at the boundary after original tool result", correctionIndex > askResultIndex)
+                        }
+                        completionBoundary.countDown()
+                        check(releaseCompletion.await(4, TimeUnit.SECONDS))
+                        answer("task_status: blocked\nsummary: stopped\nevidence: effect completed\nremaining: -\nnext_action: -")
+                    }
+                    else -> error("unexpected provider continuation")
+                }
+            } catch (failure: Throwable) { callbackFailure.compareAndSet(null, failure); throw failure }
+        }
+        val schema = AgentToolSchema.function("fixture_effect", "fixture side effect", JSONObject().put("type", "object"))
+        val worker = SubagentExecutor(conversationKey = key, parentController = parent, parentRunId = "lifecycle",
+            configProvider = { config }, capabilitiesProvider = { AgentToolCapabilities(rootAvailable = false) },
+            baseToolExecutor = AgentModelClient.ToolExecutor { c ->
+                try {
+                    assertEquals("effect-call", c.id)
+                    check(effects.incrementAndGet() == 1) { "completed effect replayed" }
+                    AgentModelClient.ToolResult("EFFECT_DONE")
+                } catch (failure: Throwable) { callbackFailure.compareAndSet(null, failure); throw failure }
+            }, skillContext = SkillContext.EMPTY, memoryContext = AgentMemoryContext.DISABLED,
+            mcpTools = JSONArray().put(schema), executionContext = null, onProgress = {}, decisionBroker = broker,
+            providerFactory = { model })
+        val pool = java.util.concurrent.Executors.newSingleThreadExecutor()
+        try {
+            val launch = AgentModelClient.ToolCall("launch", "subagent", JSONObject().put("prompt", "task")
+                .put("description", "task").put("subagent_type", "decision-fixture")
+                .put("tools", JSONArray(listOf("fixture_effect", "ask_parent"))).toString())
+            val future = pool.submit(java.util.concurrent.Callable {
+                worker.execute(1, launch, decisionTaskId = "task") { id, _ -> childId.set(id) }
+            })
+            assertTrue("ask must be durably stored before control change", memory.pendingStored.await(4, TimeUnit.SECONDS))
+            val record = memory.snapshot().getJSONObject(0)
+            assertEquals("pending", record.getString("status"))
+            when (terminal) {
+                "revise" -> assertTrue(checkNotNull(childController.get()).steerFromParent("REVISED_OBJECTIVE"))
+                "close" -> broker.close()
+                "parent-cancel" -> parent.cancel()
+                else -> error("bad test mode")
+            }
+            if (terminal != "parent-cancel") {
+                assertTrue("child must reach a complete tool boundary", completionBoundary.await(4, TimeUnit.SECONDS))
+                val stale = JSONObject(broker.respond(staleResponse(record)).content)
+                assertFalse(stale.optBoolean("ok"))
+                assertEquals("ASK_REQUEST_TERMINAL", stale.getString("code"))
+                releaseCompletion.countDown()
+                future.get(4, TimeUnit.SECONDS)
+                assertEquals(3, rounds.get())
+            } else {
+                try { future.get(4, TimeUnit.SECONDS); fail("parent cancellation must interrupt the real child") }
+                catch (failure: java.util.concurrent.ExecutionException) {
+                    assertTrue(failure.cause is io.github.mangi.eta.agent.runtime.AgentRunCancelledException)
+                }
+                assertEquals(2, rounds.get())
+                val stale = JSONObject(broker.respond(staleResponse(record)).content)
+                assertFalse(stale.optBoolean("ok"))
+                assertEquals("ASK_REQUEST_TERMINAL", stale.getString("code"))
+            }
+            callbackFailure.get()?.let { throw AssertionError("provider callback failed", it) }
+            assertEquals(1, effects.get())
+            assertEquals(when (terminal) { "revise" -> "interrupted"; "close" -> "parent_unavailable"; else -> "cancelled" },
+                memory.snapshot().getJSONObject(0).getString("status"))
+            val history = checkNotNull(SubagentSessionStore.get(key, childId.get())).history
+            assertEquals(1, history.count { it.role == "tool" && it.toolCallId == "effect-call" && it.content == "EFFECT_DONE" })
+            val askResults = history.filter { it.role == "tool" && it.toolCallId == "real-pending-ask" }
+            assertEquals(1, askResults.size)
+            if (terminal == "parent-cancel")
+                assertEquals("TOOL_INTERRUPTED", JSONObject(askResults.single().content).getString("code"))
+        } finally {
+            releaseCompletion.countDown(); broker.close(); parent.cancel(); pool.shutdownNow()
+            callbackFailure.get()?.let { throw AssertionError("provider callback failed", it) }
+        }
+    }
+
+    @Test fun pendingAskYieldsToParentRevisionWithoutReplayingCompletedEffect() = pendingChildLifecycle("revise")
+
+    @Test fun pendingAskTerminatesOnBrokerCloseOrActualParentCancellation() {
+        pendingChildLifecycle("close")
+        pendingChildLifecycle("parent-cancel")
+    }
+
+    @Test fun committedDecisionThenCancellationPreservesWholeBatchAndRunsNoLaterEffectOrModel() {
+        val parent = AgentRunController(); val memory = DecisionMemory()
+        val broker = SubagentDecisionBroker("commit-race", parent, memory, timeoutMs = 10000)
+        val child = AtomicReference<AgentRunController>(); val childId = AtomicReference<String>()
+        val failure = AtomicReference<Throwable?>(); val rounds = AtomicInteger(); val effects = AtomicInteger()
+        val key = "commit-race-${UUID.randomUUID()}"
+        val model = object : AgentProviderClient {
+            override val id = "fixture"
+            override val capabilities = ProviderCapabilities(EndpointKind.CHAT_COMPLETIONS, true, true, true, true, false, false)
+            override fun complete(request: ProviderRequest, runController: AgentRunController,
+                onEvent: (ProviderEvent) -> Unit): ProviderResponse = try {
+                child.set(runController)
+                check(rounds.incrementAndGet() == 1) { "a cancelled child must not call the provider again" }
+                tools(call("committed-ask", "ask_parent", JSONObject().put("request_id", "race").put("question", "blocker")))
+                    .also { it.assistantMessage.getJSONArray("tool_calls").put(call("later-effect", "fixture_never", JSONObject())) }
+            } catch (t: Throwable) { failure.compareAndSet(null, t); throw t }
+        }
+        val worker = SubagentExecutor(conversationKey = key, parentController = parent, parentRunId = "commit-race",
+            configProvider = { config }, capabilitiesProvider = { AgentToolCapabilities(rootAvailable = false) },
+            baseToolExecutor = AgentModelClient.ToolExecutor { effects.incrementAndGet(); error("later side effect must not run") },
+            skillContext = SkillContext.EMPTY, memoryContext = AgentMemoryContext.DISABLED,
+            mcpTools = JSONArray().put(AgentToolSchema.function("fixture_never", "must not execute", JSONObject().put("type", "object"))),
+            executionContext = null, onProgress = {}, decisionBroker = broker, providerFactory = { model })
+        val pool = java.util.concurrent.Executors.newSingleThreadExecutor()
+        try {
+            val launch = AgentModelClient.ToolCall("launch", "subagent", JSONObject().put("prompt", "task").put("description", "task")
+                .put("subagent_type", "decision-fixture").put("tools", JSONArray(listOf("ask_parent", "fixture_never"))).toString())
+            val future = pool.submit(java.util.concurrent.Callable {
+                worker.execute(1, launch, decisionTaskId = "race-task") { id, _ -> childId.set(id) }
+            })
+            assertTrue(memory.pendingStored.await(4, TimeUnit.SECONDS))
+            val record = memory.snapshot().getJSONObject(0)
+            memory.afterCommit = {
+                if (memory.records.getJSONObject(0).optString("status") == "answer") {
+                    memory.afterCommit = null
+                    checkNotNull(child.get()).cancel()
+                }
+            }
+            val response = staleResponse(record).let { c -> c.copy(argumentsJson = JSONObject(c.argumentsJson).put("response", "committed-first").toString()) }
+            assertTrue(JSONObject(broker.respond(response).content).getBoolean("ok"))
+            try { future.get(4, TimeUnit.SECONDS); fail("later cancellation must still stop this task") }
+            catch (t: java.util.concurrent.ExecutionException) {
+                assertTrue(t.cause is io.github.mangi.eta.agent.runtime.AgentRunCancelledException)
+            }
+            failure.get()?.let { throw AssertionError("provider callback failed", it) }
+            val history = checkNotNull(SubagentSessionStore.get(key, childId.get())).history
+            val ask = history.filter { it.role == "tool" && it.toolCallId == "committed-ask" }
+            assertEquals(1, ask.size)
+            assertEquals("committed-first", JSONObject(ask.single().content).getString("response"))
+            val skipped = history.filter { it.role == "tool" && it.toolCallId == "later-effect" }
+            assertEquals(1, skipped.size)
+            assertEquals("ASK_PARENT_CANCELLED", JSONObject(skipped.single().content).getString("code"))
+            assertEquals(0, effects.get()); assertEquals(1, rounds.get())
+        } finally {
+            memory.afterCommit = null; broker.close(); parent.cancel(); pool.shutdownNow()
+            failure.get()?.let { throw AssertionError("provider callback failed", it) }
+        }
+    }
+
+    @Test fun explicitChildAllowlistExcludingAskRejectsRealAttemptWithoutStorage() {
+        val parent = AgentRunController(); val memory = DecisionMemory()
+        val broker = SubagentDecisionBroker("allowlist", parent, memory, timeoutMs = 5000)
+        val failure = AtomicReference<Throwable?>(); val rounds = AtomicInteger()
+        val model = provider(failure) { request ->
+            when (rounds.incrementAndGet()) {
+                1 -> {
+                    assertFalse(request.tools.toString().contains("\"name\":\"ask_parent\""))
+                    tools(call("excluded-ask", "ask_parent", JSONObject().put("request_id", "excluded").put("question", "blocker")))
+                }
+                2 -> {
+                    assertEquals("TOOL_NOT_AVAILABLE", JSONObject(paired(request, "excluded-ask").getString("content")).getString("code"))
+                    answer("task_status: blocked\nsummary: not allowed\nevidence: fixture\nremaining: -\nnext_action: -")
+                }
+                else -> error("unexpected child round")
+            }
+        }
+        val worker = SubagentExecutor(conversationKey = "exclude-${UUID.randomUUID()}", parentController = parent,
+            parentRunId = "allowlist", configProvider = { config }, capabilitiesProvider = { AgentToolCapabilities(rootAvailable = false) },
+            baseToolExecutor = AgentModelClient.ToolExecutor { error("excluded ask must not execute") }, skillContext = SkillContext.EMPTY,
+            memoryContext = AgentMemoryContext.DISABLED, mcpTools = JSONArray(), executionContext = null, onProgress = {},
+            decisionBroker = broker, providerFactory = { model })
+        try {
+            val launch = AgentModelClient.ToolCall("launch", "subagent", JSONObject().put("prompt", "task").put("description", "task")
+                .put("subagent_type", "decision-fixture").put("tools", JSONArray(listOf("read_file"))).toString())
+            worker.execute(1, launch, decisionTaskId = "task")
+            failure.get()?.let { throw AssertionError("provider callback failed", it) }
+            assertEquals(2, rounds.get())
+            assertEquals(0, memory.snapshot().length())
+        } finally { broker.close(); parent.cancel(); failure.get()?.let { throw AssertionError("provider callback failed", it) } }
     }
 
 }

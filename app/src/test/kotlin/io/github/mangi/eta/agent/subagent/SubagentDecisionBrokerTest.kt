@@ -14,11 +14,13 @@ class SubagentDecisionBrokerTest {
     internal class Memory : SubagentDecisionBroker.Storage {
         var records = JSONArray()
         @Volatile var fail = false
+        @Volatile var afterCommit: (() -> Unit)? = null
         override fun accessRequests(operation: (JSONArray) -> JSONObject): JSONObject = synchronized(this) {
             if (fail) error("injected storage failure")
             val copy = JSONArray(records.toString())
             val result = operation(copy)
             records = copy
+            afterCommit?.invoke()
             result
         }
     }
@@ -132,6 +134,63 @@ class SubagentDecisionBrokerTest {
             val rest = broker.pendingBatch(); assertEquals(2, rest.size)
             (first + rest).forEach { assertTrue(JSONObject(broker.respond(respond(it)).content).getBoolean("ok")) }
             jobs.forEach { assertEquals("answer", JSONObject(it.get(3, TimeUnit.SECONDS).content).getString("status")) }
+        } finally { broker.close(); pool.shutdownNow() }
+    }
+
+    @Test fun parentSteeringBeforeResponseWakesWaitingChildWithDurableTerminal() {
+        val store = Memory(); val parent = AgentRunController()
+        val broker = SubagentDecisionBroker("run", parent, store, timeoutMs = 60_000)
+        val pool = Executors.newSingleThreadExecutor()
+        try {
+            val pending = pool.submit(Callable { JSONObject(broker.ask("task", "inv", ask("steer"), AgentRunController()).content) })
+            val record = awaitBatch(broker, 1).single()
+            assertTrue(parent.steer("new direction"))
+            val reply = JSONObject(broker.respond(respond(record)).content)
+            assertFalse(reply.getBoolean("ok")); assertEquals("ASK_REQUEST_TERMINAL", reply.getString("code"))
+            assertEquals("parent_unavailable", pending.get(2, TimeUnit.SECONDS).getString("status"))
+        } finally { broker.close(); pool.shutdownNow() }
+    }
+
+    @Test fun committedResponseThenCancelledChildRetainsExactDecisionAndRequestsBoundaryStop() {
+        val store = Memory(); val parent = AgentRunController(); val child = AgentRunController()
+        val broker = SubagentDecisionBroker("run", parent, store, timeoutMs = 60_000)
+        val pool = Executors.newSingleThreadExecutor()
+        try {
+            val pending = pool.submit(Callable { JSONObject(broker.ask("task", "inv", ask("wins"), child).content) })
+            val record = awaitBatch(broker, 1).single()
+            // respond holds child lock until the durable response commit has returned.
+            // Cancel reentrantly after commit, before that lock is released or the child can wake.
+            store.afterCommit = {
+                if (store.records.getJSONObject(0).optString("status") == "answer") {
+                    store.afterCommit = null
+                    child.cancel()
+                }
+            }
+            val reply = JSONObject(broker.respond(respond(record)).content)
+            store.afterCommit = null
+            assertTrue(reply.getBoolean("ok"))
+            val answer = pending.get(2, TimeUnit.SECONDS)
+            assertEquals("answer", answer.getString("status")); assertEquals("decision", answer.getString("response"))
+            assertEquals("call-wins", answer.getString("tool_call_id"))
+            assertTrue(child.isCancelled); assertTrue(child.shouldStopAfterToolBatch())
+        } finally { store.afterCommit = null; broker.close(); pool.shutdownNow() }
+    }
+
+    @Test fun cancelledChildBeforeResponseRejectsAndNeverCreatesAnAnswer() {
+        val store = Memory(); val parent = AgentRunController(); val child = AgentRunController()
+        val broker = SubagentDecisionBroker("run", parent, store, timeoutMs = 60_000)
+        val pool = Executors.newSingleThreadExecutor()
+        try {
+            val pending = pool.submit(Callable { broker.ask("task", "inv", ask("loses"), child) })
+            val record = awaitBatch(broker, 1).single()
+            child.cancel()
+            val reply = JSONObject(broker.respond(respond(record)).content)
+            assertFalse(reply.getBoolean("ok"))
+            try { pending.get(2, TimeUnit.SECONDS); fail("cancel must propagate") }
+            catch (failure: java.util.concurrent.ExecutionException) {
+                assertTrue(failure.cause is io.github.mangi.eta.agent.runtime.AgentRunCancelledException)
+            }
+            assertEquals("cancelled", synchronized(store) { store.records.getJSONObject(0).getString("status") })
         } finally { broker.close(); pool.shutdownNow() }
     }
 

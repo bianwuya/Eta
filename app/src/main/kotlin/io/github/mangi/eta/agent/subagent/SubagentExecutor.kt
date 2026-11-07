@@ -477,7 +477,8 @@ internal class SubagentExecutor(
             )
             mailboxActive.set(false)
             // A child stopped while the model returned must not publish a successful completion.
-            childController.throwIfCancelled()
+            // A durable answer can win before a simultaneous cancellation. Preserve the
+            // completed real tool result in child history before honoring cancellation.
             val updatedHistory = SubagentContinuation.history(
                 priorHistory,
                 taskPrompt,
@@ -485,6 +486,7 @@ internal class SubagentExecutor(
                 response.contextSnapshot,
             )
             SubagentSessionStore.complete(conversationKey, subagentId, updatedHistory)
+            childController.throwIfCancelled()
             if (cancelledByDecision.get()) tracker.markCancelled(response.content)
             else tracker.markCompleted(response.content)
             publishSnapshot(force = true)

@@ -210,6 +210,11 @@ internal class AgentRunController {
         block(unavailable)
     }
 
+    @Volatile private var committedDecisionInBatch = false
+    fun protectCommittedDecisionUntilToolBatch() { committedDecisionInBatch = true }
+    fun mustStopForCancelledDecisionBatch(): Boolean = committedDecisionInBatch && isCancelled
+    fun finishDecisionToolBatch() { committedDecisionInBatch = false }
+
     @Volatile private var stopAfterToolBatch = false
     fun requestStopAfterToolBatch() { stopAfterToolBatch = true }
     fun shouldStopAfterToolBatch(): Boolean = stopAfterToolBatch

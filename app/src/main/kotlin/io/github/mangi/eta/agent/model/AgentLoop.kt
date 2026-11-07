@@ -227,11 +227,12 @@ internal class AgentLoop(
                 // A parent cancel decision has already been recorded as the real result of
                 // the original ask call. Complete the entire tool batch, then stop without
                 // another provider call; preserve the transcript and the actual tool results.
-                if (runController.shouldStopAfterToolBatch()) {
+                if (runController.shouldStopAfterToolBatch() || runController.mustStopForCancelledDecisionBatch()) {
                     val content = "主代理取消了此子任务；已执行操作及不可回滚副作用须核实，不自动重放。"
                     onEvent(AgentEvent.RunFinished(round = round, contentChars = content.length))
                     return Result(content, reasoningSnapshot(), sensitiveToolCallIds.toSet())
                 }
+                runController.finishDecisionToolBatch()
                 // Let the model consume every result and continue independent work before waiting.
                 round += 1
                 continue
@@ -584,10 +585,16 @@ internal class AgentLoop(
         round: Int,
         toolCall: AgentModelClient.ToolCall,
     ): ToolOutcome {
-        runController.throwIfCancelled()
-        if (runController.shouldStopAfterToolBatch()) {
+        if (runController.shouldStopAfterToolBatch() || runController.mustStopForCancelledDecisionBatch()) {
             return rejectedToolOutcome(round, toolCall, "ASK_PARENT_CANCELLED",
                 "主代理已取消此任务；本工具未执行。")
+        }
+        try {
+            runController.throwIfCancelled()
+        } catch (cancelled: io.github.mangi.eta.agent.runtime.AgentRunCancelledException) {
+            if (runController.mustStopForCancelledDecisionBatch())
+                return rejectedToolOutcome(round, toolCall, "ASK_PARENT_CANCELLED", "子任务已取消；本工具未执行。")
+            throw cancelled
         }
         if (toolCall.name !in availableToolNames) {
             return rejectedToolOutcome(
