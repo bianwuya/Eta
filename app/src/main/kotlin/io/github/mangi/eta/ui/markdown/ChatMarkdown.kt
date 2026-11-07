@@ -118,6 +118,7 @@ internal fun StreamingMarkdown(
         document = parsed.document,
         style = style,
         reveal = reveal,
+        richContentEnabled = parsed.isComplete,
         modifier = modifier.onGloballyPositioned {
             // 恢复基线对应的文档真正排版后才开放增量动画，解析耗时不受帧数限制。
             if (state.restoreState.completeLayout(

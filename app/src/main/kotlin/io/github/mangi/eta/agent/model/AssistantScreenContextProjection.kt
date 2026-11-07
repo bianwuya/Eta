@@ -17,17 +17,48 @@ internal object AssistantScreenContextProjection {
     }
 
     /** 仅投影到 Provider 请求，不把自动采集内容拼进用户原话或持久上下文。 */
+    fun isRuntimeReport(message: JSONObject): Boolean =
+        message.optString("role") == "assistant" && message.optString("_eta_message_id").startsWith("subagent-report-")
+
+    fun isRuntimeConversation(message: JSONObject): Boolean =
+        message.optString("role") == "assistant" && message.optString("_eta_message_id").startsWith("conversation-input-")
+
+    fun isRuntimeParentDirective(message: JSONObject): Boolean =
+        message.optString("role") == "assistant" &&
+            message.optString("_eta_message_id").startsWith("parent-agent-") &&
+            message.optBoolean("_eta_parent_agent_directive")
+
+    fun isRuntimeInput(message: JSONObject): Boolean =
+        isRuntimeReport(message) || isRuntimeConversation(message) || isRuntimeParentDirective(message)
+
     fun project(messages: JSONArray): JSONArray {
-        if ((0 until messages.length()).none { messages.optJSONObject(it)?.has(KEY) == true }) return messages
+        if ((0 until messages.length()).none { index ->
+                messages.optJSONObject(index)?.let { it.has(KEY) || isRuntimeReport(it) || isRuntimeParentDirective(it) } == true
+            }) return messages
         return JSONArray().also { projected ->
             for (index in 0 until messages.length()) {
                 val original = messages.getJSONObject(index)
                 val context = original.optString(KEY)
-                if (context.isBlank()) {
+                val report = isRuntimeReport(original)
+                val directive = isRuntimeParentDirective(original)
+                if (context.isBlank() && !report && !directive) {
                     projected.put(original)
                     continue
                 }
-                val message = JSONObject(original.toString()).apply { remove(KEY) }
+                val message = JSONObject(original.toString()).apply {
+                    remove(KEY)
+                    // Provider transports require an input role, but durable history keeps the
+                    // report distinct from real user messages and the content disclaims authority.
+                    if (report || directive) {
+                        put("role", "user")
+                        if (report) put("_eta_runtime_report", true)
+                        if (directive) put("_eta_runtime_parent_directive", true)
+                    }
+                }
+                if (context.isBlank()) {
+                    projected.put(message)
+                    continue
+                }
                 val content = message.optJSONArray("content") ?: JSONArray().apply {
                     put(JSONObject().put("type", "text").put("text", message.optString("content")))
                 }

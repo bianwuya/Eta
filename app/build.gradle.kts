@@ -65,6 +65,9 @@ android {
             versionNameSuffix = "-debug" + buildMetadataSuffix
             isMinifyEnabled = false
             isPseudoLocalesEnabled = true
+            // Personal cloud builds use the existing release identity for both standard variants.
+            // PR verification has no signing Secrets and keeps the normal development certificate.
+            if (hasReleaseSigning) signingConfig = signingConfigs.getByName("release")
         }
         release {
             versionNameSuffix = buildMetadataSuffix
@@ -122,6 +125,9 @@ android {
         unitTests.isIncludeAndroidResources = true
         // Robolectric 在高版本 JDK 下需要访问内部 API，参数只作用于测试 JVM。
         unitTests.all {
+            // Robolectric downloads Android SDK jars outside Gradle's repository configuration.
+            // Use Maven Central's canonical endpoint; repo1 returned HTTP 429 on Actions.
+            it.systemProperty("robolectric.dependency.repo.url", "https://repo.maven.apache.org/maven2")
             it.jvmArgs(
                 "--add-opens=java.base/java.lang=ALL-UNNAMED",
                 "--add-opens=java.base/java.util=ALL-UNNAMED",
@@ -168,6 +174,7 @@ dependencies {
     implementation(libs.activity.compose)
     // 只使用 GFM 解析器；聊天渲染层由 ui/markdown 自建，按块冻结并接入逐字显现。
     implementation(libs.intellij.markdown)
+    implementation("androidx.webkit:webkit:1.12.1")
     implementation(libs.hidden.api.bypass)
 
     // DataStore：Provider / Model 结构化 JSON 与当前选中 ID 等键值

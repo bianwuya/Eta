@@ -7,6 +7,8 @@ internal data class AgentUiHandoffPayload(
     val conversationId: String,
     val promptSupplement: Supplement? = null,
     val supplements: List<Supplement> = emptyList(),
+    val requestMode: String = "normal",
+    val planLineageId: String = "",
 ) {
     val lastSupplementIndex: Int
         get() = (listOfNotNull(promptSupplement?.index) + supplements.map { it.index }).maxOrNull() ?: 0
@@ -18,6 +20,8 @@ internal data class AgentUiHandoffPayload(
         val index: Int,
         val text: String,
         val createdAt: Long,
+        val queueMessageId: String = "",
+        val images: List<String> = emptyList(),
     )
 
     fun toJson(): String =
@@ -25,6 +29,8 @@ internal data class AgentUiHandoffPayload(
             .put("type", TYPE)
             .put("version", VERSION)
             .put("conversationId", conversationId)
+            .also { if (requestMode == "plan") it.put("requestMode", "plan") }
+            .also { if (requestMode == "plan" && planLineageId.isNotBlank()) it.put("planLineageId", planLineageId) }
             .also { json ->
                 promptSupplement?.let { json.put("promptSupplement", it.toJson()) }
             }
@@ -57,6 +63,8 @@ internal data class AgentUiHandoffPayload(
                 val supplementsJson = json.optJSONArray("supplements") ?: JSONArray()
                 AgentUiHandoffPayload(
                     conversationId = json.optString("conversationId"),
+                    requestMode = json.optString("requestMode", "normal").let { if (it == "plan") it else "normal" },
+                    planLineageId = json.optString("planLineageId").take(256),
                     promptSupplement = json.optJSONObject("promptSupplement")
                         ?.toSupplement(defaultIndex = 1),
                     supplements = (0 until supplementsJson.length()).mapNotNull { index ->
@@ -68,11 +76,14 @@ internal data class AgentUiHandoffPayload(
 
         private fun JSONObject.toSupplement(defaultIndex: Int): Supplement? {
             val text = optString("text").trim()
-            if (text.isBlank()) return null
+            val images = optJSONArray("images")?.let { a -> (0 until a.length()).map { a.getString(it) } }.orEmpty()
+            if (text.isBlank() && images.isEmpty()) return null
             return Supplement(
                 index = optInt("index", defaultIndex),
                 text = text,
                 createdAt = optLong("createdAt"),
+                queueMessageId = optString("queueMessageId"),
+                images = images,
             )
         }
     }
@@ -82,4 +93,6 @@ internal data class AgentUiHandoffPayload(
             .put("index", index)
             .put("text", text)
             .put("createdAt", createdAt)
+            .put("queueMessageId", queueMessageId)
+            .put("images", JSONArray(images))
 }

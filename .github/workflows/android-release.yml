@@ -132,6 +132,10 @@ jobs:
 
       - name: 验证并整理 APK
         id: apk
+        env:
+          ETA_RELEASE_STORE_PASSWORD: ${{ secrets.ETA_RELEASE_STORE_PASSWORD }}
+          ETA_RELEASE_KEY_ALIAS: ${{ secrets.ETA_RELEASE_KEY_ALIAS }}
+          ETA_RELEASE_KEY_PASSWORD: ${{ secrets.ETA_RELEASE_KEY_PASSWORD }}
         run: |
           # 文件名由 Gradle 按 versionName 生成，例如 Eta-vX.Y.Z.apk、Eta-vX.Y.Z-debug+<sha>.apk
           shopt -s nullglob
@@ -153,7 +157,27 @@ jobs:
             exit 1
           fi
 
+          # Standard Debug may retain the development identity in cached build outputs.
+          # Re-sign only that standard APK with the existing release key; never change app contents.
+          "$apksigner_path" sign --ks "$RUNNER_TEMP/eta-release.jks" \
+            --ks-key-alias "$ETA_RELEASE_KEY_ALIAS" \
+            --ks-pass env:ETA_RELEASE_STORE_PASSWORD --key-pass env:ETA_RELEASE_KEY_PASSWORD \
+            "${debug_apks[0]}"
           "$apksigner_path" verify "${release_apks[0]}"
+          "$apksigner_path" verify "${debug_apks[0]}"
+          expected_cert='a7a92cca03f7d7390ab74001c97efbfe4ff4289b0dc4ffa21d6ebc3cee1c81a8'
+          for apk in "${debug_apks[0]}" "${release_apks[0]}"; do
+            # Parse the actual X.509 certificate, not version-dependent apksigner labels.
+            cert_info="$("$apksigner_path" verify --print-certs-pem "$apk")"
+            cert="$(printf '%s\n' "$cert_info" | sed -n '/-----BEGIN CERTIFICATE-----/,/-----END CERTIFICATE-----/p' | openssl x509 -noout -fingerprint -sha256 | cut -d= -f2 | tr -d ':\r' | tr '[:upper:]' '[:lower:]')"
+            printf 'APK: %s\nExpected certificate SHA256: %s\nActual certificate SHA256: %s\n' "$apk" "$expected_cert" "$cert"
+            if [[ "$cert" != "$expected_cert" ]]; then
+              echo "::error::APK 签名与现有个人版证书不一致。"
+              exit 1
+            fi
+            sha256sum "$apk"
+          done
+          printf 'Source: %s\nBoth standard variants verified with the existing signing certificate.\n' "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
 
           # 发版标签必须与 versionName 一致，避免标签与安装包版本错位
           if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then

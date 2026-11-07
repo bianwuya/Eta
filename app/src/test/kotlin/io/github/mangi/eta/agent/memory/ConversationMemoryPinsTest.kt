@@ -19,6 +19,22 @@ class ConversationMemoryPinsTest {
     }
 
     @Test
+    fun stoppingAndContinuingAfterOwnWriteKeepsOriginalPrefix() {
+        val id = "conv-stopped-${System.nanoTime()}"
+        val first = ConversationMemoryPins.contextFor(id, snapshot("# 核心记忆\n旧", "r1"), 500_000)
+        ConversationMemoryPins.recordOwnWrite(id, "r2")
+        val controller = io.github.mangi.eta.agent.runtime.AgentRunController()
+        controller.cancel()
+        org.junit.Assert.assertThrows(io.github.mangi.eta.agent.runtime.AgentRunCancelledException::class.java) {
+            controller.throwIfCancelled()
+        }
+        val continued = ConversationMemoryPins.contextFor(id, snapshot("# 核心记忆\n新", "r2"), 500_000)
+        assertSame(first, continued)
+        assertEquals("r1", continued.revision)
+        ConversationMemoryPins.forget(id)
+    }
+
+    @Test
     fun externalChangesCompactionOrModelSwitchReinjectTheLatestMemory() {
         val id = "conv-ext-${System.nanoTime()}"
         ConversationMemoryPins.contextFor(id, snapshot("# 核心记忆\n旧", "r1"), 128_000)

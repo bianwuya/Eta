@@ -374,6 +374,11 @@ fun AgentAppRoot(
             navigator.popToHome()
         },
     ) {
+    androidx.compose.runtime.CompositionLocalProvider(
+        io.github.mangi.eta.local.richcontent.LocalRichPreview provides { reference ->
+            pushRoute(AppRoute.RichPreview(reference))
+        },
+    ) {
     key(navigationResetKey) {
         NavDisplay(
             backStack = backStack,
@@ -397,10 +402,10 @@ fun AgentAppRoot(
                                 is AgentHomeAction.HistoryViewportChanged -> agentState.updateHistoryViewport(action.atLatest)
                                 AgentHomeAction.RetryConversationLoad -> agentState.retryConversationLoad()
                                 is AgentHomeAction.ModelSelected -> agentState.selectModel(action.modelId)
-                                is AgentHomeAction.SubmitMessage -> { requestExecutionNotifications(); agentState.sendCurrentMessage(action.text) }
-                                is AgentHomeAction.InterruptAndSubmitMessage -> { requestExecutionNotifications(); agentState.interruptAndSendCurrentMessage(action.text) }
+                                is AgentHomeAction.SubmitMessage -> { requestExecutionNotifications(); agentState.sendCurrentMessage(action.text, action.requestMode) }
+                                is AgentHomeAction.InterruptAndSubmitMessage -> { requestExecutionNotifications(); agentState.interruptAndSendCurrentMessage(action.text, action.requestMode) }
                                 is AgentHomeAction.SteerQueuedMessage -> { requestExecutionNotifications(); agentState.steerQueuedMessage(action.id) }
-                                is AgentHomeAction.RecallQueuedMessage -> agentState.recallQueuedMessage(action.id, action.currentDraftText)
+                                is AgentHomeAction.RecallQueuedMessage -> agentState.recallQueuedMessage(action.id, action.currentDraftText, action.currentRequestMode)
                                 is AgentHomeAction.RemoveQueuedMessage -> agentState.removeQueuedMessage(action.id)
                                 AgentHomeAction.StopRun -> agentState.stopCurrentRun()
                                 is AgentHomeAction.ImageAttached -> agentState.attachImage(action.uri)
@@ -450,6 +455,9 @@ fun AgentAppRoot(
                     if (backStack.isEmpty()) backStack.add(AppRoute.Home)
                 }
             }
+            entry<AppRoute.RichPreview>(swipeDismiss = swipeDismiss) { route ->
+                io.github.mangi.eta.local.richcontent.RichPreviewScreen(reference = route.reference, onBack = ::popRoute)
+            }
             entry<AppRoute.Terminal>(swipeDismiss = swipeDismiss) {
                 LaunchedEffect(Unit) { requestExecutionNotifications() }
                 RoutedShell(route = AppRoute.Terminal) {
@@ -478,7 +486,29 @@ fun AgentAppRoot(
                 WebToolsSettingsScreen(onBack = ::popRoute)
             }
             entry<AppRoute.Subagents>(swipeDismiss = swipeDismiss) {
-                SubagentSettingsScreen(onBack = ::popRoute)
+                SubagentSettingsScreen(
+                    onBack = ::popRoute,
+                    onOpenCompaction = { pushRoute(AppRoute.CompactionSettings) },
+                    onOpenRequestStats = { pushRoute(AppRoute.SubagentStats) },
+                )
+            }
+            entry<AppRoute.ImageGenSettings>(swipeDismiss = swipeDismiss) {
+                io.github.mangi.eta.local.imagegen.ImageGenSettingsScreen(onBack = ::popRoute)
+            }
+            entry<AppRoute.CompactionSettings>(swipeDismiss = swipeDismiss) {
+                io.github.mangi.eta.local.compaction.CompactionSettingsScreen(onBack = ::popRoute)
+            }
+            entry<AppRoute.SubagentStats>(swipeDismiss = swipeDismiss) {
+                io.github.mangi.eta.local.subagentstats.SubagentStatsScreen(
+                    onBack = ::popRoute,
+                    onOpenConversation = { pushRoute(AppRoute.SubagentConversationStats(it)) },
+                )
+            }
+            entry<AppRoute.SubagentConversationStats>(swipeDismiss = swipeDismiss) { route ->
+                io.github.mangi.eta.local.subagentstats.SubagentStatsScreen(
+                    onBack = ::popRoute,
+                    conversationId = route.conversationId,
+                )
             }
             entry<AppRoute.Skills>(swipeDismiss = swipeDismiss) {
                 LaunchedEffect(Unit) {
@@ -787,6 +817,7 @@ fun AgentAppRoot(
         }
     }
 
+    } // LocalRichPreview: presentation only, no Agent actions.
     } // IncomingContentHost: keep local ingress isolated from upstream navigation.
 
     characterStore.notice?.let { notice ->
@@ -818,6 +849,15 @@ fun AgentAppRoot(
                     label = stringResource(R.string.conversation_rename_hint),
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
+                )
+                top.yukonga.miuix.kmp.basic.TextButton(
+                    text = "重新生成标题",
+                    enabled = !conversation.isActiveRun,
+                    onClick = {
+                        agentState.regenerateConversationTitle(conversation.id)
+                        conversationRenameTarget = null
+                    },
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
                 )
                 MiuixDialogActions(
                     confirmText = stringResource(R.string.action_save),

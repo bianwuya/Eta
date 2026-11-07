@@ -10,11 +10,28 @@ internal data class ProviderAccountSummary(
     val planEnabled: Boolean,
 )
 
+/** 请求开始时的凭据绑定；[credentialSlotId] 固定到具体账号槽，重试与 401 刷新都沿用它。 */
 internal data class ProviderCredentialBinding(
     val providerId: String,
     val authMode: String,
     val generation: Long,
+    val credentialSlotId: String = providerId,
 )
+
+/** OAuth 返回的可验证稳定身份；识别不到时不能用于去重或重登录校验。 */
+internal data class ProviderCredentialIdentity(
+    val subject: String,
+    val accountId: String?,
+) {
+    /** accountId 可能因退出登录被清空，只比较双方都存在的部分。 */
+    fun matches(other: ProviderCredentialIdentity): Boolean =
+        subject == other.subject && (accountId == null || other.accountId == null || accountId == other.accountId)
+}
+
+internal fun ProviderCredential.identity(): ProviderCredentialIdentity? =
+    subject?.takeIf(String::isNotBlank)?.let {
+        ProviderCredentialIdentity(it, accountId?.takeIf(String::isNotBlank))
+    }
 
 internal class ProviderLoginPrompt(
     val authorizationUrl: String,

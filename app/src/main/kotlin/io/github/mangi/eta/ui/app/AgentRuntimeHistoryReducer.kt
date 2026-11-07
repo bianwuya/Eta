@@ -28,7 +28,10 @@ internal object AgentRuntimeHistoryReducer {
             .filter { it.id.startsWith("user-$runId-supplement-") }
             .sortedBy { it.id.substringAfterLast('-').toIntOrNull() ?: 0 }
             .drop(consumedSupplements)
-            .map { AgentModelClient.buildUserHistoryMessage(it.content, emptyList()).copy(messageId = it.id) }
+            .map { message -> AgentModelClient.buildUserHistoryMessage(message.content,
+                message.images.map { reference -> AgentModelClient.ModelImage(reference,
+                    reference.substringAfter("data:").substringBefore(';').takeIf { it.startsWith("image/") } ?: "image/jpeg",
+                    reference.length, source = "user_attach") }).copy(messageId = message.id) }
         val history = if (validSnapshot != null) {
             val currentTurns = state.history.sumOf { it.compactedUserTurns + if (it.role == "user") 1 else 0 }
             val extra = (currentTurns - validSnapshot.consumedUserTurns).coerceAtLeast(0)

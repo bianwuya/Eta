@@ -4,6 +4,7 @@ import io.github.mangi.eta.agent.runtime.AgentEvent
 import io.github.mangi.eta.agent.runtime.AgentRunController
 import io.github.mangi.eta.agent.memory.AgentMemoryContext
 import io.github.mangi.eta.agent.skill.SkillContext
+import io.github.mangi.eta.local.subagentcontext.AgentRunRole
 import io.github.mangi.eta.agent.roleplay.RoleplayRunContext
 import io.github.mangi.eta.config.Prefs
 import io.github.mangi.eta.agent.tool.AgentToolCapabilities
@@ -111,42 +112,16 @@ internal object AgentModelClient {
         rewriteReply: Boolean = false,
         assistantScreenContext: String = "",
         toolFilter: ((JSONArray) -> JSONArray)? = null,
+        compactionTarget: (() -> AgentCompactionTarget)? = null,
         onContextSnapshot: (AgentContextSnapshot) -> Unit = {},
         onTranscript: (List<ConversationMessage>) -> Unit = {},
+        yieldableSubagents: io.github.mangi.eta.agent.subagent.YieldableSubagents? = null,
+        planGate: io.github.mangi.eta.local.planmode.PlanRunGate? = null,
+        runRole: AgentRunRole = AgentRunRole.PRIMARY,
         onEvent: (AgentEvent) -> Unit = {}
     ): ModelResponse.Text {
         config.validate()
         val initialCapabilities = capabilitiesProvider()
-        val messages = AgentPromptBuilder.buildInitialMessages(
-            config,
-            prompt,
-            images,
-            history,
-            skillContext,
-            memoryContext,
-            rootAvailable = initialCapabilities.rootAvailable,
-            roleplayContext = roleplayContext,
-            executionContext = executionContext,
-        )
-        if (rewriteReply) {
-            messages.put(messages.length() - 1, AgentConversationCodec.userTextMessage(
-                "请只改写下面这条角色回复，保持已有事实与实际工具结果，以当前角色设定改善表达。" +
-                    "这不是重新执行任务；不得调用任何工具、重读设备、更新记忆或编造缺失证据。只输出替代正文。\n" +
-                    "<reply_to_rewrite>\n$prompt\n</reply_to_rewrite>",
-            ))
-        } else if (!compactOnly) {
-            messages.getJSONObject(messages.length() - 1).put("_eta_message_id", initialUserMessageId)
-            AssistantScreenContextProjection.attach(messages.getJSONObject(messages.length() - 1), assistantScreenContext)
-        }
-        if (!compactOnly && config.providerType == ProviderTypes.GEMINI) {
-            GeminiEphemeralState.markRunStart(messages.getJSONObject(messages.length() - 1))
-        }
-        if (compactOnly) messages.remove(messages.length() - 1)
-        val transcript = JSONArray()
-        // 旧 history 中的无效消息可能在组装时被跳过，系统边界不能由 history 条数倒推。
-        val systemCount = AgentPromptBuilder.buildSystemMessages(
-            config, skillContext, memoryContext, initialCapabilities.rootAvailable, roleplayContext, executionContext,
-        ).length()
         fun toolsFor(capabilities: AgentToolCapabilities): JSONArray {
             if (rewriteReply) return JSONArray()
             val tools = AgentToolCatalog.build(
@@ -168,6 +143,39 @@ internal object AgentModelClient {
             return toolFilter?.invoke(tools) ?: tools
         }
         val tools = toolsFor(initialCapabilities)
+        val messages = AgentPromptBuilder.buildInitialMessages(
+            config,
+            if (planGate != null && !compactOnly && !rewriteReply) "$prompt\n\n[计划模式运行约束]\n${io.github.mangi.eta.local.planmode.PlanRunGate.PROMPT}" else prompt,
+            images,
+            history,
+            skillContext,
+            memoryContext,
+            rootAvailable = initialCapabilities.rootAvailable,
+            roleplayContext = roleplayContext,
+            executionContext = executionContext,
+            runRole = runRole,
+            availableTools = toolNames(tools),
+        )
+        if (rewriteReply) {
+            messages.put(messages.length() - 1, AgentConversationCodec.userTextMessage(
+                "请只改写下面这条角色回复，保持已有事实与实际工具结果，以当前角色设定改善表达。" +
+                    "这不是重新执行任务；不得调用任何工具、重读设备、更新记忆或编造缺失证据。只输出替代正文。\n" +
+                    "<reply_to_rewrite>\n$prompt\n</reply_to_rewrite>",
+            ))
+        } else if (!compactOnly) {
+            messages.getJSONObject(messages.length() - 1).put("_eta_message_id", initialUserMessageId)
+            AssistantScreenContextProjection.attach(messages.getJSONObject(messages.length() - 1), assistantScreenContext)
+        }
+        if (!compactOnly && config.providerType == ProviderTypes.GEMINI) {
+            GeminiEphemeralState.markRunStart(messages.getJSONObject(messages.length() - 1))
+        }
+        if (compactOnly) messages.remove(messages.length() - 1)
+        val transcript = JSONArray()
+        // 旧 history 中的无效消息可能在组装时被跳过，系统边界不能由 history 条数倒推。
+        val systemCount = AgentPromptBuilder.buildSystemMessages(
+            config, skillContext, memoryContext, initialCapabilities.rootAvailable, roleplayContext, executionContext,
+            runRole, toolNames(tools),
+        ).length()
         onEvent(
             AgentEvent.RunStarted(
                 initialImages = images.size,
@@ -183,14 +191,15 @@ internal object AgentModelClient {
         fun toolsForRound(): JSONArray {
             val capabilities = capabilitiesProvider()
             if (capabilities.rootAvailable != promptRootAvailable) {
+                publishedTools = toolsFor(capabilities)
                 val systemMessages = AgentPromptBuilder.buildSystemMessages(
                     config, skillContext, memoryContext, capabilities.rootAvailable, roleplayContext, executionContext,
+                    runRole, toolNames(publishedTools),
                 )
                 for (index in 0 until systemMessages.length()) {
                     messages.put(index, systemMessages.getJSONObject(index))
                 }
                 promptRootAvailable = capabilities.rootAvailable
-                publishedTools = toolsFor(capabilities)
                 return publishedTools
             }
             val published = toolNames(publishedTools)
@@ -204,6 +213,9 @@ internal object AgentModelClient {
         }
         val loop = AgentLoop(
             transcript = transcript,
+            yieldableSubagents = yieldableSubagents,
+            planGate = planGate,
+            compactionTarget = compactionTarget,
             systemCount = systemCount,
             operationId = operationId,
             onContextSnapshot = if (rewriteReply) ({ _ -> }) else onContextSnapshot,
@@ -242,11 +254,13 @@ internal object AgentModelClient {
                 cause = throwable,
                 contextSnapshot = if (rewriteReply) null else loop.contextSnapshot(),
                 reasoningContent = loop.reasoningSnapshot(),
-                transcript = AgentToolBatchRecovery.completeInterrupted(AgentConversationCodec.transcript(
+                transcript = AgentConversationCodec.transcript(
                     transcript,
                     0,
                     loop.sensitiveToolCallIdsSnapshot(),
-                )),
+                ).let { partial ->
+                    if (yieldableSubagents != null) partial else AgentToolBatchRecovery.completeInterrupted(partial)
+                },
             )
         }
         return ModelResponse.Text(
@@ -265,6 +279,8 @@ internal object AgentModelClient {
 
     private fun toolNames(tools: JSONArray): Set<String> =
         (0 until tools.length()).mapNotNullTo(mutableSetOf()) { toolName(tools.getJSONObject(it)) }
+
+    internal fun validateConfig(config: ModelConfig) = config.validate()
 
     private fun ModelConfig.validate() {
         require(baseUrl.isNotBlank()) { "请先配置 API 地址" }

@@ -199,6 +199,7 @@ internal fun PendingFileReferenceStrip(
     onRemoveReference: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val openPreview = io.github.mangi.eta.local.richcontent.LocalRichPreview.current
     Row(
         modifier = modifier
             .fillMaxWidth()
@@ -221,6 +222,9 @@ internal fun PendingFileReferenceStrip(
                         color = MiuixTheme.colorScheme.outline.copy(alpha = 0.5f),
                         cornerRadius = 12.dp,
                     )
+                    .clickable(enabled = reference.kind == AgentFileReferenceKind.File && io.github.mangi.eta.local.richcontent.LocalPreviewFiles.isSupported(reference.absolutePath)) {
+                        openPreview(reference.absolutePath)
+                    }
                     .padding(start = 12.dp, end = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -269,6 +273,7 @@ internal fun SentFileReferenceFlow(
     references: List<AgentFileReference>,
     modifier: Modifier = Modifier,
 ) {
+    val openPreview = io.github.mangi.eta.local.richcontent.LocalRichPreview.current
     FlowRow(
         modifier = modifier,
         horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -288,6 +293,9 @@ internal fun SentFileReferenceFlow(
                         color = MiuixTheme.colorScheme.outline.copy(alpha = 0.45f),
                         cornerRadius = 12.dp,
                     )
+                    .clickable(enabled = reference.kind == AgentFileReferenceKind.File && io.github.mangi.eta.local.richcontent.LocalPreviewFiles.isSupported(reference.absolutePath)) {
+                        openPreview(reference.absolutePath)
+                    }
                     .padding(horizontal = 11.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),

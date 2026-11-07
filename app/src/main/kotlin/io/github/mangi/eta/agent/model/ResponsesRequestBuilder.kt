@@ -4,12 +4,18 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 internal object ResponsesRequestBuilder {
+    /**
+     * [accountScope] 是本次请求固定的账号槽。只有同一账号产出的原始 output items
+     * （含 encrypted reasoning）可以原样重放；跨账号时退回普通 assistant/tool_calls
+     * 与 function_call_output，保留历史但不复用其他账号的临时状态。
+     */
     fun build(
         config: AgentModelClient.ModelConfig,
         messages: JSONArray,
         tools: JSONArray,
+        accountScope: String? = null,
     ): JSONObject {
-        val input = buildInput(messages)
+        val input = buildInput(messages, accountScope)
         val responseTools = buildTools(tools, config.usesHostedWebSearch)
         val instructions = OpenAiRequestMessages.responsesInstructions(messages)
             .ifBlank { config.systemPrompt }
@@ -37,10 +43,10 @@ internal object ResponsesRequestBuilder {
         return request
     }
 
-    private fun buildInput(messages: JSONArray): JSONArray = JSONArray().also { input ->
+    private fun buildInput(messages: JSONArray, accountScope: String?): JSONArray = JSONArray().also { input ->
         for (index in 0 until messages.length()) {
             val message = messages.optJSONObject(index) ?: continue
-            ResponsesEphemeralState.outputItems(message)?.let { items ->
+            ResponsesEphemeralState.outputItems(message, accountScope)?.let { items ->
                 for (itemIndex in 0 until items.length()) input.put(deepCopy(items.opt(itemIndex)))
                 continue
             }

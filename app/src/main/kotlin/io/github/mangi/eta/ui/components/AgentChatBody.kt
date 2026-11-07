@@ -16,6 +16,7 @@ import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.PaddingValues
@@ -31,6 +32,8 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.ui.platform.LocalScrollCaptureInProgress
+import io.github.mangi.eta.local.longshot.colorOsLongshotTarget
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -48,6 +51,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
@@ -69,6 +73,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.shadow.Shadow
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.stringResource
@@ -143,6 +148,7 @@ internal fun AgentChatBody(
     pendingImages: List<PendingImageUi>,
     pendingFileReferences: List<PendingFileReferenceUi>,
     queuedMessages: List<QueuedMessageUi> = emptyList(),
+    conversationId: String? = null,
     inputSyncVersion: Int = 0,
     messageEdit: MessageEditUiState?,
     onReasoningEffortChange: (ReasoningEffort) -> Unit,
@@ -176,6 +182,10 @@ internal fun AgentChatBody(
     onHistoryViewportChanged: (Boolean) -> Unit = {},
     isDrawerOpen: Boolean = false,
     modifier: Modifier = Modifier,
+    onSubmitWithMode: ((String, String) -> Unit)? = null,
+    onInterruptAndSubmitWithMode: ((String, String) -> Unit)? = null,
+    restoredRequestMode: String = "normal",
+    onRecallQueuedMessageWithMode: ((String, String, String) -> Unit)? = null,
 ) {
     val scrollState = rememberLazyListState(initialFirstVisibleItemIndex = messages.size + if (hasEarlierMessages) 1 else 0)
     val keyboard = LocalSoftwareKeyboardController.current
@@ -234,6 +244,7 @@ internal fun AgentChatBody(
     SpeechPlaybackHost {
         SpeechAutoReadAloud(messages = messages, isStreaming = isStreaming)
         AgentChatScaffold(
+            conversationId = conversationId,
             visibleMessages = visibleMessages,
             hasMessages = visibleMessages.isNotEmpty() || hasEarlierMessages,
             scrollState = scrollState,
@@ -248,6 +259,7 @@ internal fun AgentChatBody(
             pendingFileReferences = pendingFileReferences,
             queuedMessages = queuedMessages,
             inputSyncVersion = inputSyncVersion,
+            restoredRequestMode = restoredRequestMode,
             messageEdit = messageEdit,
             showEmptySuggestions = !isKeyboardVisible,
             keepBottomAnchored = keepBottomAnchored,
@@ -264,11 +276,22 @@ internal fun AgentChatBody(
                 keepBottomAnchored = true
                 onInterruptAndSubmit(text)
             },
+            onSubmitWithMode = onSubmitWithMode?.let { callback -> { text, mode ->
+                sentFromKeyboard = true
+                keepBottomAnchored = true
+                callback(text, mode)
+            } },
+            onInterruptAndSubmitWithMode = onInterruptAndSubmitWithMode?.let { callback -> { text, mode ->
+                sentFromKeyboard = true
+                keepBottomAnchored = true
+                callback(text, mode)
+            } },
             onSteerQueuedMessage = { id ->
                 keepBottomAnchored = true
                 onSteerQueuedMessage(id)
             },
             onRecallQueuedMessage = onRecallQueuedMessage,
+            onRecallQueuedMessageWithMode = onRecallQueuedMessageWithMode,
             onRemoveQueuedMessage = onRemoveQueuedMessage,
             onReasoningEffortChange = onReasoningEffortChange,
             onCompactContext = onCompactContext,
@@ -316,6 +339,7 @@ private fun AgentChatScaffold(
     pendingImages: List<PendingImageUi>,
     pendingFileReferences: List<PendingFileReferenceUi>,
     queuedMessages: List<QueuedMessageUi>,
+    conversationId: String?,
     inputSyncVersion: Int,
     messageEdit: MessageEditUiState?,
     showEmptySuggestions: Boolean,
@@ -352,8 +376,14 @@ private fun AgentChatScaffold(
     onLoadEarlierMessages: () -> Unit,
     onHistoryViewportChanged: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
+    onSubmitWithMode: ((String, String) -> Unit)? = null,
+    onInterruptAndSubmitWithMode: ((String, String) -> Unit)? = null,
+    restoredRequestMode: String = "normal",
+    onRecallQueuedMessageWithMode: ((String, String, String) -> Unit)? = null,
 ) {
     val surfaceColor = MiuixTheme.colorScheme.surface
+    val planConversationId = conversationId.takeIf { LocalRoleplayChat.current == null }
+    val captureInProgress = LocalScrollCaptureInProgress.current
     val frostEnabled = hasMessages && LocalBlurEnabled.current && isRuntimeShaderSupported()
     val messageBackdrop = rememberLayerBackdrop {
         // Backdrop 必须包含不透明底色，否则文字边缘模糊到透明区域时会出现黑边。
@@ -361,86 +391,113 @@ private fun AgentChatScaffold(
         drawContent()
     }
 
-    Scaffold(
-        modifier = modifier.fillMaxSize(),
-        containerColor = Color.Transparent,
-        contentWindowInsets = WindowInsets(
-            left = 0.dp,
-            top = 0.dp,
-            right = 0.dp,
-            bottom = 0.dp,
-        ),
-        bottomBar = {
-            AgentChatBottomBar(
-                messageBackdrop = messageBackdrop.takeIf { frostEnabled },
-                input = input,
-                modelPickerState = modelPickerState,
-                isCompacting = isCompacting,
-                contextUsage = contextUsage,
-                showContextUsage = hasMessages,
-                isStreaming = isStreaming,
-                reasoningEffort = reasoningEffort,
-                availableReasoningEfforts = availableReasoningEfforts,
-                pendingImages = pendingImages,
-                pendingFileReferences = pendingFileReferences,
-                queuedMessages = queuedMessages,
-                inputSyncVersion = inputSyncVersion,
-                messageEdit = messageEdit,
-                onSubmit = onSubmit,
-                onInterruptAndSubmit = onInterruptAndSubmit,
-                onSteerQueuedMessage = onSteerQueuedMessage,
-                onRecallQueuedMessage = onRecallQueuedMessage,
-                onRemoveQueuedMessage = onRemoveQueuedMessage,
-                onReasoningEffortChange = onReasoningEffortChange,
-                onCompactContext = onCompactContext,
-                canCompactContext = canCompactContext,
-                onModelSelected = onModelSelected,
-                onStop = onStop,
-                onAttachImage = onAttachImage,
-                onRemoveImage = onRemoveImage,
-                onAttachFiles = onAttachFiles,
-                onAttachFolder = onAttachFolder,
-                onAttachFilePath = onAttachFilePath,
-                onRemoveFileReference = onRemoveFileReference,
-                onCancelMessageEdit = onCancelMessageEdit,
-            )
-        },
-    ) { innerPadding ->
-        val bottomPadding = innerPadding.calculateBottomPadding()
-        if (!hasMessages) {
-            EmptyChatState(
-                showSuggestions = showEmptySuggestions,
-                onSuggestionClick = onSuggestionClick,
+    val overlayDensity = LocalDensity.current
+    var bottomBarHeightPx by remember(conversationId) { mutableIntStateOf(0) }
+    // Questions overlay the conversation; only the original input bar determines its bottom inset.
+    // This is a same-window, wrap-content sibling: no scrim, popup window or outside touch handler.
+    BoxWithConstraints(modifier.fillMaxSize()) {
+        val barHeight = with(overlayDensity) { bottomBarHeightPx.toDp() }
+        val availableHeight = (maxHeight - barHeight - 8.dp).coerceAtLeast(0.dp)
+        Scaffold(
+            modifier = Modifier.fillMaxSize(),
+            containerColor = Color.Transparent,
+            contentWindowInsets = WindowInsets(
+                left = 0.dp,
+                top = 0.dp,
+                right = 0.dp,
+                bottom = 0.dp,
+            ),
+            bottomBar = {
+                Box(Modifier
+                    .onSizeChanged { bottomBarHeightPx = it.height }
+                    .graphicsLayer { alpha = if (captureInProgress) 0f else 1f }) {
+                    AgentChatBottomBar(
+                        conversationId = conversationId,
+                        messageBackdrop = messageBackdrop.takeIf { frostEnabled },
+                        input = input,
+                        modelPickerState = modelPickerState,
+                        isCompacting = isCompacting,
+                        contextUsage = contextUsage,
+                        showContextUsage = hasMessages,
+                        isStreaming = isStreaming,
+                        reasoningEffort = reasoningEffort,
+                        availableReasoningEfforts = availableReasoningEfforts,
+                        pendingImages = pendingImages,
+                        pendingFileReferences = pendingFileReferences,
+                        queuedMessages = queuedMessages,
+                        inputSyncVersion = inputSyncVersion,
+                        restoredRequestMode = restoredRequestMode,
+                        messageEdit = messageEdit,
+                        onSubmit = onSubmit,
+                        onInterruptAndSubmit = onInterruptAndSubmit,
+                        onSubmitWithMode = onSubmitWithMode,
+                        onInterruptAndSubmitWithMode = onInterruptAndSubmitWithMode,
+                        onSteerQueuedMessage = onSteerQueuedMessage,
+                        onRecallQueuedMessage = onRecallQueuedMessage,
+                        onRecallQueuedMessageWithMode = onRecallQueuedMessageWithMode,
+                        onRemoveQueuedMessage = onRemoveQueuedMessage,
+                        onReasoningEffortChange = onReasoningEffortChange,
+                        onCompactContext = onCompactContext,
+                        canCompactContext = canCompactContext,
+                        onModelSelected = onModelSelected,
+                        onStop = onStop,
+                        onAttachImage = onAttachImage,
+                        onRemoveImage = onRemoveImage,
+                        onAttachFiles = onAttachFiles,
+                        onAttachFolder = onAttachFolder,
+                        onAttachFilePath = onAttachFilePath,
+                        onRemoveFileReference = onRemoveFileReference,
+                        onCancelMessageEdit = onCancelMessageEdit,
+                    )
+                }
+            },
+        ) { innerPadding ->
+            val bottomPadding = innerPadding.calculateBottomPadding()
+            if (!hasMessages) {
+                EmptyChatState(
+                    showSuggestions = showEmptySuggestions,
+                    onSuggestionClick = onSuggestionClick,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(bottom = bottomPadding),
+                )
+            } else {
+                AgentConversationMessages(
+                    conversationId = planConversationId,
+                    visibleMessages = visibleMessages,
+                    scrollState = scrollState,
+                    isStreaming = isStreaming,
+                    bottomInset = bottomPadding,
+                    keepBottomAnchored = keepBottomAnchored,
+                    onBottomAnchorChanged = onBottomAnchorChanged,
+                    onSuggestionClick = onSuggestionClick,
+                    onRunTraceClick = onRunTraceClick,
+                    onOpenBrowser = onOpenBrowser,
+                    onEditMessage = onEditMessage,
+                    onDeleteMessage = onDeleteMessage,
+                    onRegenerateMessage = onRegenerateMessage,
+                    onSelectReplyCandidate = onSelectReplyCandidate,
+                    messageActionsEnabled = !isStreaming && messageEdit == null,
+                    editTargetMessageId = messageEdit?.targetMessageId,
+                    currentBrowserMessageId = currentBrowserMessageId,
+                    hasEarlierMessages = hasEarlierMessages,
+                    messageStartIndex = messageStartIndex,
+                    historyLoadState = historyLoadState,
+                    onLoadEarlierMessages = onLoadEarlierMessages,
+                    onHistoryViewportChanged = onHistoryViewportChanged,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .then(if (frostEnabled) Modifier.layerBackdrop(messageBackdrop) else Modifier),
+                )
+            }
+        }
+        if (!captureInProgress && bottomBarHeightPx > 0 && availableHeight > 0.dp) {
+            io.github.mangi.eta.local.userquestions.UserQuestionsPanel(
+                conversationId = conversationId,
+                maxHeight = minOf(320.dp, availableHeight),
                 modifier = Modifier
-                    .fillMaxSize()
-                    .padding(bottom = bottomPadding),
-            )
-        } else {
-            AgentConversationMessages(
-                visibleMessages = visibleMessages,
-                scrollState = scrollState,
-                isStreaming = isStreaming,
-                bottomInset = bottomPadding,
-                keepBottomAnchored = keepBottomAnchored,
-                onBottomAnchorChanged = onBottomAnchorChanged,
-                onSuggestionClick = onSuggestionClick,
-                onRunTraceClick = onRunTraceClick,
-                onOpenBrowser = onOpenBrowser,
-                onEditMessage = onEditMessage,
-                onDeleteMessage = onDeleteMessage,
-                onRegenerateMessage = onRegenerateMessage,
-                onSelectReplyCandidate = onSelectReplyCandidate,
-                messageActionsEnabled = !isStreaming && messageEdit == null,
-                editTargetMessageId = messageEdit?.targetMessageId,
-                currentBrowserMessageId = currentBrowserMessageId,
-                hasEarlierMessages = hasEarlierMessages,
-                messageStartIndex = messageStartIndex,
-                historyLoadState = historyLoadState,
-                onLoadEarlierMessages = onLoadEarlierMessages,
-                onHistoryViewportChanged = onHistoryViewportChanged,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .then(if (frostEnabled) Modifier.layerBackdrop(messageBackdrop) else Modifier),
+                    .align(Alignment.BottomCenter)
+                    .padding(start = 16.dp, end = 16.dp, bottom = barHeight + 8.dp),
             )
         }
     }
@@ -472,7 +529,9 @@ internal fun AgentConversationMessages(
     onLoadEarlierMessages: () -> Unit = {},
     onHistoryViewportChanged: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier,
+    conversationId: String? = null,
 ) {
+    val scrollCaptureInProgress = LocalScrollCaptureInProgress.current
     // 上一版条目只作复用比对，不参与组合观察。
     val previousTimelineEntries = remember { arrayOf(emptyList<AgentTimelineEntry>()) }
     val timelineEntries = remember(visibleMessages) {
@@ -509,7 +568,8 @@ internal fun AgentConversationMessages(
             }
     }
     val earlierMessagesItemCount = if (hasEarlierMessages) 1 else 0
-    val bottomItemIndex = timelineEntries.size + earlierMessagesItemCount
+    val planItemCount = if (conversationId.isNullOrBlank()) 0 else 1
+    val bottomItemIndex = timelineEntries.size + earlierMessagesItemCount + planItemCount
     val isUserDragging by scrollState.interactionSource.collectIsDraggedAsState()
     val isAtBottom by remember(scrollState) {
         derivedStateOf { !scrollState.canScrollForward }
@@ -574,8 +634,8 @@ internal fun AgentConversationMessages(
         messageCount = visibleMessages.size,
         hasEarlier = hasEarlierMessages,
         loadState = historyLoadState,
-        enabled = !isStreaming && editTargetMessageId == null,
-        canReleasePages = !isTailRendering && !isBottomSettling,
+        enabled = !scrollCaptureInProgress && !isStreaming && editTargetMessageId == null,
+        canReleasePages = !scrollCaptureInProgress && !isTailRendering && !isBottomSettling,
         keepBottomAnchored = keepBottomAnchored,
         onBottomAnchorChanged = onBottomAnchorChanged,
         onLoadEarlier = onLoadEarlierMessages,
@@ -583,7 +643,7 @@ internal fun AgentConversationMessages(
     )
 
     val shouldFollowBottom by rememberUpdatedState(
-        resolveBottomFollowEnabled(
+        !scrollCaptureInProgress && resolveBottomFollowEnabled(
             isStreaming = isStreaming,
             keepBottomAnchored = keepBottomAnchored,
             isUserDragging = isUserDragging,
@@ -600,8 +660,9 @@ internal fun AgentConversationMessages(
         keepBottomAnchored,
         isUserDragging,
         isStreaming,
+        scrollCaptureInProgress,
     ) {
-        if (shouldRequestInitialBottom(
+        if (!scrollCaptureInProgress && shouldRequestInitialBottom(
                 isStreaming = isStreaming,
                 keepBottomAnchored = keepBottomAnchored,
                 isUserDragging = isUserDragging,
@@ -723,6 +784,7 @@ internal fun AgentConversationMessages(
             verticalArrangement = Arrangement.Top,
             modifier = Modifier
                 .fillMaxSize()
+                .colorOsLongshotTarget(scrollState, bottomInset = bottomInset)
                 .scrollEndHaptic()
                 .nestedScroll(historyPaging.scrollConnection)
                 .overScrollVertical(),
@@ -805,6 +867,14 @@ internal fun AgentConversationMessages(
                     }
                 }
             }
+            if (!conversationId.isNullOrBlank()) {
+                item(key = "plan-panel-$conversationId", contentType = "plan-panel") {
+                    io.github.mangi.eta.local.planmode.PlanConversationPanel(
+                        conversationId = conversationId,
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                    )
+                }
+            }
             item(key = ChatBottomSentinelKey) {
                 Spacer(
                     modifier = Modifier
@@ -815,7 +885,7 @@ internal fun AgentConversationMessages(
         }
 
         AnimatedVisibility(
-            visible = !keepBottomAnchored && !isAtBottom,
+            visible = !scrollCaptureInProgress && !keepBottomAnchored && !isAtBottom,
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .padding(bottom = bottomInset + 12.dp),
@@ -1003,6 +1073,7 @@ private fun AgentChatBottomBar(
     pendingImages: List<PendingImageUi>,
     pendingFileReferences: List<PendingFileReferenceUi>,
     queuedMessages: List<QueuedMessageUi>,
+    conversationId: String?,
     inputSyncVersion: Int,
     messageEdit: MessageEditUiState?,
     onSubmit: (String) -> Unit,
@@ -1022,6 +1093,10 @@ private fun AgentChatBottomBar(
     onAttachFilePath: (String) -> Unit,
     onRemoveFileReference: (String) -> Unit,
     onCancelMessageEdit: () -> Unit,
+    onSubmitWithMode: ((String, String) -> Unit)? = null,
+    onInterruptAndSubmitWithMode: ((String, String) -> Unit)? = null,
+    restoredRequestMode: String = "normal",
+    onRecallQueuedMessageWithMode: ((String, String, String) -> Unit)? = null,
 ) {
     Column(
         modifier = Modifier
@@ -1082,6 +1157,7 @@ private fun AgentChatBottomBar(
                 .padding(start = 16.dp, end = 16.dp, bottom = 12.dp),
         ) {
             AgentChatInputBar(
+                conversationId = conversationId,
                 input = input,
                 modelPickerState = modelPickerState,
                 isCompacting = isCompacting,
@@ -1094,13 +1170,17 @@ private fun AgentChatBottomBar(
                 pendingFileReferences = pendingFileReferences,
                 queuedMessages = queuedMessages,
                 inputSyncVersion = inputSyncVersion,
+                restoredRequestMode = restoredRequestMode,
                 isEditingMessage = messageEdit != null,
                 editHasLaterTurns = messageEdit?.hasLaterTurns == true,
                 preserveFollowingMessages = messageEdit?.preserveFollowingMessages == true,
                 onSubmit = onSubmit,
                 onInterruptAndSubmit = onInterruptAndSubmit,
+                onSubmitWithMode = onSubmitWithMode,
+                onInterruptAndSubmitWithMode = onInterruptAndSubmitWithMode,
                 onSteerQueuedMessage = onSteerQueuedMessage,
                 onRecallQueuedMessage = onRecallQueuedMessage,
+                onRecallQueuedMessageWithMode = onRecallQueuedMessageWithMode,
                 onRemoveQueuedMessage = onRemoveQueuedMessage,
                 onReasoningEffortChange = onReasoningEffortChange,
                 onCompactContext = onCompactContext,

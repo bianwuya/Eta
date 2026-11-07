@@ -24,13 +24,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Check
-import androidx.compose.material.icons.rounded.Cloud
-import androidx.compose.material.icons.rounded.Code
-import androidx.compose.material.icons.rounded.Explore
 import androidx.compose.material.icons.rounded.Extension
-import androidx.compose.material.icons.rounded.Hub
-import androidx.compose.material.icons.rounded.Psychology
-import androidx.compose.material.icons.rounded.Route
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -41,7 +35,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.text.font.FontFamily
@@ -58,18 +51,7 @@ import io.github.mangi.eta.data.model.SubagentSettings
 import io.github.mangi.eta.data.model.enabledModel
 import io.github.mangi.eta.data.repository.ProviderRepository
 import io.github.mangi.eta.data.repository.RuntimeConfigRepository
-import io.github.mangi.eta.ui.components.EtaArrowPreference
 import io.github.mangi.eta.ui.components.EtaChoiceChip
-import io.github.mangi.eta.ui.components.EtaOverlayDropdownPreference
-import io.github.mangi.eta.ui.components.EtaPreferenceColors
-import io.github.mangi.eta.ui.components.EtaPreferenceDefaults
-import io.github.mangi.eta.ui.components.EtaPreferenceDivider
-import io.github.mangi.eta.ui.components.EtaPreferenceGroup
-import io.github.mangi.eta.ui.components.EtaPreferenceGroupTitle
-import io.github.mangi.eta.ui.components.EtaPreferenceIcon
-import io.github.mangi.eta.ui.components.EtaSwitchPreference
-import io.github.mangi.eta.ui.components.EtaTextButton
-import io.github.mangi.eta.ui.components.EtaWindowDialog
 import io.github.mangi.eta.ui.components.ListEmptyState
 import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
@@ -82,15 +64,21 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
+import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.InputField
+import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.overlay.OverlayBottomSheet
+import top.yukonga.miuix.kmp.preference.ArrowPreference
+import top.yukonga.miuix.kmp.preference.OverlayDropdownPreference
+import top.yukonga.miuix.kmp.preference.SwitchPreference
 import top.yukonga.miuix.kmp.squircle.squircleSurface
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import top.yukonga.miuix.kmp.window.WindowDialog
 
 private data class CustomSubagentDraft(
     val originalName: String? = null,
@@ -103,6 +91,8 @@ private data class CustomSubagentDraft(
 @Composable
 internal fun SubagentSettingsScreen(
     onBack: () -> Unit,
+    onOpenCompaction: () -> Unit,
+    onOpenRequestStats: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
     val agentPrefs = remember { Prefs.localAgentPreferences() }
@@ -258,7 +248,7 @@ internal fun SubagentSettingsScreen(
             }
 
             val activeDraft = editorDraft
-            EtaWindowDialog(
+            WindowDialog(
                 show = activeDraft != null,
                 title = if (activeDraft?.originalName != null) "编辑 Subagent" else "新建 Subagent",
                 onDismissRequest = { editorDraft = null },
@@ -309,7 +299,7 @@ internal fun SubagentSettingsScreen(
                                 )
                             }
                         }
-                        Spacer(modifier = Modifier.height(14.dp))
+                        Spacer(modifier = Modifier.height(16.dp))
                         MiuixDialogActions(
                             confirmText = "保存",
                             onCancel = { editorDraft = null },
@@ -352,58 +342,53 @@ internal fun SubagentSettingsScreen(
             }
         },
     ) {
-        item(key = "config_title") {
-            EtaPreferenceGroupTitle("通用与模型")
-        }
         item(key = "config_group") {
-            EtaPreferenceGroup {
-                EtaSwitchPreference(
+            SmallTitle("通用与模型")
+            Card(
+                modifier = Modifier
+                    .padding(horizontal = 12.dp)
+                    .padding(bottom = 12.dp),
+            ) {
+                SwitchPreference(
                     title = "启用 Subagent",
                     checked = subagentEnabled,
                     enabled = agentPrefs != null,
-                    startAction = {
-                        EtaPreferenceIcon(
-                            icon = Icons.Rounded.Hub,
-                            tint = EtaPreferenceColors.Blue,
-                        )
-                    },
                     onCheckedChange = { checked ->
-                        val targetPrefs = agentPrefs ?: return@EtaSwitchPreference
-                        if (targetPrefs.edit().putBoolean(Prefs.Keys.AGENT_SUBAGENT_ENABLED, checked).commit()) {
-                            subagentEnabled = checked
-                            Prefs.reconcileAgentPreferences(EtaApp.serviceInstance)
-                            scope.launch {
+                        val targetPrefs = agentPrefs ?: return@SwitchPreference
+                        scope.launch {
+                            val committed = withContext(Dispatchers.IO) {
+                                targetPrefs.edit().putBoolean(Prefs.Keys.AGENT_SUBAGENT_ENABLED, checked).commit()
+                            }
+                            if (committed) {
+                                subagentEnabled = checked
+                                withContext(Dispatchers.IO) { Prefs.reconcileAgentPreferences(EtaApp.serviceInstance) }
                                 RuntimeConfigRepository.syncToRemotePreferences(EtaApp.serviceInstance)
                             }
                         }
                     },
                 )
-                EtaPreferenceDivider()
-                EtaArrowPreference(
+                ArrowPreference(
+                    title = "上下文压缩",
+                    summary = "主/子代理统一的压缩模型、思考强度和摘要提示词",
+                    onClick = onOpenCompaction,
+                )
+                ArrowPreference(
+                    title = "子代理请求统计",
+                    summary = "按会话查看输入、缓存命中与历史前缀变化",
+                    onClick = onOpenRequestStats,
+                )
+                ArrowPreference(
                     title = "Subagent 模型",
                     summary = secondarySummary,
                     enabled = subagentEnabled,
-                    startAction = {
-                        EtaPreferenceIcon(
-                            icon = Icons.Rounded.Cloud,
-                            tint = EtaPreferenceColors.Blue,
-                        )
-                    },
                     onClick = { showModelSheet = true },
                 )
                 if (effortOptions.size > 1) {
-                    EtaPreferenceDivider()
-                    EtaOverlayDropdownPreference(
+                    OverlayDropdownPreference(
                         title = "思考强度",
                         items = effortLabels,
                         selectedIndex = selectedEffortIndex,
                         enabled = subagentEnabled,
-                        startAction = {
-                            EtaPreferenceIcon(
-                                icon = Icons.Rounded.Psychology,
-                                tint = EtaPreferenceColors.Orange,
-                            )
-                        },
                         onSelectedIndexChange = { index ->
                             val chosen = effortOptions.getOrNull(index)
                             scope.launch {
@@ -417,40 +402,37 @@ internal fun SubagentSettingsScreen(
             }
         }
 
-        item(key = "builtin_title") {
-            EtaPreferenceGroupTitle("Built-in Subagents")
-        }
         item(key = "builtin_group") {
-            EtaPreferenceGroup {
-                SubagentProfile.BUILTIN_PROFILES.forEachIndexed { index, profile ->
-                    if (index > 0) EtaPreferenceDivider()
-                    EtaArrowPreference(
+            SmallTitle("Built-in Subagents")
+            Card(
+                modifier = Modifier
+                    .padding(horizontal = 12.dp)
+                    .padding(bottom = 12.dp),
+            ) {
+                SubagentProfile.BUILTIN_PROFILES.forEach { profile ->
+                    ArrowPreference(
                         title = profile.name,
                         summary = profile.summary,
-                        startAction = {
-                            EtaPreferenceIcon(
-                                icon = iconForProfile(profile.name),
-                                tint = tintForProfile(profile.name),
-                            )
-                        },
                         onClick = { inspectedProfile = profile },
                     )
                 }
             }
         }
 
-        item(key = "custom_title") {
-            EtaPreferenceGroupTitle("Custom Subagents")
-        }
         item(key = "custom_group") {
-            EtaPreferenceGroup {
+            SmallTitle("Custom Subagents")
+            Card(
+                modifier = Modifier
+                    .padding(horizontal = 12.dp)
+                    .padding(bottom = 12.dp),
+            ) {
                 if (customProfiles.isEmpty()) {
                     ListEmptyState(
                         title = "暂无自定义 Subagent",
                         summary = "可在对话中直接让 Eta 创建专属 Subagent（保存在 agents/<name>.md），或点击右上角 + 手动新建",
                         icon = Icons.Rounded.Extension,
                         action = {
-                            EtaTextButton(
+                            TextButton(
                                 text = "新建 Subagent",
                                 onClick = {
                                     editorError = null
@@ -460,17 +442,10 @@ internal fun SubagentSettingsScreen(
                         },
                     )
                 } else {
-                    customProfiles.forEachIndexed { index, profile ->
-                        if (index > 0) EtaPreferenceDivider()
-                        EtaArrowPreference(
+                    customProfiles.forEach { profile ->
+                        ArrowPreference(
                             title = profile.name,
                             summary = profile.summary,
-                            startAction = {
-                                EtaPreferenceIcon(
-                                    icon = Icons.Rounded.Extension,
-                                    tint = EtaPreferenceColors.Blue,
-                                )
-                            },
                             onClick = { inspectedProfile = profile },
                         )
                     }
@@ -480,22 +455,8 @@ internal fun SubagentSettingsScreen(
     }
 }
 
-private fun iconForProfile(name: String): ImageVector = when (name) {
-    SubagentProfile.TYPE_EXPLORE -> Icons.Rounded.Explore
-    SubagentProfile.TYPE_CODER -> Icons.Rounded.Code
-    SubagentProfile.TYPE_PLAN -> Icons.Rounded.Route
-    else -> Icons.Rounded.Hub
-}
-
-private fun tintForProfile(name: String) = when (name) {
-    SubagentProfile.TYPE_EXPLORE -> EtaPreferenceColors.Blue
-    SubagentProfile.TYPE_CODER -> EtaPreferenceColors.Green
-    SubagentProfile.TYPE_PLAN -> EtaPreferenceColors.Orange
-    else -> EtaPreferenceColors.Blue
-}
-
 @Composable
-private fun SubagentModelPickerContent(
+internal fun SubagentModelPickerContent(
     pickerState: io.github.mangi.eta.ui.model.AgentModelPickerUiState,
     selectedSecondaryModelId: String?,
     primaryModelName: String?,

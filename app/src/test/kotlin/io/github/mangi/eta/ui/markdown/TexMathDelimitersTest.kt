@@ -13,10 +13,9 @@ class TexMathDelimitersTest {
 
         val formula = "a_i + b_j = \\frac{1}{2}"
         assertTrue(paragraph.text.text.contains(formula))
-        assertTrue(paragraph.text.spanStyles.any { range ->
-            range.item.fontFamily == FontFamily.Monospace &&
-                paragraph.text.text.substring(range.start, range.end).contains(formula)
-        })
+        val ranges = paragraph.text.getStringAnnotations(io.github.mangi.eta.local.richcontent.MATH_ANNOTATION, 0, paragraph.text.length)
+        assertTrue(ranges.any { range -> paragraph.text.text.substring(range.start, range.end) == formula })
+        assertFalse(paragraph.text.spanStyles.any { it.item.fontFamily == FontFamily.Monospace })
     }
 
     @Test

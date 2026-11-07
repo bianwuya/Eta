@@ -31,6 +31,7 @@ internal object SettingsDataStore {
     private val SPEECH_SETTINGS = stringPreferencesKey("speech_settings_v1")
     private val WEB_TOOLS_SETTINGS = stringPreferencesKey("web_tools_settings_v1")
     private val SUBAGENT_SETTINGS = stringPreferencesKey("subagent_settings_v1")
+    private val COMPACTION_SETTINGS = stringPreferencesKey("compaction_settings_v1")
     private val speechJson = Json {
         ignoreUnknownKeys = true
         encodeDefaults = true
@@ -92,12 +93,41 @@ internal object SettingsDataStore {
         dataStore.edit { it[SUBAGENT_SETTINGS] = speechJson.encodeToString(settings) }
     }
 
+    suspend fun setRequestStatsEnabled(enabled: Boolean) {
+        ensureInitialized()
+        dataStore.edit { prefs ->
+            val current = prefs[SUBAGENT_SETTINGS]?.let {
+                speechJson.decodeFromString<SubagentSettings>(it)
+            } ?: SubagentSettings()
+            prefs[SUBAGENT_SETTINGS] = speechJson.encodeToString(current.copy(
+                collectRequestStats = enabled, statsEpoch = java.util.UUID.randomUUID().toString(),
+            ))
+        }
+    }
+
+    fun compactionSettingsFlow(): Flow<io.github.mangi.eta.data.model.CompactionSettings> {
+        ensureInitialized()
+        return dataStore.data.map { prefs ->
+            prefs[COMPACTION_SETTINGS]?.let {
+                speechJson.decodeFromString<io.github.mangi.eta.data.model.CompactionSettings>(it)
+            } ?: io.github.mangi.eta.data.model.CompactionSettings()
+        }
+    }
+
+    suspend fun compactionSettings() = compactionSettingsFlow().first()
+
+    suspend fun setCompactionSettings(settings: io.github.mangi.eta.data.model.CompactionSettings) {
+        ensureInitialized()
+        dataStore.edit { it[COMPACTION_SETTINGS] = speechJson.encodeToString(settings) }
+    }
+
     private const val STORE_NAME = "eta_settings"
 
     private val SELECTED_PROVIDER_ID = stringPreferencesKey("selected_provider_id")
     private val SELECTED_MODEL_ID = stringPreferencesKey("selected_model_id")
     private val OFFICIAL_MODEL_CATALOG_REVISION = intPreferencesKey("official_model_catalog_revision")
     private val MEMORY_ENABLED = booleanPreferencesKey("memory_enabled")
+    private val AUTO_CONVERSATION_TITLE = booleanPreferencesKey("auto_conversation_title")
     private val LINUX_DISTRIBUTION = stringPreferencesKey("linux_distribution")
     private val APPEARANCE_THEME_MODE = stringPreferencesKey("appearance_theme_mode")
     private val APPEARANCE_MONET_ENABLED = booleanPreferencesKey("appearance_monet_enabled")
@@ -159,6 +189,7 @@ internal object SettingsDataStore {
             prefs.putOrRemove(SELECTED_PROVIDER_ID, updated.selectedProviderId)
             prefs.putOrRemove(SELECTED_MODEL_ID, updated.selectedModelId)
             prefs[MEMORY_ENABLED] = updated.memoryEnabled
+            prefs[AUTO_CONVERSATION_TITLE] = updated.autoConversationTitle
             prefs.putAppearance(updated.appearance.normalized())
         }
     }
@@ -285,6 +316,7 @@ internal object SettingsDataStore {
         selectedProviderId = this[SELECTED_PROVIDER_ID],
         selectedModelId = this[SELECTED_MODEL_ID],
         memoryEnabled = this[MEMORY_ENABLED] ?: true,
+        autoConversationTitle = this[AUTO_CONVERSATION_TITLE] ?: true,
         appearance = AppearanceSettings(
             themeMode = AppearanceThemeMode.fromPersistedValue(this[APPEARANCE_THEME_MODE]),
             monetEnabled = this[APPEARANCE_MONET_ENABLED] ?: false,

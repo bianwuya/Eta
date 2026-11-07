@@ -22,7 +22,8 @@ internal object Prefs {
     /** 远程配置组名，UI 写入与 Hook 读取必须一致。 */
     const val GROUP = "eta_prefs"
 
-    private const val LOCAL_AGENT_GROUP = "eta_agent_preferences"
+    /** 本地 Agent 配置文件名；非敏感本地状态（如 Codex 多账号索引）复用同一文件。 */
+    internal const val LOCAL_AGENT_GROUP = "eta_agent_preferences"
 
     /** 所有功能开关 key。默认值按功能风险独立定义。 */
     object Keys {

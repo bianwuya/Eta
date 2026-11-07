@@ -223,7 +223,7 @@ private fun QueuedMessagePreviewText(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val singleLine = item.content.replace(WHITESPACE_REGEX, " ").trim()
+    val singleLine = (if (item.requestMode == "plan") "[计划 · 新请求] " else "") + item.content.replace(WHITESPACE_REGEX, " ").trim()
     val attachmentCount = item.pendingImages.size + item.pendingFileReferences.size
     val displayText = when {
         singleLine.isNotEmpty() -> singleLine
@@ -266,7 +266,7 @@ private fun QueuedMessageItemActions(
     onRemove: () -> Unit,
 ) {
     Row(verticalAlignment = Alignment.CenterVertically) {
-        if (!item.immediateInterrupt) {
+        if (!item.immediateInterrupt && !(isStreaming && item.requestMode == "plan")) {
             IconButton(
                 onClick = onSteer,
                 minWidth = QueueActionSize,

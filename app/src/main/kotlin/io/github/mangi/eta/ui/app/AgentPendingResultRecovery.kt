@@ -27,9 +27,12 @@ internal object AgentPendingResultRecovery {
         if (result.operation == AgentRuntimeWire.OP_REWRITE_REPLY || runId in state.roleplayMessages.pendingRewrites) {
             return Outcome(RoleplayConversationReducer.applyRewrite(state, runId, result), runId in state.appliedRuntimeRunIds)
         }
-        val stateWithSupplements = state.copy(messages = mergeSupplements(
-            runId, listOfNotNull(promptSupplement) + supplements, state.messages,
-        ))
+        val acceptedQueueIds = (listOfNotNull(promptSupplement) + supplements)
+            .mapNotNullTo(mutableSetOf()) { it.queueMessageId.takeIf(String::isNotBlank) }
+        val stateWithSupplements = state.copy(
+            messages = mergeSupplements(runId, listOfNotNull(promptSupplement) + supplements, state.messages),
+            queuedMessages = state.queuedMessages.filterNot { it.id in acceptedQueueIds },
+        )
         val content = result.content.takeIf { result.ok && it.isNotBlank() }
         val history = AgentRuntimeHistoryReducer.apply(
             state = stateWithSupplements,
@@ -44,12 +47,14 @@ internal object AgentPendingResultRecovery {
                 promptSupplement?.let { supplement ->
                     AgentModelClient.buildUserHistoryMessage(
                         text = supplement.text,
-                        images = emptyList(),
+                        images = supplement.images.map { reference -> AgentModelClient.ModelImage(reference,
+                            reference.substringAfter("data:").substringBefore(';').takeIf { it.startsWith("image/") } ?: "image/jpeg",
+                            reference.length, source = "user_attach") },
                     ).copy(messageId = supplementMessageId(runId, supplement.index))
                 }
             ) + result.transcript,
         )
-        if (history.alreadyApplied) return Outcome(state, alreadyApplied = true)
+        if (history.alreadyApplied) return Outcome(stateWithSupplements, alreadyApplied = true)
         if (result.operation == AgentRuntimeWire.OP_COMPACT) {
             return Outcome(history.state.copy(isStreaming = false, isCompacting = false,
                 messages = AgentRunMessageProjector.mergeCompactionResultNotice(
@@ -133,7 +138,7 @@ internal object AgentPendingResultRecovery {
         supplements.sortedBy { it.index }.forEach { supplement ->
             val id = supplementMessageId(runId, supplement.index)
             if (updated.any { it.id == id }) return@forEach
-            val userMessage = UserMessageUi(id = id, content = supplement.text)
+            val userMessage = UserMessageUi(id = id, content = supplement.text, images = supplement.images)
             val assistantIndex = updated.indexOfLast {
                 it is AgentMessageUi &&
                     it.isAssistantForRun(runId) &&

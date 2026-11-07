@@ -5,7 +5,10 @@
 - `main`：原作者 `Mangi-11/Eta` 的同步镜像。不要在 main 提交自己的功能、工作流或签名改动。
 - `local`：自己的稳定版，保留系统分享等定制能力，是**唯一的个人版构建与发布来源**。
 - `feat/<功能名>`：从 local 创建的功能分支。每个功能单独 PR，审查后合并到 local。
-- 同步顺序：原作者更新 → GitHub 的 `Sync fork` 更新 main → 创建 `main -> local` 的 PR → 自动测试 → 人工确认合并 → local 构建。
+- 日常迭代：功能分支 → PR Check → 受保护合入 local → 原签名标准 Debug/Release 双包；不等待官方更新。
+- 官方同步和集成均仅手动触发，用户决定时间；没有定时或 PR 检查结束后的自动合入。详见 [官方更新流程](UPSTREAM_AUTOMATION.md)。
+- 按需同步：`Actions > Sync upstream main (manual) > Run workflow`，分支选 `local`；只快进镜像 main，不改 local。需要审阅官方更新时另行手动运行 `Prepare upstream PR (manual)`，不会自动 merge/close。
+- 需要合入定制版时，打开 https://github.com/bianwuya/Eta/compare/local...main?expand=1 ，确认 **base=local、compare=main** 后创建 PR。通过检查并人工确认后，用 **Create a merge commit** 合并，保留主线祖先关系，后续重复同步不会反复引入旧提交。不要启用自动合并，也不要把 local 反向合入 main。
 
 > 注意：GitHub 的默认分支与上述工作流中的 main/local 是两回事。若要新建 PR 默认指向 local，
 > 还需在 GitHub `Settings > General > Default branch` 将默认分支切换到 local。
@@ -40,7 +43,7 @@
 
 构建成功后打开具体的 Actions 运行记录，在 Artifacts 下载 `Eta-v...apk`。
 普通分支构建会追加 `+<短 SHA>`；Debug 带 `-debug` 后缀。
-Debug 签名与 Release 签名不同，不能作为已有个人签名版的直接覆盖升级包。
+Eta Build 会用现有个人版证书重签标准 Debug，并校验 Debug/Release 证书一致；两包均可供同签名覆盖安装。PR Check 中的开发签名 Debug 不属于这个交付链路。
 
 ## 签名 Secrets
 

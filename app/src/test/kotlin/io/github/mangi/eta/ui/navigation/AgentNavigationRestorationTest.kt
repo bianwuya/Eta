@@ -25,6 +25,10 @@ class AgentNavigationRestorationTest {
         first.get().compose()
         first.get().backStack.add(AppRoute.Settings)
         first.get().backStack.add(AppRoute.ModelProviderDetail("provider"))
+        first.get().backStack.add(AppRoute.Subagents)
+        first.get().backStack.add(AppRoute.CompactionSettings)
+        first.get().backStack.add(AppRoute.SubagentStats)
+        first.get().backStack.add(AppRoute.SubagentConversationStats("conversation"))
         val savedState = Bundle()
         first.pause().saveInstanceState(savedState).stop().destroy()
 
@@ -34,7 +38,9 @@ class AgentNavigationRestorationTest {
             restored.get().compose()
 
             assertEquals(
-                listOf(AppRoute.Home, AppRoute.Settings, AppRoute.ModelProviderDetail("provider")),
+                listOf(AppRoute.Home, AppRoute.Settings, AppRoute.ModelProviderDetail("provider"),
+                    AppRoute.Subagents, AppRoute.CompactionSettings, AppRoute.SubagentStats,
+                    AppRoute.SubagentConversationStats("conversation")),
                 restored.get().backStack.toList(),
             )
         } finally {

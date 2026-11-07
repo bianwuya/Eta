@@ -69,6 +69,26 @@ class AssistantScreenContextProjectionTest {
     }
 
     @Test
+    fun parentDirectiveProjectsToProviderInputWithoutForgingDurableUserHistory() {
+        val internal = JSONObject()
+            .put("role", "assistant")
+            .put("content", "[Eta 主代理给子代理的任务修正；不是用户授权] 停止旧任务")
+            .put("_eta_message_id", "parent-agent-run-1")
+            .put("_eta_parent_agent_directive", true)
+        val messages = JSONArray().put(internal)
+        val original = messages.toString()
+
+        assertTrue(AssistantScreenContextProjection.isRuntimeInput(internal))
+        val projected = AssistantScreenContextProjection.project(messages)
+        val providerInput = projected.getJSONObject(0)
+        assertEquals("user", providerInput.getString("role"))
+        assertTrue(providerInput.getBoolean("_eta_runtime_parent_directive"))
+        assertTrue(providerInput.getString("content").contains("不是用户授权"))
+        assertEquals(original, messages.toString())
+        assertEquals("assistant", AgentConversationCodec.transcript(messages, 0).single().role)
+    }
+
+    @Test
     fun emptyContextDoesNotAffectOrdinaryChatsAndOversizedContextIsMarked() {
         val user = AgentConversationCodec.userTextMessage("你好")
         AssistantScreenContextProjection.attach(user, "")

@@ -4,6 +4,8 @@ import io.github.mangi.eta.agent.memory.AgentMemoryContext
 import io.github.mangi.eta.agent.skill.SkillContext
 import io.github.mangi.eta.agent.roleplay.RoleplayRunContext
 import io.github.mangi.eta.agent.terminal.TerminalExecutionContext
+import io.github.mangi.eta.local.subagentcontext.AgentRunRole
+import io.github.mangi.eta.local.subagentcontext.SubagentPromptPolicy
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -19,8 +21,10 @@ internal object AgentPromptBuilder {
         rootAvailable: Boolean = false,
         roleplayContext: RoleplayRunContext? = null,
         executionContext: TerminalExecutionContext? = null,
+        runRole: AgentRunRole = AgentRunRole.PRIMARY,
+        availableTools: Set<String> = emptySet(),
     ): JSONArray {
-        val messages = buildSystemMessages(config, skillContext, memoryContext, rootAvailable, roleplayContext, executionContext)
+        val messages = buildSystemMessages(config, skillContext, memoryContext, rootAvailable, roleplayContext, executionContext, runRole, availableTools)
         history.forEach { item ->
             runCatching { AgentConversationCodec.toJsonObject(item) }.getOrNull()?.let(messages::put)
         }
@@ -40,10 +44,23 @@ internal object AgentPromptBuilder {
         rootAvailable: Boolean,
         roleplayContext: RoleplayRunContext? = null,
         executionContext: TerminalExecutionContext? = null,
+        runRole: AgentRunRole = AgentRunRole.PRIMARY,
+        availableTools: Set<String> = emptySet(),
     ): JSONArray {
         val messages = JSONArray()
         if (roleplayContext == null && config.systemPrompt.isNotBlank()) {
             messages.put(systemMessage(config.systemPrompt))
+        }
+        if (runRole == AgentRunRole.SUBAGENT && roleplayContext == null) {
+            // One operational block keeps the system boundary stable even if Root adds tools.
+            messages.put(systemMessage(SubagentPromptPolicy.instructions(
+                config, availableTools, rootInstructions(rootAvailable),
+                executionContext?.description(rootAvailable).orEmpty(),
+            ).joinToString("\n\n")))
+            // Keep the existing background snapshots and their renderers byte-for-byte.
+            buildMemorySystemMessage(memoryContext, writable = true)?.let(messages::put)
+            buildSkillSystemMessage(skillContext)?.let(messages::put)
+            return messages
         }
         messages.put(
             systemMessage(

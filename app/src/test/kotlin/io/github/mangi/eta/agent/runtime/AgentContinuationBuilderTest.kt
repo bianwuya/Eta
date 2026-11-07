@@ -112,6 +112,23 @@ class AgentContinuationBuilderTest {
         assertEquals("user-run-old-supplement-7", continuation.history.single().messageId)
     }
 
+    @Test fun plannedContinuationKeepsRestrictionAndStableRecoveryLineage() {
+        val handoff = AgentRuntimeWire.EntryHandoff("run-old", AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE,
+            AgentUiHandoffPayload(conversationId = "chat").toJson())
+        val request = AgentRuntimeWire.RunRequest("run-old", "start", modelConfig(), emptyList(), handoff = handoff, requestMode = "plan")
+        val first = AgentContinuationBuilder.build(request, AgentModelClient.ModelResponse.Text("paused"), "continue", "run-next", 123L)
+        assertEquals("plan", first.requestMode)
+        assertEquals("run-old", first.planLineageId)
+        assertEquals("chat", first.effectiveModelSessionId)
+        val payload = AgentUiHandoffPayload.from(first.handoff!!.payload)
+        assertEquals("plan", payload.requestMode)
+        assertEquals("run-old", payload.planLineageId)
+        val second = AgentContinuationBuilder.build(first, AgentModelClient.ModelResponse.Text("paused"), "continue again", "run-third", 124L)
+        assertEquals("plan", second.requestMode)
+        assertEquals("run-old", second.planLineageId)
+        assertEquals("normal", AgentRuntimeWire.RunRequest("new", "independent", modelConfig(), emptyList()).requestMode)
+    }
+
     private fun modelConfig(): AgentModelClient.ModelConfig =
         AgentModelClient.ModelConfig(
             baseUrl = "https://example.invalid/v1",

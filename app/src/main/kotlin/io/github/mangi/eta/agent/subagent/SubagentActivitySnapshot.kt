@@ -13,6 +13,7 @@ internal data class SubagentStepSnapshot(
     val detail: String = "",
     val status: String = STATUS_RUNNING,
     val toolName: String = "",
+    val detailTruncated: Boolean = false,
 ) {
     companion object {
         const val KIND_THINKING = "thinking"
@@ -43,11 +44,72 @@ internal data class SubagentActivitySnapshot(
     val steps: List<SubagentStepSnapshot> = emptyList(),
     val output: String = "",
     val error: String? = null,
+    val detailId: String = "",
+    val previewTruncated: Boolean = false,
+    val totalSteps: Int = steps.size,
+    val updatedAt: Long = 0,
+    // Null means that the source did not report a value (including old snapshots).
+    val contextTokens: Int? = null,
+    val contextWindow: Int? = null,
+    val compactionCount: Int? = null,
 ) {
     val toolStepCount: Int
         get() = steps.count { it.kind == SubagentStepSnapshot.KIND_TOOL }
 
     fun encode(): String = json.encodeToString(this)
+
+    /** Bound the display payload before serialization so transport never cuts a JSON token. */
+    fun encodeBounded(maxChars: Int): String {
+        val encoded = encode()
+        if (encoded.length <= maxChars) return encoded
+
+        require(maxChars >= 512)
+        var recentSteps = steps.takeLast(48)
+        fun preview(limit: Int): SubagentActivitySnapshot = copy(
+            previewTruncated = true,
+            description = description.take(limit),
+            prompt = prompt.take(limit),
+            model = model.takeIf { it.length <= limit }.orEmpty(),
+            currentAction = currentAction.take(limit),
+            steps = recentSteps.map { step ->
+                step.copy(
+                    // IDs are display identity, not visible text. Prefix truncation can merge
+                    // distinct provider IDs and crash the inspector's LazyColumn.
+                    id = if (step.id.length <= limit) step.id else step.id.take(32) + "~" +
+                        java.security.MessageDigest.getInstance("SHA-256")
+                            .digest(step.id.toByteArray(Charsets.UTF_8))
+                            .joinToString("") { "%02x".format(it) },
+                    kind = step.kind.take(limit),
+                    title = step.title.take(limit),
+                    detail = step.detail.takeLast(limit),
+                    detailTruncated = step.detailTruncated || step.detail.length > limit,
+                    toolName = step.toolName.take(limit),
+                )
+            },
+            output = output.takeLast(limit),
+            error = error?.take(limit),
+        )
+
+        // Account for JSON escaping and structural overhead, including many short steps.
+        while (preview(0).encode().length > maxChars && recentSteps.isNotEmpty()) {
+            recentSteps = recentSteps.drop(1)
+        }
+        var best = preview(0).encode()
+        require(best.length <= maxChars)
+        var low = 1
+        var high = maxChars
+        while (low <= high) {
+            val limit = low + (high - low) / 2
+            val candidate = preview(limit).encode()
+            if (candidate.length <= maxChars) {
+                best = candidate
+                low = limit + 1
+            } else {
+                high = limit - 1
+            }
+        }
+        return best
+    }
 
     companion object {
         const val STATUS_RUNNING = "running"
@@ -69,6 +131,27 @@ internal data class SubagentActivitySnapshot(
                 ?.takeIf { it.subagentType.isNotBlank() || it.description.isNotBlank() || it.prompt.isNotBlank() }
         }
 
+        /**
+         * A launch or resume that never reached the model must not leave the initial
+         * "running / 正在启动" card behind. `updatedAt` is real time so this snapshot wins over the
+         * synthetic launch preview when the tool result is projected.
+         */
+        fun failureFromArguments(
+            argumentsJson: String,
+            message: String,
+            status: String = STATUS_FAILED,
+            now: Long = System.currentTimeMillis(),
+        ): SubagentActivitySnapshot =
+            (initialFromArguments(argumentsJson) ?: SubagentActivitySnapshot(subagentType = SUBAGENT_FALLBACK_TYPE))
+                .copy(
+                    status = status,
+                    currentAction = message.lineSequence().firstOrNull()?.take(120).orEmpty(),
+                    error = message.take(1_000),
+                    updatedAt = now,
+                )
+
+        private const val SUBAGENT_FALLBACK_TYPE = "subagent"
+
         fun initialFromArguments(argumentsJson: String): SubagentActivitySnapshot? = runCatching {
             val args = JSONObject(argumentsJson)
             val resumeId = args.optString("resume").trim()
@@ -81,8 +164,10 @@ internal data class SubagentActivitySnapshot(
             val description = args.optString("description").trim()
                 .replace(Regex("\\s+"), " ")
                 .take(80)
-            val prompt = args.optString("prompt").trim().take(4_000)
+            val fullPrompt = args.optString("prompt").trim()
+            val prompt = fullPrompt.take(4_000)
             SubagentActivitySnapshot(
+                previewTruncated = fullPrompt.length > prompt.length,
                 subagentId = resumeId,
                 subagentType = type,
                 description = description,

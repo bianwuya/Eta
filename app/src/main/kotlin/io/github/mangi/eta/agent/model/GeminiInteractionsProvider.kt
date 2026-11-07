@@ -38,7 +38,7 @@ internal object GeminiInteractionsProvider : AgentProviderClient {
             .post(GeminiInteractionsRequest.build(config, request.messages, request.effectiveTools)
                 .toString().toRequestBody(jsonMediaType))
             .build()
-        val call = AgentHttpClient.modelClient(request.purpose).newCall(httpRequest)
+        val call = AgentHttpClient.modelClient(request.purpose, request.forceHttp1).newCall(httpRequest)
         val binding = runController.register { call.cancel() }
         try {
             runController.throwIfCancelled()

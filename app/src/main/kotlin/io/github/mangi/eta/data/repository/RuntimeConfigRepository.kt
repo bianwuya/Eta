@@ -23,6 +23,8 @@ import io.github.mangi.eta.data.provider.ProviderSourceRegistry
 import io.github.mangi.eta.data.provider.ProviderConnectionProfile
 import io.github.mangi.eta.data.provider.ReasoningCapabilityResolver
 import io.github.libxposed.service.XposedService
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
@@ -86,6 +88,26 @@ internal object RuntimeConfigRepository {
             reasoningEffort = effort,
             autoCompactionEnabled = primaryConfig.autoCompactionEnabled,
             supportsSearchSuggestions = false,
+        )
+    }
+
+    suspend fun compactionTarget(primary: AgentModelClient.ModelConfig): io.github.mangi.eta.agent.model.AgentCompactionTarget {
+        val settings = SettingsDataStore.compactionSettings()
+        val selected = settings.modelId?.let { id ->
+            ProviderRepository.allProviders().enabledModel(id)
+                ?: throw io.github.mangi.eta.agent.model.AgentModelFailure(
+                    "COMPACTION_MODEL_UNAVAILABLE", false, "所选压缩模型已停用或删除，请在上下文压缩设置中重新选择。",
+                )
+        }
+        var config = selected?.let { (provider, model) -> buildRuntimeConfig(provider, model) } ?: primary
+        ReasoningEffort.fromWireValue(settings.reasoningEffort)?.let { effort ->
+            val normalized = config.reasoningCapabilities?.normalize(effort)
+                ?: if (effort == ReasoningEffort.OFF) effort else config.effectiveReasoningEffort
+            config = config.copy(reasoningEffort = normalized, thinkingEnabled = normalized.enablesReasoning)
+        }
+        return io.github.mangi.eta.agent.model.AgentCompactionTarget(
+            config, io.github.mangi.eta.agent.model.ProviderClientFactory.getClient(config),
+            settings.prompt.ifBlank { io.github.mangi.eta.agent.model.AgentCompactionTarget.DEFAULT_PROMPT },
         )
     }
 
@@ -153,13 +175,19 @@ internal object RuntimeConfigRepository {
         return buildRuntimeConfig(provider, model)
     }
 
-    suspend fun syncToRemotePreferences(service: XposedService?): Boolean {
-        val prefs = Prefs.remotePreferencesForUi(service) ?: return false
-        val config = currentRuntimeConfig() ?: return clearRuntimeConfig(prefs)
-        return writeRuntimeConfig(prefs, config)
+    /**
+     * 把运行时配置同步到 RemotePreferences。
+     *
+     * [Prefs.remotePreferencesForUi] 首次取用时是跨进程 binder 请求，写入侧 [SharedPreferences.Editor.commit]
+     * 也是同步 binder 提交；统一在 IO 上执行，避免调用方（含设置页转场帧）在主线程等待。
+     */
+    suspend fun syncToRemotePreferences(service: XposedService?): Boolean = withContext(Dispatchers.IO) {
+        val prefs = Prefs.remotePreferencesForUi(service) ?: return@withContext false
+        val config = currentRuntimeConfig() ?: return@withContext clearRuntimeConfig(prefs)
+        writeRuntimeConfig(prefs, config)
     }
 
-    suspend fun ensureDefaults(service: XposedService?) {
+    suspend fun ensureDefaults(service: XposedService?) = withContext(Dispatchers.IO) {
         ProviderRepository.ensureBuiltInsMerged()
         ProviderRepository.repairSelection()
         syncToRemotePreferences(service)

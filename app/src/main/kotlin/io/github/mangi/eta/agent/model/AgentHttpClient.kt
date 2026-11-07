@@ -18,6 +18,7 @@ internal object AgentHttpClient {
 
     val modelClient: OkHttpClient by lazy {
         client.newBuilder()
+            .addInterceptor(io.github.mangi.eta.local.subagentstats.SubagentRequestStats.interceptor)
             .readTimeout(MODEL_READ_TIMEOUT_MS, TimeUnit.MILLISECONDS)
             .retryOnConnectionFailure(false)
             .build()
@@ -29,8 +30,19 @@ internal object AgentHttpClient {
             .build()
     }
 
-    fun modelClient(purpose: ProviderRequestPurpose): OkHttpClient =
-        if (purpose == ProviderRequestPurpose.COMPACTION) compactionClient else modelClient
+    private val http1ModelClient: OkHttpClient by lazy {
+        modelClient.newBuilder().protocols(listOf(okhttp3.Protocol.HTTP_1_1)).build()
+    }
+    private val http1CompactionClient: OkHttpClient by lazy {
+        compactionClient.newBuilder().protocols(listOf(okhttp3.Protocol.HTTP_1_1)).build()
+    }
+
+    fun modelClient(purpose: ProviderRequestPurpose, forceHttp1: Boolean = false): OkHttpClient = when {
+        forceHttp1 && purpose == ProviderRequestPurpose.COMPACTION -> http1CompactionClient
+        forceHttp1 -> http1ModelClient
+        purpose == ProviderRequestPurpose.COMPACTION -> compactionClient
+        else -> modelClient
+    }
 
     val client: OkHttpClient by lazy {
         OkHttpClient.Builder()

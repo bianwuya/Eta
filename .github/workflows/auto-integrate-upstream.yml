@@ -1,0 +1,84 @@
+name: Prepare upstream PR (manual)
+
+# Official updates are opt-in. Never react to ordinary PR checks or a timer.
+on:
+  workflow_dispatch:
+
+# No signing secrets and no PR code execution in this workflow.
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+
+concurrency:
+  group: eta-manual-upstream-to-local
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: github.repository == 'bianwuya/Eta' && github.ref == 'refs/heads/local'
+    name: Prepare upstream review without merging local
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Checkout stable baseline
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: local
+          fetch-depth: 0
+
+      - name: Prepare upstream-only review PR
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch origin +refs/heads/main:refs/remotes/origin/main +refs/heads/local:refs/remotes/origin/local
+          main_sha=$(git rev-parse origin/main)
+          local_sha=$(git rev-parse origin/local)
+
+          # The user chooses when to sync main and when to review that snapshot.
+          if git merge-base --is-ancestor "$main_sha" "$local_sha"; then
+            echo 'local already contains the selected main snapshot.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          pending=$(gh pr list --state open --base local --limit 100 \
+            --json number,headRefName \
+            --jq '[.[] | select(.headRefName | startswith("automation/upstream-"))] | first | .number // empty')
+          if [[ -n "$pending" ]]; then
+            echo "Existing upstream PR #$pending needs review; no merge, close or repeated CI was requested." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          branch="automation/upstream-${main_sha:0:12}-on-${local_sha:0:12}"
+          if ! git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+            git switch -c "$branch" origin/local
+            # Merge only in the runner's candidate branch, never into remote local.
+            if ! git merge --no-ff --no-edit origin/main; then
+              {
+                echo '## Upstream conflicts require a deliberate repair'
+                echo 'No changes were pushed to local. Conflicted files:'
+                git diff --name-only --diff-filter=U
+              } >> "$GITHUB_STEP_SUMMARY"
+              git merge --abort
+              echo '::error::Resolve the selected upstream update on a review branch; local is unchanged.'
+              exit 1
+            fi
+            git push origin "HEAD:refs/heads/$branch"
+          fi
+
+          if ! gh pr create --base local --head "$branch" \
+            --title "chore(upstream): review official Eta ${main_sha:0:12}" \
+            --body "Manually requested upstream candidate. Official snapshot: $main_sha. Original local: $local_sha. This workflow never merges or closes PRs. Resolve conflicts and review changes before choosing to merge; all local branch rules still apply."; then
+            echo "::warning::Candidate branch preserved; open its PR manually if Actions PR creation is unavailable."
+            echo "[Open review PR](https://github.com/$GH_REPO/compare/local...$branch?expand=1)" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          pr_number=$(gh pr list --state open --base local --head "$branch" --json number --jq '.[0].number')
+          # Bot-created PR events may not trigger normal CI. Dispatch once for this new candidate.
+          gh workflow run pr-check.yml --ref "$branch"
+          echo "Prepared PR #$pr_number and requested its checks. The user decides whether and when to merge." >> "$GITHUB_STEP_SUMMARY"

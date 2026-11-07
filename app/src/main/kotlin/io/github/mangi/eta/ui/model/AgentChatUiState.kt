@@ -24,6 +24,8 @@ internal data class AgentChatUiState(
     val pendingFileReferences: List<PendingFileReferenceUi> = emptyList(),
     val queuedMessages: List<QueuedMessageUi> = emptyList(),
     val inputSyncVersion: Int = 0,
+    /** Only restores a recalled draft; an unsent input mode is local to the input subtree. */
+    val draftRequestMode: String = "normal",
     val appliedRuntimeRunIds: List<String> = emptyList(),
     val messageEdit: MessageEditUiState? = null,
     val roleplay: RoleplayBinding? = null,
@@ -178,8 +180,11 @@ data class SuggestionChipsMessageUi(
 data class PendingImageUi(
     val id: String,
     val uri: String,
+    /** Lightweight model-input data; never replace it with full-size display content. */
     val dataUrl: String,
     val mimeType: String,
+    /** Local viewer copy. Default preserves old inbox records and existing constructors. */
+    val displayUrl: String = dataUrl,
 )
 
 @Immutable
@@ -195,6 +200,7 @@ internal data class QueuedMessageUi(
     val pendingImages: List<PendingImageUi> = emptyList(),
     val pendingFileReferences: List<PendingFileReferenceUi> = emptyList(),
     val immediateInterrupt: Boolean = false,
+    val requestMode: String = "normal",
 )
 
 @Immutable

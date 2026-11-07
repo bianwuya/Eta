@@ -21,6 +21,7 @@ internal class AgentModelFailure(
         private val transientCodes = setOf(
             "rate_limit_exceeded", "rate_limit_error", "overloaded_error", "server_error",
             "api_error", "internal_error", "provider_unavailable", "service_unavailable",
+            "upstream_http2_stream_error", "upstream_error", "upstream_failed",
             "RESOURCE_EXHAUSTED", "UNAVAILABLE", "INTERNAL", "DEADLINE_EXCEEDED",
         )
 
@@ -68,10 +69,14 @@ internal class AgentModelFailure(
                 error.optString("status"),
                 error.optJSONObject("metadata")?.optString("error_type").orEmpty(),
             )
+            // 中转可能只给message，或用unknown_error/openai_error包装上游502。
+            // 只接纳确切的通用上游失败；明确参数/认证错误不走消息兜底。
+            val untypedUpstreamFailure = codes.all { it in setOf("", "unknown_error", "openai_error") } &&
+                error.optString("message").trim().equals("upstream failed", ignoreCase = true)
             return AgentModelFailure(
                 code = "PROVIDER_STREAM_ERROR",
                 retryable = !isPermanent(error, error.optString("message")) &&
-                    codes.any { it in transientCodes || it.toIntOrNull() in transientStatus },
+                    (untypedUpstreamFailure || codes.any { it in transientCodes || it.toIntOrNull() in transientStatus }),
                 message = message,
             )
         }
@@ -85,11 +90,46 @@ internal class AgentModelFailure(
                 "模型请求等待超时（连接或写入超时，或读取响应等待超过 ${AgentHttpClient.MODEL_READ_TIMEOUT_MS / 60_000} 分钟）。",
                 failure,
             )
-            is SSLException, is ProtocolException -> null
-            is IOException -> AgentModelFailure(
+            is SSLException -> if (isTransientTlsClosure(failure)) AgentModelFailure(
+                "MODEL_CONNECTION_FAILED", true, "模型 TLS 连接提前关闭，将尝试重新连接。", failure,
+            ) else null
+            is ProtocolException -> if (failure.message?.lowercase()?.startsWith("unexpected end of stream") == true) {
+                AgentModelFailure("MODEL_STREAM_TRUNCATED", true, "模型响应在完成前被对端截断，将重新请求；此前工具结果保持不变。", failure)
+            } else null
+            is IOException -> if (isHttp2Disconnect(failure)) {
+                AgentModelFailure("MODEL_HTTP2_DISCONNECTED", true,
+                    "模型 HTTP/2 连接在完成前中断，将在本次请求内尝试 HTTP/1.1；此前工具结果保持不变。", failure)
+            } else AgentModelFailure(
                 "MODEL_CONNECTION_FAILED", true, "模型连接中断或暂时无法建立，请检查网络与服务商状态。", failure,
             )
             else -> null
+        }
+
+        private fun isHttp2Disconnect(failure: IOException): Boolean {
+            var cause: Throwable? = failure
+            repeat(8) {
+                val current = cause ?: return@repeat
+                if (current.javaClass.name in setOf("okhttp3.internal.http2.StreamResetException", "okhttp3.internal.http2.ConnectionShutdownException")) return true
+                cause = current.cause.takeUnless { it === current }
+            }
+            return failure.message?.startsWith("stream was reset:", ignoreCase = true) == true
+        }
+
+        /** 只接纳明确的传输关闭；证书、对端身份与握手配置错误仍不能靠重试掩盖。 */
+        private fun isTransientTlsClosure(failure: SSLException): Boolean {
+            val causes = mutableListOf<Throwable>()
+            var current: Throwable? = failure
+            while (current != null && causes.none { it === current }) {
+                causes += current
+                current = current.cause
+            }
+            if (causes.any {
+                it is javax.net.ssl.SSLHandshakeException ||
+                    it is javax.net.ssl.SSLPeerUnverifiedException ||
+                    it is java.security.cert.CertificateException
+            }) return false
+            return causes.any { it is java.io.EOFException } ||
+                failure.message?.trim()?.lowercase() in setOf("connection closed", "connection closed by peer")
         }
 
         private fun isContextOverflow(error: JSONObject?): Boolean {

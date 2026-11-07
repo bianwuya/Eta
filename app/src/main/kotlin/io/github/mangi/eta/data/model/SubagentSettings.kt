@@ -12,6 +12,8 @@ import kotlinx.serialization.Serializable
 internal data class SubagentSettings(
     val modelId: String? = null,
     val reasoningEffort: String? = null,
+    val collectRequestStats: Boolean = false,
+    val statsEpoch: String = "initial",
 ) {
     val resolvedReasoningEffort: ReasoningEffort?
         get() = ReasoningEffort.fromWireValue(reasoningEffort)

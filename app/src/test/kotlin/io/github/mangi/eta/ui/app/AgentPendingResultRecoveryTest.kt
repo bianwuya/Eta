@@ -3,6 +3,7 @@ package io.github.mangi.eta.ui.app
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.agent.runtime.AgentRuntimeWire
 import io.github.mangi.eta.agent.runtime.AgentUiHandoffPayload
+import io.github.mangi.eta.ui.model.QueuedMessageUi
 import io.github.mangi.eta.ui.model.AgentChatUiState
 import io.github.mangi.eta.ui.model.AgentMessageUi
 import io.github.mangi.eta.ui.model.SystemNoticeCode
@@ -15,6 +16,20 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AgentPendingResultRecoveryTest {
+    @Test
+    fun acceptedQueuedSteeringIsNotDispatchedAgainAfterRecovery() {
+        val state = AgentChatUiState(messages = emptyList(), input = "", isStreaming = true, thinkingEnabled = false,
+            queuedMessages = listOf(QueuedMessageUi("queue-1", "引导"), QueuedMessageUi("queue-2", "后续")))
+        val result = AgentRuntimeWire.RunResult(runId = "steer", ok = true, content = "结果")
+        val supplements = listOf(AgentUiHandoffPayload.Supplement(1, "引导", 1L, "queue-1"))
+        val recovered = AgentPendingResultRecovery.apply(state, "steer", result, supplements = supplements)
+        assertEquals(listOf("queue-2"), recovered.state.queuedMessages.map { it.id })
+        val staleQueue = recovered.state.copy(queuedMessages = state.queuedMessages)
+        val replay = AgentPendingResultRecovery.apply(staleQueue, "steer", result, supplements = supplements)
+        assertTrue(replay.alreadyApplied)
+        assertEquals(listOf("queue-2"), replay.state.queuedMessages.map { it.id })
+    }
+
     @Test
     fun recoveryDoesNotReplaceFailedAttemptOrRetryNotice() {
         val partial = AgentMessageUi(id = "assistant-retry-run-1-0", content = "半截回答")

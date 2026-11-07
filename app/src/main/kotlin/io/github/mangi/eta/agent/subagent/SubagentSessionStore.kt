@@ -16,6 +16,13 @@ internal object SubagentSessionStore {
         val profile: SubagentProfile,
         @Volatile var history: List<AgentModelClient.ConversationMessage> = emptyList(),
         val running: AtomicBoolean = AtomicBoolean(false),
+        /** Explicit parent cancellation is terminal; a later resume must not resurrect stale work. */
+        val explicitlyCancelled: AtomicBoolean = AtomicBoolean(false),
+        // A live entry starts at zero and keeps the count across resume invocations.
+        // The session store is process-local; archived snapshots have their own value.
+        val compactionCount: AtomicInteger = AtomicInteger(0),
+        val requestStatsBaseline: io.github.mangi.eta.local.subagentstats.SubagentRequestBaseline =
+            io.github.mangi.eta.local.subagentstats.SubagentRequestBaseline(),
     )
 
     private class ConversationBucket {
@@ -30,7 +37,7 @@ internal object SubagentSessionStore {
     private val buckets = object : LinkedHashMap<String, ConversationBucket>(8, 0.75f, true) {
         override fun removeEldestEntry(
             eldest: MutableMap.MutableEntry<String, ConversationBucket>?,
-        ): Boolean = size > MAX_CONVERSATIONS
+        ): Boolean = size > MAX_CONVERSATIONS && eldest?.value?.entries?.values?.none { it.running.get() } == true
     }
 
     fun create(conversationKey: String, profile: SubagentProfile): Entry = synchronized(lock) {

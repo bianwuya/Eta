@@ -86,11 +86,17 @@ internal class AgentTraceFormatter {
                 JSONObject(toolCall.argumentsJson)
                     .optString("command")
                     .trim()
-                    .takeIf { it.isNotBlank() && it.length <= MAX_DISPLAY_COMMAND_CHARS }
+                    .takeIf { it.isNotBlank() }
                     ?.redactDisplaySecrets()
+                    ?.let { if (it.length > MAX_DISPLAY_COMMAND_CHARS) it.take(MAX_DISPLAY_COMMAND_CHARS) + "\n[命令预览已截短，全文按需读取]" else it }
             }.getOrNull()
         } else {
             null
+        }
+
+    fun redactForDisplay(text: String): String = text.redactDisplaySecrets()
+        .replace(Regex("https?://[^\\s\"'<>]+")) { match ->
+            if (match.value.contains('?')) match.value.substringBefore('?') + "?[查询参数已隐藏]" else match.value
         }
 
     private fun String.redactDisplaySecrets(): String =

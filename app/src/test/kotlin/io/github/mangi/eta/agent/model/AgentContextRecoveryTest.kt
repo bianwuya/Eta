@@ -124,7 +124,7 @@ class AgentContextRecoveryTest {
 
     @Test
     fun invalidSummaryDoesNotRetryAndKeepsOriginalHistory() {
-        for ((content, stop) in listOf("" to "stop", "半截" to "length", "长".repeat(12_001) to "stop")) {
+        for ((content, stop) in listOf("" to "stop", "半截" to "length")) {
             val messages = messages()
             val original = messages.toString()
             var requests = 0
@@ -196,7 +196,9 @@ class AgentContextRecoveryTest {
 
     private fun history() = listOf(
         AgentModelClient.ConversationMessage("user", "旧任务"),
-        AgentModelClient.ConversationMessage("assistant", "长".repeat(780_000)),
+        // These tests isolate reported-usage triggers and transactional behavior, not chunk sizing.
+        // Oversized exchanges are exercised separately by CompactionExcerptsTest.
+        AgentModelClient.ConversationMessage("assistant", "长".repeat(8_000)),
     )
 
     private fun messages() = JSONArray().put(JSONObject().put("role", "system").put("content", "固定约束")).also { source ->

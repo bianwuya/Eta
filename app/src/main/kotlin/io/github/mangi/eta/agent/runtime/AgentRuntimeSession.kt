@@ -35,6 +35,20 @@ internal class AgentRuntimeSession(
         if (state == State.RUNNING) latestTranscript = messages
     }
 
+    /** Persist and publish one version under the same terminal-state lock. */
+    fun commitTranscript(messages: List<AgentModelClient.ConversationMessage>, persist: () -> Unit) = lock.withLock {
+        // A rejected declaration must stop the loop before it can execute any tool.
+        if (state != State.RUNNING) throw AgentRunCancelledException()
+        persist()
+        latestTranscript = messages
+    }
+
+    private var recoverChildren: (List<AgentModelClient.ConversationMessage>) -> List<AgentModelClient.ConversationMessage> =
+        { AgentToolBatchRecovery.completeInterrupted(it) }
+    fun setChildRecovery(recover: (List<AgentModelClient.ConversationMessage>) -> List<AgentModelClient.ConversationMessage>) = lock.withLock {
+        if (state == State.RUNNING) recoverChildren = recover
+    }
+
     private var latestContext: AgentContextSnapshot? = null
     val contextSnapshot: AgentContextSnapshot?
         get() = lock.withLock { latestContext }
@@ -42,7 +56,12 @@ internal class AgentRuntimeSession(
     fun updateContext(snapshot: AgentContextSnapshot) = lock.withLock {
         if (state == State.RUNNING) latestContext = snapshot
     }
+
+    fun commitContext(snapshot: AgentContextSnapshot, persist: () -> Unit) = lock.withLock {
+        if (state == State.RUNNING) { persist(); latestContext = snapshot }
+    }
     private var state = State.RUNNING
+    private var stopRequested = false
     private val replayEvents = mutableListOf<AgentEvent>()
     private val searchSuggestionsBudget = SearchSuggestionsBudget()
     private val subscribers = mutableListOf<Subscriber>()
@@ -67,11 +86,16 @@ internal class AgentRuntimeSession(
     val isCommitting: Boolean
         get() = lock.withLock { state == State.COMMITTING }
 
-    fun emit(event: AgentEvent): Boolean =
+    /** Checkpoint and publication share the stop/terminal admission boundary. */
+    fun emit(event: AgentEvent, beforePublish: () -> Unit = {}): Boolean =
         lock.withLock {
             if (state != State.RUNNING) return false
+            if (event is AgentEvent.RunFinished && (stopRequested || controller.isCancelled)) {
+                throw AgentRunCancelledException()
+            }
             if (event is AgentEvent.SearchSuggestions &&
                 !searchSuggestionsBudget.accept(event.round, event.index, event.html)) return false
+            beforePublish()
             recordForReplay(event)
             subscribers.forEach { it.eventSink(event) }
             true
@@ -101,10 +125,11 @@ internal class AgentRuntimeSession(
 
     fun <T : AgentEvent> steer(
         text: String,
+        images: List<AgentModelClient.ModelImage> = emptyList(),
         eventFactory: () -> T,
     ): T? =
         lock.withLock {
-            if (state != State.RUNNING || operation != AgentRuntimeWire.OP_CHAT || !controller.steer(text)) return null
+            if (state != State.RUNNING || operation != AgentRuntimeWire.OP_CHAT || !controller.steer(text, images)) return null
             eventFactory().also { event ->
                 recordForReplay(event)
                 subscribers.forEach { it.eventSink(event) }
@@ -146,6 +171,17 @@ internal class AgentRuntimeSession(
         }
     }
 
+    /** Stop execution without publishing a result before tools and children have drained. */
+    fun requestStop(): Boolean {
+        lock.withLock {
+            if (state != State.RUNNING || stopRequested) return false
+            stopRequested = true
+        }
+        // Never invoke resource callbacks while holding the session lock.
+        controller.cancel()
+        return true
+    }
+
     /**
      * 先原子竞争 COMMITTING，再完成提交前副作用和结果发布。取消与替换不能越过提交胜者，
      * 因而不会出现“客户端收到取消、outbox 却留下成功结果”的分裂状态；耗时 I/O 也不持有锁。
@@ -153,21 +189,25 @@ internal class AgentRuntimeSession(
      */
     fun complete(
         result: AgentRuntimeWire.RunResult,
-        beforePublish: () -> Unit = {},
+        beforePublish: (AgentRuntimeWire.RunResult) -> Unit = {},
     ): Boolean {
-        lock.withLock {
+        val committedResult = lock.withLock {
             if (state != State.RUNNING) return false
             require(result.runId == runId) { "Result runId does not match the active session" }
             state = State.COMMITTING
+            if (result.ok && (stopRequested || controller.isCancelled)) {
+                result.copy(ok = false, content = "", error = "已停止")
+            } else result
         }
-        val commitFailure = runCatching(beforePublish).exceptionOrNull()
+        if (stopRequested) controller.cancel()
+        val commitFailure = runCatching { beforePublish(committedResult) }.exceptionOrNull()
         lock.withLock {
             state = State.TERMINAL
         }
         // 客户端收到结果即可续发；释放会话占用不能晚于结果，也不能持锁回调宿主。
-        beforeTerminalPublish(result)
+        beforeTerminalPublish(committedResult)
         lock.withLock {
-            subscribers.forEach { it.resultSink(result) }
+            subscribers.forEach { it.resultSink(committedResult) }
             subscribers.clear()
             replayEvents.clear()
             searchSuggestionsBudget.clear()
@@ -177,20 +217,20 @@ internal class AgentRuntimeSession(
     }
 
     fun cancel(reason: String): Boolean {
-        val result = lock.withLock {
+        val snapshot = lock.withLock {
             if (state != State.RUNNING) return false
-            state = State.TERMINAL
-            AgentRuntimeWire.RunResult(
-                runId = runId,
-                ok = false,
-                content = "",
-                error = reason,
-                contextSnapshot = latestContext,
-                transcript = AgentToolBatchRecovery.completeInterrupted(latestTranscript),
-                operation = operation,
-            )
+            state = State.COMMITTING
+            Triple(latestTranscript, latestContext, recoverChildren)
         }
         controller.cancel()
+        val interrupted = AgentToolBatchRecovery.completeInterrupted(snapshot.first)
+        val recovered = runCatching { snapshot.third(snapshot.first) }
+        val result = AgentRuntimeWire.RunResult(
+            runId = runId, ok = false, content = "",
+            error = if (recovered.isSuccess) reason else "$reason；子代理恢复记录读取失败，结果可能不完整。",
+            contextSnapshot = snapshot.second, transcript = recovered.getOrDefault(interrupted), operation = operation,
+        )
+        lock.withLock { state = State.TERMINAL }
         beforeTerminalPublish(result)
         lock.withLock {
             subscribers.forEach { it.resultSink(result) }

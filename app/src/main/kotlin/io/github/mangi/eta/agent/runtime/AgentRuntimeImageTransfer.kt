@@ -133,12 +133,17 @@ internal object AgentRuntimeImageTransfer {
     fun materialize(
         incoming: AgentRuntimeWire.IncomingRunRequest,
     ): AgentRuntimeWire.RunRequest = incoming.use { request ->
-        if (request.images.size > MAX_IMAGE_COUNT) {
+        request.materializeText().copy(images = materializeImages(request.images))
+    }
+
+    /** Same bounded FD ingestion for live steering; caller closes descriptors even on rejection. */
+    fun materializeImages(incoming: List<AgentRuntimeWire.WireImage>): List<AgentModelClient.ModelImage> {
+        if (incoming.size > MAX_IMAGE_COUNT) {
             throw ImageTransferException("一次最多支持 $MAX_IMAGE_COUNT 张图片")
         }
 
         var totalBytes = 0L
-        val images = request.images.mapIndexed { index, image ->
+        return incoming.mapIndexed { index, image ->
             image.fileDescriptor?.let { descriptor ->
                 val startedAt = SystemClock.elapsedRealtime()
                 val statSize = descriptor.statSize
@@ -198,7 +203,6 @@ internal object AgentRuntimeImageTransfer {
                 preserveOriginal = image.preserveOriginal,
             ) ?: throw ImageTransferException("无法读取旧协议中的图片")
         }
-        request.materializeText().copy(images = images)
     }
 
     private fun AgentModelClient.ModelImage.toWireImage(

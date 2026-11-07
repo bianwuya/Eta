@@ -216,6 +216,13 @@ class AgentPromptBuilderTest {
         assertFalse(disabled.any { it.contains(subagentGuidance) })
         assertEquals(1, enabled.count { it.contains(subagentGuidance) })
         assertEquals(disabled, enabled.filterNot { it.contains(subagentGuidance) })
+        for (obsolete in listOf("异步派发子智能体", "返回启动状态不代表完成", "subagent_control", "subagent_report", "结束父任务前处理所有活动子任务")) {
+            assertFalse("同步流程不应暴露旧协作协议: $obsolete", enabled.any { it.contains(obsolete) })
+        }
+        val guidance = enabled.single { it.contains(subagentGuidance) }
+        assertTrue(guidance.contains("subagent_type"))
+        assertTrue(guidance.contains("role 与 tools"))
+        assertTrue(guidance.contains("subagent_profile"))
     }
 
     @Test
