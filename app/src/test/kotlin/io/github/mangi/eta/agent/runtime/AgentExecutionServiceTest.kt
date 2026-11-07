@@ -84,6 +84,71 @@ class AgentExecutionServiceTest {
     }
 
     @Test
+    fun staleStopPendingIntentCannotStopReusedRunLease() {
+        val context = RuntimeEnvironment.getApplication()
+        val id = "run:reused-notification"
+        var stopped = 0
+        assertTrue(AgentExecutionService.acquire(context, id) { stopped++ })
+        val run = AgentRuntimeWire.ActiveRunSnapshot("reused-notification", "conversation")
+        AgentExecutionService.updateRunStatus(context, AgentOverlayStatus.Reasoning, 1, listOf(run))
+        shadowOf(Looper.getMainLooper()).idle()
+        val controller = Robolectric.buildService(AgentExecutionService::class.java).create()
+        try {
+            val old = shadowOf(requireNotNull(shadowOf(controller.get()).lastForegroundNotification)
+                .actions.single().actionIntent).savedIntent
+            AgentExecutionService.release(id)
+            assertTrue(AgentExecutionService.acquire(context, id) { stopped++ })
+            controller.get().onStartCommand(old, 0, 1)
+            shadowOf(Looper.getMainLooper()).idle()
+            assertEquals(0, stopped)
+        } finally {
+            AgentExecutionService.release(id)
+            AgentExecutionService.updateRunStatus(context, null, 0)
+            shadowOf(Looper.getMainLooper()).idle()
+            controller.destroy()
+        }
+    }
+
+    @Test
+    fun targetStopDoesNotReleaseLeaseWhileCancellationIsInFlight() {
+        val context = RuntimeEnvironment.getApplication()
+        val runId = "slow-stop"
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val unblock = java.util.concurrent.CountDownLatch(1)
+        val calls = java.util.concurrent.atomic.AtomicInteger()
+        assertTrue(AgentExecutionService.acquire(context, "run:$runId") {
+            calls.incrementAndGet(); entered.countDown(); unblock.await(5, java.util.concurrent.TimeUnit.SECONDS)
+        })
+        assertTrue(AgentExecutionService.acquire(context, "user:terminal") {})
+        AgentExecutionService.updateRunStatus(context, AgentOverlayStatus.Reasoning, 1,
+            listOf(AgentRuntimeWire.ActiveRunSnapshot(runId, "conversation")))
+        shadowOf(Looper.getMainLooper()).idle()
+        val controller = Robolectric.buildService(AgentExecutionService::class.java).create()
+        try {
+            val stop = shadowOf(requireNotNull(shadowOf(controller.get()).lastForegroundNotification)
+                .actions.single().actionIntent).savedIntent
+            controller.get().onStartCommand(stop, 0, 1)
+            assertTrue(entered.await(3, java.util.concurrent.TimeUnit.SECONDS))
+            controller.get().onStartCommand(stop, 0, 2)
+            shadowOf(Looper.getMainLooper()).idle()
+            val leases = AgentExecutionService::class.java.getDeclaredField("leases").apply { isAccessible = true }
+                .get(null) as ExecutionLeaseRegistry
+            assertEquals(2, leases.count())
+            assertEquals(1, calls.get())
+            unblock.countDown()
+            AgentExecutionService.release("run:$runId")
+            assertEquals(1, leases.count())
+        } finally {
+            unblock.countDown()
+            AgentExecutionService.release("run:$runId")
+            AgentExecutionService.release("user:terminal")
+            AgentExecutionService.updateRunStatus(context, null, 0)
+            shadowOf(Looper.getMainLooper()).idle()
+            controller.destroy()
+        }
+    }
+
+    @Test
     fun multipleRunsDoNotOfferAmbiguousGlobalStop() {
         val context = RuntimeEnvironment.getApplication()
         val leaseId = "run:notification-multiple"
