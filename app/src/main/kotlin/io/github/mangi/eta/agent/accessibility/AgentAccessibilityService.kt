@@ -47,6 +47,9 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import org.json.JSONObject
 
 class AgentAccessibilityService : AccessibilityService() {
@@ -95,7 +98,7 @@ class AgentAccessibilityService : AccessibilityService() {
     private val serviceToken = SERVICE_TOKENS.incrementAndGet()
 
     override fun onServiceConnected() {
-        instance = this
+        publishConnected(this)
     }
 
     override fun onUnbind(intent: Intent?): Boolean {
@@ -110,7 +113,7 @@ class AgentAccessibilityService : AccessibilityService() {
     }
 
     private fun clearCurrentInstance() {
-        if (instance === this) instance = null
+        publishDisconnected(this)
         scrollEventObservationGate.clear()
         signalWindowChanged()
     }
@@ -2532,12 +2535,28 @@ class AgentAccessibilityService : AccessibilityService() {
         private val SNAPSHOT_IDS = AtomicLong(0)
         private val CLIP_IDS = AtomicLong(0)
 
-        @Volatile
-        private var instance: AgentAccessibilityService? = null
+        /** A connection, not merely a Service object: reconnecting the same object creates a new generation. */
+        internal data class Connection(val generation: Long, val service: AgentAccessibilityService?)
 
-        fun current(): AgentAccessibilityService? = instance
+        private val connectionLock = Any()
+        private val mutableConnection = MutableStateFlow(Connection(0L, null))
+        internal val connection: StateFlow<Connection> = mutableConnection.asStateFlow()
 
-        fun isAvailable(): Boolean = instance != null
+        private fun publishConnected(service: AgentAccessibilityService) = synchronized(connectionLock) {
+            val previous = mutableConnection.value
+            mutableConnection.value = Connection(previous.generation + 1L, service)
+        }
+
+        private fun publishDisconnected(service: AgentAccessibilityService) = synchronized(connectionLock) {
+            val previous = mutableConnection.value
+            if (previous.service === service) {
+                mutableConnection.value = Connection(previous.generation + 1L, null)
+            }
+        }
+
+        fun current(): AgentAccessibilityService? = mutableConnection.value.service
+
+        fun isAvailable(): Boolean = current() != null
     }
 
     private sealed interface NodeValidation {
