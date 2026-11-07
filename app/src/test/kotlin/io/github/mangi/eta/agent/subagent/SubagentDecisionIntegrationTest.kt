@@ -130,27 +130,41 @@ class SubagentDecisionIntegrationTest {
     @Test fun ungroupedRequestsWaitForSignedParentBoundaryAndKeepOriginalPairing() {
         listOf("anthropic", "gemini").forEach { signedKind ->
             val parent = AgentRunController()
-            val store = MailboxMemoryStorage()
-            val broker = SubagentDecisionBroker("parent-$signedKind", parent, DecisionMemory(), timeoutMs = 10000)
+            // Legacy ungrouped launches have no mailbox reservation. Model their owner
+            // persistence directly instead of MailboxMemoryStorage's group-only started().
+            val reportsCommitted = CountDownLatch(2)
+            val store = object : YieldableSubagents.Persistence {
+                override fun started(taskId: String, toolCallId: String, round: Int, subagentId: String, prompt: String, accepted: String) = Unit
+                override fun finished(taskId: String, report: String): Boolean { reportsCommitted.countDown(); return true }
+                override fun interrupted() = Unit
+            }
+            val decisionStore = DecisionMemory()
+            val bothStored = CountDownLatch(1)
+            decisionStore.afterCommit = {
+                val records = decisionStore.snapshot()
+                if ((0 until records.length()).count { records.getJSONObject(it).optString("status") == "pending" } == 2) bothStored.countDown()
+            }
+            val broker = SubagentDecisionBroker("parent-$signedKind", parent, decisionStore, timeoutMs = 10000)
             val failure = AtomicReference<Throwable?>()
             val release = CountDownLatch(1)
             val childFinished = CountDownLatch(2)
-            val childSequence = AtomicInteger()
+            val childSessions = java.util.concurrent.ConcurrentHashMap<String, String>()
+            val childRounds = java.util.concurrent.ConcurrentHashMap<String, AtomicInteger>()
+            val conversationKey = "ungrouped-${UUID.randomUUID()}"
             val parentRound = AtomicInteger()
             val stableTools = AtomicReference<String>()
             val stablePrefix = AtomicReference<String>()
             val cacheKey = AtomicReference<String>()
-            val worker = SubagentExecutor(conversationKey = "ungrouped-${UUID.randomUUID()}", parentController = parent,
+            val worker = SubagentExecutor(conversationKey = conversationKey, parentController = parent,
                 parentRunId = "parent-$signedKind", configProvider = { config },
                 capabilitiesProvider = { AgentToolCapabilities(rootAvailable = false) },
                 baseToolExecutor = AgentModelClient.ToolExecutor { error("unexpected child tool") },
                 skillContext = SkillContext.EMPTY, memoryContext = AgentMemoryContext.DISABLED,
-                mcpTools = JSONArray(), executionContext = null, onProgress = {}, mailboxStorage = store,
+                mcpTools = JSONArray(), executionContext = null, onProgress = {},
                 decisionBroker = broker, providerFactory = {
-                    val id = if (childSequence.incrementAndGet() == 1) "a" else "b"
-                    val round = AtomicInteger()
                     provider(failure) { request ->
-                        when (round.incrementAndGet()) {
+                        val id = checkNotNull(childSessions[request.sessionId]) { "unknown child session ${request.sessionId}" }
+                        when (childRounds.computeIfAbsent(request.sessionId) { AtomicInteger() }.incrementAndGet()) {
                             1 -> {
                                 check(release.await(4, TimeUnit.SECONDS))
                                 tools(call("child-$id", "ask_parent", JSONObject().put("request_id", id)
@@ -169,7 +183,15 @@ class SubagentDecisionIntegrationTest {
                     }
                 })
             val owner = YieldableSubagents(parent, store, parentRunId = "parent-$signedKind", decisionBroker = broker,
-                executeOwned = { c, task, started -> worker.execute(c.round, c, decisionTaskId = task, onStarted = started) }) { c, started ->
+                executeOwned = { c, task, started ->
+                    worker.execute(c.round, c, decisionTaskId = task, onStarted = { subagentId, command ->
+                        try {
+                            val id = when (c.id) { "launch-1" -> "a"; "launch-2" -> "b"; else -> error("unexpected launch ${c.id}") }
+                            check(childSessions.putIfAbsent("$conversationKey-$subagentId", id) == null)
+                            started(subagentId, command)
+                        } catch (t: Throwable) { failure.compareAndSet(null, t); throw t }
+                    })
+                }) { c, started ->
                 worker.execute(c.round, c, onStarted = started)
             }
             val model = provider(failure) { request ->
@@ -183,9 +205,8 @@ class SubagentDecisionIntegrationTest {
                         stablePrefix.set(request.messages.getJSONObject(0).toString())
                         cacheKey.set(JSONObject().also { OpenAiPromptCache.apply(it, request) }.getString("prompt_cache_key"))
                         release.countDown()
-                        val until = System.nanoTime() + TimeUnit.SECONDS.toNanos(4)
-                        while (broker.pendingBatch().size < 2 && System.nanoTime() < until) Thread.sleep(5)
-                        check(broker.pendingBatch().size == 2) { "both child requests must arrive during provider call" }
+                        check(bothStored.await(4, TimeUnit.SECONDS)) { "both child requests must arrive during provider call" }
+                        assertEquals(setOf("a", "b"), broker.pendingBatch().map { it.getString("request_id") }.toSet())
                         check(!request.messages.toString().contains("critical-question-"))
                         val response = tools(call("signed-parent-tool", "fixture_parent_tool", JSONObject()), signed = signedKind == "anthropic")
                         if (signedKind == "gemini") GeminiEphemeralState.attachSteps(response.assistantMessage,
@@ -229,15 +250,17 @@ class SubagentDecisionIntegrationTest {
                     }
                     6 -> {
                         check(childFinished.await(4, TimeUnit.SECONDS))
-                        repeat(2) { checkNotNull(store.finished.poll(4, TimeUnit.SECONDS)) }
+                        check(reportsCommitted.await(4, TimeUnit.SECONDS))
                         val delivered = (0 until request.messages.length()).map(request.messages::getJSONObject)
-                            .count { it.optString("role") == "assistant" && it.optString("content").startsWith("[Eta 子代理最终报告") }
+                            .count { it.optString("role") == "user" && it.optBoolean("_eta_runtime_report") &&
+                                it.optString("content").startsWith("[Eta 子代理最终报告") }
                         answer(if (delivered == 2) "finished" else "waiting for child reports")
                     }
                     else -> {
                         check(parentRound.get() <= 10) { "parent loop did not terminate" }
                         val delivered = (0 until request.messages.length()).map(request.messages::getJSONObject)
-                            .count { it.optString("role") == "assistant" && it.optString("content").startsWith("[Eta 子代理最终报告") }
+                            .count { it.optString("role") == "user" && it.optBoolean("_eta_runtime_report") &&
+                                it.optString("content").startsWith("[Eta 子代理最终报告") }
                         answer(if (delivered == 2) "finished" else "waiting for child reports")
                     }
                 }
@@ -394,8 +417,11 @@ class SubagentDecisionIntegrationTest {
                         val messages = (0 until request.messages.length()).map(request.messages::getJSONObject)
                         val askResultIndex = messages.indexOfFirst { it.optString("role") == "tool" && it.optString("tool_call_id") == "real-pending-ask" }
                         if (terminal == "revise") {
-                            val correctionIndex = messages.indexOfFirst { it.optString("role") == "assistant" && it.optString("content").contains("REVISED_OBJECTIVE") }
-                            assertTrue("correction must be appended at the boundary after original tool result", correctionIndex > askResultIndex)
+                            val corrections = messages.withIndex().filter { it.value.optBoolean("_eta_runtime_parent_directive") &&
+                                it.value.optString("content").contains("REVISED_OBJECTIVE") }
+                            assertEquals(1, corrections.size)
+                            assertEquals("user", corrections.single().value.getString("role"))
+                            assertTrue("correction must be projected at the boundary after original tool result", corrections.single().index > askResultIndex)
                         }
                         completionBoundary.countDown()
                         check(releaseCompletion.await(4, TimeUnit.SECONDS))
@@ -458,6 +484,10 @@ class SubagentDecisionIntegrationTest {
                 memory.snapshot().getJSONObject(0).getString("status"))
             val history = checkNotNull(SubagentSessionStore.get(key, childId.get())).history
             assertEquals(1, history.count { it.role == "tool" && it.toolCallId == "effect-call" && it.content == "EFFECT_DONE" })
+            if (terminal == "revise") {
+                val correction = history.single { it.content.contains("REVISED_OBJECTIVE") }
+                assertEquals("assistant", correction.role)
+            }
             val askResults = history.filter { it.role == "tool" && it.toolCallId == "real-pending-ask" }
             assertEquals(1, askResults.size)
             if (terminal == "parent-cancel")

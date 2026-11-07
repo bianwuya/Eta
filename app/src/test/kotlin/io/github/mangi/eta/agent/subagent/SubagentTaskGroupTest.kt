@@ -219,10 +219,16 @@ class SubagentTaskGroupTest {
         val legacy = JSONArray(); AgentSubagentToolCatalog.appendSchemas(legacy, SubagentProfile.BUILTIN_PROFILES)
         assertFalse(legacy.toString().contains("group_key")); assertFalse(legacy.toString().contains("subagent_seal_group"))
         val supported = JSONArray(); AgentSubagentToolCatalog.appendSchemas(supported, SubagentProfile.BUILTIN_PROFILES, true)
-        assertTrue(supported.toString().contains("group_key")); assertEquals(4, supported.length())
+        assertTrue(supported.toString().contains("group_key")); assertEquals(5, supported.length())
+        val supportedNames = (0 until supported.length()).map { supported.getJSONObject(it).getJSONObject("function").getString("name") }.toSet()
+        assertEquals(setOf("subagent", "subagent_profile", "subagent_control", "subagent_seal_group", "subagent_respond"), supportedNames)
+        assertFalse(legacy.toString().contains("subagent_respond"))
         assertFalse(SubagentProfile.CODER.isToolAllowed("subagent_seal_group"))
-        val wildcard = SubagentProfile.resolve("wildcard", SubagentProfile.BUILTIN_PROFILES, customTools = listOf("*", "subagent_seal_group"))
+        assertFalse(SubagentProfile.CODER.isToolAllowed("subagent_respond"))
+        assertTrue(SubagentProfile.CODER.isToolAllowed("ask_parent"))
+        val wildcard = SubagentProfile.resolve("wildcard", SubagentProfile.BUILTIN_PROFILES, customTools = listOf("*", "subagent_seal_group", "subagent_respond"))
         assertFalse(wildcard.isToolAllowed("subagent_seal_group"))
+        assertFalse(wildcard.isToolAllowed("subagent_respond"))
     }
 
     @Test fun boundedMemberProjectionShowsTruncationWithoutRawEnMasseCopy() {
