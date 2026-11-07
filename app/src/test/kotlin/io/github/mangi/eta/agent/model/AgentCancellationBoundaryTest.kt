@@ -69,16 +69,19 @@ class AgentCancellationBoundaryTest {
             override val capabilities = ProviderCapabilities(EndpointKind.CHAT_COMPLETIONS, true, true, false, false, false, false)
             override fun complete(request: ProviderRequest, runController: AgentRunController, onEvent: (ProviderEvent) -> Unit): ProviderResponse {
                 if (request.purpose == ProviderRequestPurpose.COMPACTION) {
+                    assertEquals(1_000_000, request.config.contextWindow)
                     summaries.incrementAndGet()
                     if (cancel) controller.cancel()
                     throw AgentModelFailure("FIXTURE_SUMMARY_FAILURE", false, "fixture summary failure")
                 }
+                assertEquals(50_000, request.config.contextWindow)
                 onEvent(ProviderEvent.Usage(io.github.mangi.eta.agent.runtime.AgentTokenUsage(inputTokens = 45_000)))
                 return answer()
             }
         }
         fun complete() = AgentModelClient.complete(config.copy(contextWindow = 50_000), "inspect", { error("no tools") },
-            provider = model, history = history, runController = controller, onEvent = events::add)
+            provider = model, history = history, runController = controller, onEvent = events::add,
+            compactionTarget = { AgentCompactionTarget(config.copy(contextWindow = 1_000_000), model) })
         if (cancel) {
             assertCancelled(assertThrows(AgentModelExecutionException::class.java) { complete() })
             assertEquals(0, events.count { it is AgentEvent.RunFinished })
