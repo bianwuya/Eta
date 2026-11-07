@@ -382,7 +382,6 @@ private fun SettingsPageContent(
                     )
                     ArrowPreference(
                         title = "生图配置",
-                        summary = "固定生图来源、账号和模型；独立于聊天选择",
                         startAction = { SettingsIcon(Icons.Rounded.Palette, SettingsIconColors.Orange) },
                         onClick = { onNavigate(AppRoute.ImageGenSettings) },
                     )

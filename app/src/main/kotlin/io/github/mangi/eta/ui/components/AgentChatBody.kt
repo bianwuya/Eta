@@ -397,7 +397,13 @@ private fun AgentChatScaffold(
     // This is a same-window, wrap-content sibling: no scrim, popup window or outside touch handler.
     BoxWithConstraints(modifier.fillMaxSize()) {
         val barHeight = with(overlayDensity) { bottomBarHeightPx.toDp() }
-        val availableHeight = (maxHeight - barHeight - 8.dp).coerceAtLeast(0.dp)
+        // The measured bar includes a decorative fade/frost strip above its actual content.
+        // Anchor to the content edge so that strip does not become an extra panel/input gap.
+        // IME, navigation insets, attachments and queue rows remain part of the measured bar.
+        val panelBottomInset = questionPanelBottomInset(
+            barHeight, if (frostEnabled) ChatBottomFrostHeight else 16.dp,
+        )
+        val availableHeight = (maxHeight - panelBottomInset).coerceAtLeast(0.dp)
         Scaffold(
             modifier = Modifier.fillMaxSize(),
             containerColor = Color.Transparent,
@@ -497,7 +503,7 @@ private fun AgentChatScaffold(
                 maxHeight = minOf(320.dp, availableHeight),
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .padding(start = 16.dp, end = 16.dp, bottom = barHeight + 8.dp),
+                    .padding(start = 16.dp, end = 16.dp, bottom = panelBottomInset),
             )
         }
     }

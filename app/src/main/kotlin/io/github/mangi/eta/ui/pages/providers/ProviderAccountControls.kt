@@ -6,12 +6,16 @@ import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -21,6 +25,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.data.model.ProviderAuthModes
 import io.github.mangi.eta.data.repository.CodexAccountView
+import io.github.mangi.eta.local.codexusage.CodexUsagePanel
 import io.github.mangi.eta.ui.components.MiuixDialogActions
 import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.Card
@@ -33,7 +38,7 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 /**
  * Codex / Grok 账号区：当前账号状态、多账号列表与手动操作。
  *
- * 只展示可判定的登录状态，不展示或复制令牌、额度或冷却信息；
+ * 只展示可判定的登录状态和服务端返回的额度，不展示或复制令牌；
  * 切换账号只影响之后发起的请求，已在途的请求保持原绑定。
  */
 @Composable
@@ -70,6 +75,15 @@ internal fun ProviderAccountControls(
         title = current?.name?.takeIf { it.isNotBlank() } ?: account?.email?.let(::maskedAccountEmail)
             ?: account?.displayName ?: "$brand 账号",
         onClick = { if (multiAccount && enabled && !state.isBusy) showAccounts = true },
+        endActions = {
+            if (multiAccount && current != null && !state.isBusy) {
+                TextButton(
+                    text = "更多",
+                    enabled = enabled,
+                    onClick = { manageId = current.accountId; showMore = true },
+                )
+            }
+        },
         summary = browserError ?: state.message ?: when (state.phase) {
             ProviderLoginPhase.Loading -> "正在读取登录状态…"
             ProviderLoginPhase.Saving -> "正在保存配置…"
@@ -101,9 +115,13 @@ internal fun ProviderAccountControls(
             }
         }
         if (state.isBusy) {
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
                 if (prompt != null) {
-                    TextButton(text = "打开浏览器", onClick = onOpenBrowser, modifier = Modifier.weight(1f))
+                    TextButton(text = "打开浏览器", onClick = onOpenBrowser, modifier = Modifier.width(IntrinsicSize.Max))
                 }
                 if (state.phase in setOf(
                         ProviderLoginPhase.Saving,
@@ -112,25 +130,32 @@ internal fun ProviderAccountControls(
                         ProviderLoginPhase.Disconnecting,
                     )
                 ) {
-                    TextButton(text = "取消", onClick = onCancel, modifier = Modifier.weight(1f))
+                    TextButton(text = "取消", onClick = onCancel, modifier = Modifier.width(IntrinsicSize.Max))
+                }
+            }
+            if (multiAccount) {
+                TextButton(text = "切换账号", enabled = false, onClick = { showAccounts = true })
+            }
+        } else if (authMode == ProviderAuthModes.OPENAI_CHATGPT) {
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                TextButton(
+                    text = if (accounts.isEmpty()) "使用 $brand 登录" else "添加账号",
+                    enabled = enabled,
+                    onClick = onLogin,
+                    modifier = Modifier.width(IntrinsicSize.Max),
+                )
+                if (multiAccount) {
+                    TextButton(text = "切换账号", enabled = enabled, onClick = { showAccounts = true },
+                        modifier = Modifier.width(IntrinsicSize.Max))
                 }
             }
         } else {
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                if (authMode == ProviderAuthModes.OPENAI_CHATGPT) {
-                    TextButton(
-                        text = if (accounts.isEmpty()) "使用 $brand 登录" else "添加账号",
-                        enabled = enabled,
-                        onClick = onLogin,
-                        modifier = Modifier.weight(1f),
-                    )
-                    if (loggedIn) {
-                        TextButton(text = "管理用量", enabled = enabled, onClick = onManageUsage, modifier = Modifier.weight(1f))
-                    }
-                    if (current != null) {
-                        TextButton(text = "更多", enabled = enabled, onClick = { manageId = current.accountId; showMore = true }, modifier = Modifier.weight(1f))
-                    }
-                } else if (needsLogin) {
+                if (needsLogin) {
                     TextButton(
                         text = if (loggedIn) "重新授权" else "使用 $brand 登录",
                         enabled = enabled,
@@ -138,19 +163,34 @@ internal fun ProviderAccountControls(
                         modifier = Modifier.weight(1f),
                     )
                 }
-                if (loggedIn && authMode != ProviderAuthModes.OPENAI_CHATGPT) {
+                if (loggedIn) {
                     TextButton(text = "退出登录", enabled = enabled, onClick = onDisconnect, modifier = Modifier.weight(1f))
                 }
             }
         }
     }
 
-    if (multiAccount) {
-        TextButton(text = "切换账号", enabled = enabled && !state.isBusy,
-            onClick = { showAccounts = true }, modifier = Modifier.padding(horizontal = 16.dp))
-        if (providerId.isNotBlank() && current != null) {
-            io.github.mangi.eta.local.codexusage.CodexUsagePanel(providerId, current.accountId, current.usable)
+    if (multiAccount && providerId.isNotBlank() && current != null) {
+        // Dispose any in-flight refresh and remembered state before showing a different account.
+        key(providerId, current.accountId) {
+            CodexUsagePanel(
+                providerId = providerId,
+                accountId = current.accountId,
+                usable = current.usable,
+                canManage = loggedIn,
+                enabled = enabled && !state.isBusy,
+                onManageUsage = onManageUsage,
+            )
         }
+    } else if (authMode == ProviderAuthModes.OPENAI_CHATGPT && loggedIn) {
+        BasicComponent(
+            title = "剩余额度",
+            summary = "尚未获取额度",
+            endActions = { TextButton(text = "管理用量", enabled = enabled && !state.isBusy, onClick = onManageUsage) },
+        )
+    }
+
+    if (multiAccount) {
         top.yukonga.miuix.kmp.overlay.OverlayBottomSheet(show = showAccounts, title = "选择 Codex 账号",
             onDismissRequest = { showAccounts = false }) {
             Column {

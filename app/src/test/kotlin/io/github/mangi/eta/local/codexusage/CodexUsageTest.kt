@@ -17,6 +17,10 @@ class CodexUsageTest {
         assertEquals(123L, snapshot.windows[0].resetAt)
         assertTrue(windowName(snapshot.windows[0]).contains("5小时"))
         assertTrue(windowName(snapshot.windows[1]).contains("15分钟"))
+        assertEquals("1分钟后重置", resetCountdownText(snapshot.windows[0].resetAt, 100L))
+        assertEquals("6分钟后重置", resetCountdownText(snapshot.windows[1].resetAt, 100L))
+        assertEquals("已到重置时间 · 额度待刷新", resetCountdownText(snapshot.windows[0].resetAt, 123L))
+        assertEquals(58.0, snapshot.windows[0].remaining!!, 0.001)
         assertEquals(1000L, snapshot.updatedAt)
     }
     @Test fun missingPercentNeverMeansZeroOrFull() {
@@ -24,6 +28,8 @@ class CodexUsageTest {
         assertNull(snapshot.windows.single().remaining)
         assertNull(snapshot.windows.single().seconds)
         assertTrue(CodexUsageRepository.parse(JSONObject("{}"), 1).windows.isEmpty())
+        val noReset = CodexUsageRepository.parse(JSONObject("""{"rate_limit":{"primary_window":{"used_percent":0,"reset_at":null}}}"""), 1)
+        assertEquals("重置时间未知", resetCountdownText(noReset.windows.single().resetAt, 100L))
     }
     @Test fun invalidPercentageRemainsUnknownInsteadOfPlausibleQuota() {
         val snapshot = CodexUsageRepository.parse(JSONObject("""{"rate_limit":{"primary_window":{"used_percent":500},"secondary_window":{"used_percent":null}}}"""), 1)

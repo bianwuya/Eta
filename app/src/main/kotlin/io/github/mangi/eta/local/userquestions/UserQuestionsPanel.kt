@@ -27,8 +27,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.dropShadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.shadow.Shadow
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -53,6 +57,8 @@ import top.yukonga.miuix.kmp.basic.TabRow
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TextField
+import top.yukonga.miuix.kmp.squircle.squircleBorder
+import top.yukonga.miuix.kmp.squircle.squircleSurface
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 private enum class QuestionAction { PRESENTATION, SUBMIT, DEFER }
@@ -334,6 +340,9 @@ internal fun UserQuestionsPanel(
     LaunchedEffect(editor, editor.scrollRequest) {
         if (editor.scrollRequest > 0) editor.scroll.scrollTo(0)
     }
+    LaunchedEffect(editor, active, editor.historyExpanded) {
+        if (!active && !editor.historyExpanded) editor.scroll.scrollTo(0)
+    }
 
     fun switchPending() {
         if (pending.isEmpty() || editor.busy) return
@@ -363,6 +372,40 @@ internal fun UserQuestionsPanel(
         return
     }
 
+    if (!active) {
+        Column(
+            modifier = modifier
+                .fillMaxWidth()
+                .heightIn(max = maxHeight.coerceAtLeast(0.dp))
+                .dropShadow(
+                    shape = RoundedCornerShape(20.dp),
+                    shadow = Shadow(radius = 8.dp, color = Color.Black, alpha = 0.08f),
+                )
+                .squircleSurface(
+                    color = MiuixTheme.colorScheme.surfaceContainer,
+                    cornerRadius = 20.dp,
+                )
+                .squircleBorder(
+                    width = 0.5.dp,
+                    color = MiuixTheme.colorScheme.outline.copy(alpha = 0.55f),
+                    cornerRadius = 20.dp,
+                ),
+        ) {
+            HistoryHeader(editor, pending, ::switchPending) {
+                editor.historyDismissed = true
+                chosenId = pending.lastOrNull()?.id
+            }
+            Column(Modifier.fillMaxWidth().weight(1f, fill = false).verticalScroll(editor.scroll)) {
+                HistoryStatus(form, editor)
+                QuestionStatus(editor, active = false)
+                if (editor.historyExpanded) {
+                    HistoryBody(form, editor)
+                }
+            }
+        }
+        return
+    }
+
     Card(modifier = modifier.fillMaxWidth().heightIn(max = maxHeight.coerceAtLeast(0.dp))) {
         BoxWithConstraints(Modifier.fillMaxWidth().heightIn(max = maxHeight.coerceAtLeast(0.dp))) {
             // If IME or large font leaves very little room, keep the whole card scrollable
@@ -383,20 +426,9 @@ internal fun UserQuestionsPanel(
                         QuestionStatus(editor, active = true)
                         QuestionActions(form, editor)
                     }
-                } else if (active) {
+                } else {
                     QuestionHeader(form, editor, pending, ::switchPending)
                     QuestionStatus(editor, active = true)
-                } else {
-                    HistoryHeader(form, editor, pending, ::switchPending) {
-                        editor.historyDismissed = true
-                        chosenId = pending.lastOrNull()?.id
-                    }
-                    QuestionStatus(editor, active = false)
-                    if (editor.historyExpanded) {
-                        Column(Modifier.fillMaxWidth().weight(1f, fill = false).verticalScroll(editor.scroll)) {
-                            HistoryBody(form, editor)
-                        }
-                    }
                 }
             }
         }
@@ -554,36 +586,58 @@ private fun QuestionStatus(editor: QuestionEditor, active: Boolean) {
 
 @Composable
 private fun HistoryHeader(
-    form: UserQuestionSet,
     editor: QuestionEditor,
     pending: List<UserQuestionSet>,
     onSwitch: () -> Unit,
     onClose: () -> Unit,
 ) {
-    val title = when {
-        editor.action == QuestionAction.SUBMIT -> "正在提交回答…"
-        editor.action == QuestionAction.DEFER -> "正在保存并结束等待…"
-        form.endReason.isNotBlank() -> "历史提问 · ${form.endReason}"
-        editor.receipt != null -> editor.receipt!!
-        form.status == "answered" -> "历史提问 · 已回答"
-        form.status == "unanswered" -> "历史提问 · 未回答，等待已结束"
-        else -> "提问已过期 · 原任务已结束"
-    }
     Row(Modifier.fillMaxWidth().padding(start = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text(title, modifier = Modifier.weight(1f), style = MiuixTheme.textStyles.body2)
+        Text("历史提问", modifier = Modifier.weight(1f), style = MiuixTheme.textStyles.body2)
         if (pending.isNotEmpty()) {
             IconButton(onClick = onSwitch, enabled = !editor.busy, minWidth = 48.dp, minHeight = 48.dp) {
                 Icon(imageVector = Icons.Rounded.SwapHoriz, contentDescription = "切换到待回答提问，共 ${pending.size} 组",
                     modifier = Modifier.size(22.dp), tint = MiuixTheme.colorScheme.onSurface)
             }
         }
-        TextButton(text = if (editor.historyExpanded) "收起" else "查看", enabled = !editor.busy,
-            onClick = { editor.historyExpanded = !editor.historyExpanded })
+        IconButton(
+            onClick = { editor.historyExpanded = !editor.historyExpanded },
+            modifier = Modifier.semantics {
+                stateDescription = if (editor.historyExpanded) "已展开" else "已收起"
+            },
+            enabled = !editor.busy,
+            minWidth = 48.dp,
+            minHeight = 48.dp,
+        ) {
+            Text(
+                text = if (editor.historyExpanded) "收起" else "查看",
+                style = MiuixTheme.textStyles.footnote1,
+                color = if (editor.busy) MiuixTheme.colorScheme.disabledOnSecondaryVariant else MiuixTheme.colorScheme.onSurface,
+            )
+        }
         IconButton(onClick = onClose, enabled = !editor.busy, minWidth = 48.dp, minHeight = 48.dp) {
             Icon(imageVector = Icons.Rounded.Close, contentDescription = "关闭历史提示", modifier = Modifier.size(20.dp),
                 tint = MiuixTheme.colorScheme.onSurface)
         }
     }
+}
+
+@Composable
+private fun HistoryStatus(form: UserQuestionSet, editor: QuestionEditor) {
+    val status = when {
+        editor.action == QuestionAction.SUBMIT -> "正在提交回答…"
+        editor.action == QuestionAction.DEFER -> "正在保存并结束等待…"
+        form.endReason.isNotBlank() -> form.endReason
+        editor.receipt != null -> editor.receipt!!
+        form.status == "answered" -> "已回答"
+        form.status == "unanswered" -> "未回答，等待已结束"
+        else -> "提问已过期 · 原任务已结束"
+    }
+    Text(
+        text = status,
+        style = MiuixTheme.textStyles.footnote2,
+        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+        modifier = Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, bottom = 10.dp),
+    )
 }
 
 @Composable
