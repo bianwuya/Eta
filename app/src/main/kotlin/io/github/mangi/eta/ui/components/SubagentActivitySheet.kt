@@ -16,12 +16,17 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ChevronRight
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Lightbulb
 import androidx.compose.material.icons.rounded.MoreHoriz
 import androidx.compose.runtime.Composable
@@ -163,7 +168,7 @@ internal fun SubagentActivityRow(
     }
     OverlayBottomSheet(
         show = showFullDetails,
-        title = "任务详情",
+        title = "历史记录",
         onDismissRequest = { showFullDetails = false },
     ) {
         if (showFullDetails) SubagentFullDetails(snapshot.detailId, allowDelete = !running)
@@ -205,15 +210,26 @@ private fun SubagentTypeBadge(
 }
 
 @Composable
-private fun SubagentInspectorContent(
+internal fun SubagentInspectorContent(
     snapshot: SubagentActivitySnapshot,
     running: Boolean,
     failed: Boolean,
     onOpenDetails: () -> Unit,
+    stepsState: LazyListState = rememberLazyListState(),
 ) {
     val density = LocalDensity.current
     val maxSheetHeight = with(density) { LocalWindowInfo.current.containerSize.height.toDp() } * 0.76f
     var showInformation by rememberSaveable(snapshot.subagentId) { mutableStateOf(false) }
+    // Stable across the rolling last-12 window, while remaining safe for older snapshots
+    // that may contain repeated IDs. Duplicate occurrences can shift if one is removed.
+    val stepKeys = remember(snapshot.steps) {
+        val occurrences = mutableMapOf<String, Int>()
+        snapshot.steps.map { step ->
+            val occurrence = occurrences.getOrDefault(step.id, 0)
+            occurrences[step.id] = occurrence + 1
+            "step:${step.id.length}:${step.id}:$occurrence"
+        }
+    }
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -237,50 +253,57 @@ private fun SubagentInspectorContent(
                     )
                 }
                 Text(
-                    text = SubagentReadableText.contextSummary(snapshot.contextTokens, snapshot.contextWindow, snapshot.compactionCount),
+                    text = SubagentReadableText.contextSummary(snapshot),
                     style = MiuixTheme.textStyles.footnote2,
                     color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                 )
             }
             IconButton(onClick = { showInformation = !showInformation }) {
                 Icon(
-                    imageVector = Icons.Rounded.MoreHoriz,
+                    imageVector = if (showInformation) Icons.Rounded.Close else Icons.Rounded.MoreHoriz,
                     contentDescription = if (showInformation) "收起任务信息" else "查看任务指令与统计说明",
                     tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                 )
             }
         }
-        LazyColumn(
-            modifier = Modifier.fillMaxWidth().weight(1f, fill = false),
-        ) {
-            if (showInformation) {
-                item(key = "task-information") {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(vertical = 8.dp)) {
-                        Text(
-                            text = "上下文单位为 Token，万位数四舍五入；用量取此子代理最近一次模型上报，不是实时重新计算。上限取本次运行配置。压缩次数仅统计成功完成，续接同一子代理时累计。\n精确用量：${snapshot.contextTokens ?: "待上报"} / ${snapshot.contextWindow ?: "上限未知"} Token。",
-                            style = MiuixTheme.textStyles.footnote2,
-                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                        )
-                        if (snapshot.previewTruncated) Text(
-                            text = "当前为截短预览，不是模型收到的完整指令。",
-                            style = MiuixTheme.textStyles.footnote2,
-                        )
-                        if (snapshot.detailId.isNotBlank()) {
-                            ArrowPreference(title = "保留全文", onClick = onOpenDetails)
-                        } else if (snapshot.previewTruncated) {
-                            Text("旧记录未保留全文，已丢内容无法恢复。", style = MiuixTheme.textStyles.footnote2)
-                        }
-                        if (snapshot.prompt.isNotBlank()) {
-                            Text(if (snapshot.resumed) "续接任务指令" else "任务指令", style = MiuixTheme.textStyles.footnote2)
-                            SelectionContainer {
-                                Text(snapshot.prompt, style = MiuixTheme.textStyles.body2)
-                            }
-                        }
+        // This entry remains visible for running, failed and cancelled tasks, including old
+        // snapshots with no detail ID. The destination explains unavailable records instead.
+        ArrowPreference(title = "历史记录",
+            summary = if (snapshot.historyIncomplete) "部分记录保存失败，历史可能不完整" else null,
+            onClick = onOpenDetails)
+        AnimatedVisibility(visible = showInformation) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = maxSheetHeight * 0.35f)
+                    .verticalScroll(rememberScrollState())
+                    .padding(vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text("任务信息", style = MiuixTheme.textStyles.footnote2)
+                Text(
+                    text = SubagentReadableText.contextExplanation(snapshot),
+                    style = MiuixTheme.textStyles.footnote2,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                )
+                if (snapshot.previewTruncated) Text(
+                    text = "当前为截短预览，不是模型收到的完整指令。",
+                    style = MiuixTheme.textStyles.footnote2,
+                )
+                if (snapshot.prompt.isNotBlank()) {
+                    Text(if (snapshot.resumed) "续接任务指令" else "任务指令", style = MiuixTheme.textStyles.footnote2)
+                    SelectionContainer {
+                        Text(snapshot.prompt, style = MiuixTheme.textStyles.body2)
                     }
                 }
             }
+        }
+        LazyColumn(
+            state = stepsState,
+            modifier = Modifier.fillMaxWidth().weight(1f, fill = false),
+        ) {
             // Reuse the main chat timeline, composing only visible execution steps.
-            itemsIndexed(snapshot.steps, key = { index, step -> "step:$index:${step.id}" }) { index, step ->
+            itemsIndexed(snapshot.steps, key = { index, _ -> stepKeys[index] }) { index, step ->
                 val isLastStep = index == snapshot.steps.lastIndex && !running
                 WorkTimelineNode(
                     icon = if (step.kind == SubagentStepSnapshot.KIND_THINKING) {

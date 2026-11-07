@@ -155,10 +155,12 @@ internal class SubagentExecutor(
                 onStarted = onStarted,
             )
         } catch (failure: Exception) {
-            SubagentSessionStore.releaseRunning(conversationKey, entry.subagentId)
             if (failure is AgentRunCancelledException || failure is java.util.concurrent.CancellationException) throw failure
             if (parentController.isCancelled) throw AgentRunCancelledException()
             failureResult(toolCall, "SUBAGENT_START_FAILED", failure.message ?: "启动失败")
+        } finally {
+            // This invocation exclusively owns the claim until all callbacks and cleanup finish.
+            SubagentSessionStore.releaseRunning(conversationKey, entry.subagentId)
         }
     }
 
@@ -210,6 +212,7 @@ internal class SubagentExecutor(
                 .put("outcome_preserved", true)).toString())
         }
         var detailStoreForCleanup: SubagentDetailStore? = null
+        var historyRecorderForFailure: SubagentHistoryRecorder? = null
         try {
         val mailbox = mailboxInvocation?.let { invocation ->
             val identity = SubagentMailbox.Identity(invocation, subagentId)
@@ -229,11 +232,22 @@ internal class SubagentExecutor(
             if (throwable is AgentRunCancelledException || throwable is java.util.concurrent.CancellationException) throw throwable
             if (parentController.isCancelled || childController.isCancelled) throw AgentRunCancelledException()
             val previousCompactions = entry.compactionCount.get()
-            SubagentSessionStore.releaseRunning(conversationKey, subagentId)
+            val previousReading = entry.lastContext?.reading?.copy(previousInvocation = true, modelChanged = null)
             val message = throwable.message ?: "无法加载 Subagent 模型配置"
             // 启动失败必须是真实失败状态，不能停留在合成卡片初始的“正在启动”。
+            val failedStore = runCatching { detailStoreFactory?.invoke() }.getOrNull()
+                .also { detailStoreForCleanup = it }
             val failed = SubagentActivitySnapshot.failureFromArguments(toolCall.argumentsJson, message)
-                .copy(subagentId = subagentId, compactionCount = previousCompactions)
+                .copy(subagentId = subagentId, compactionCount = previousCompactions, contextReading = previousReading,
+                    detailId = if (failedStore != null) toolCall.id else "")
+            runCatching {
+                failedStore?.save(toolCall.id, failed)
+                failedStore?.let { SubagentHistoryRecorder(it, toolCall.id).finish("failed", message) }
+            }.onFailure {
+                io.github.mangi.eta.core.AndroidAgentLogger.warnThrottled("subagent_history_write_failed") {
+                    "Subagent history storage failed: type=${it.javaClass.simpleName}"
+                }
+            }
             latestSnapshots[toolCall.id] = failed.encode()
             onProgress(
                 AgentEvent.SubagentProgress(
@@ -264,10 +278,26 @@ internal class SubagentExecutor(
             resumed = isResume,
             contextWindow = resolvedConfig.knownContextWindow,
             successfulCompactions = entry.compactionCount,
+            previousContext = if (isResume) entry.lastContext else null,
+            modelId = resolvedConfig.model,
+            providerId = resolvedConfig.providerId.ifBlank { resolvedConfig.baseUrl }, // In-memory comparison only.
+            onContextChanged = { entry.lastContext = it },
         )
 
         val detailStore = detailStoreFactory?.invoke().also { detailStoreForCleanup = it }
         val detailId = toolCall.id
+        val historyRecorder = detailStore?.let { SubagentHistoryRecorder(it, detailId) }
+            .also { historyRecorderForFailure = it }
+        var historyIncomplete = false
+        fun recordHistory(block: SubagentHistoryRecorder.() -> Unit) {
+            if (historyRecorder == null) return
+            runCatching { historyRecorder.block() }.onFailure {
+                historyIncomplete = true
+                io.github.mangi.eta.core.AndroidAgentLogger.warnThrottled("subagent_history_write_failed") {
+                    "Subagent history storage failed: type=${it.javaClass.simpleName}"
+                }
+            }
+        }
         var lastEmitNanos = 0L
         var snapshotSequence = 0L
         val publicationLock = Any()
@@ -275,10 +305,12 @@ internal class SubagentExecutor(
             val now = nanoTime()
             if (!force && now - lastEmitNanos < PROGRESS_THROTTLE_NANOS) return
             lastEmitNanos = now
+            recordHistory { checkpoint() }
             val source = tracker.snapshot()
             snapshotSequence = maxOf(snapshotSequence + 1, System.currentTimeMillis())
             val full = source.copy(
                 detailId = detailId,
+                historyIncomplete = historyIncomplete,
                 updatedAt = snapshotSequence,
                 prompt = SubagentDisplayText.redact(source.prompt),
                 output = SubagentDisplayText.redact(source.output),
@@ -377,6 +409,7 @@ internal class SubagentExecutor(
                     }
                 } else tools.execute(subCall)
                 result.also { result ->
+                    recordHistory { onToolResult(subCall, result) }
                     val safeResult = if (result.sensitive || io.github.mangi.eta.agent.model.AgentSensitiveToolPolicy.isSensitive(subCall.name)) {
                         "[敏感工具结果不保存]"
                     } else {
@@ -393,6 +426,7 @@ internal class SubagentExecutor(
             supportsSearchSuggestions = false,
         )
 
+        var historyCommittedOnSuccess = false
         return try {
             childController.throwIfCancelled()
             AgentModelClient.validateConfig(subagentConfig)
@@ -470,7 +504,9 @@ internal class SubagentExecutor(
                 sessionId = "$conversationKey-$subagentId",
                 operationId = "${toolCall.id}-$subagentId",
                 toolFilter = profile::filterTools,
+                onTranscript = { transcript -> recordHistory { onTranscript(transcript) } },
                 onEvent = { childEvent ->
+                    recordHistory { onEvent(childEvent) }
                     val force = tracker.onChildEvent(childEvent)
                     publishSnapshot(force = force)
                 },
@@ -485,7 +521,10 @@ internal class SubagentExecutor(
                 response.transcript,
                 response.contextSnapshot,
             )
-            SubagentSessionStore.complete(conversationKey, subagentId, updatedHistory)
+            // Commit the real transcript before checking cancellation, while keeping the
+            // running guard until terminal tracking and measurement publication finish.
+            entry.history = updatedHistory
+            historyCommittedOnSuccess = true
             childController.throwIfCancelled()
             if (cancelledByDecision.get()) tracker.markCancelled(response.content)
             else tracker.markCompleted(response.content)
@@ -515,22 +554,20 @@ internal class SubagentExecutor(
             )
             val finalized = withMailboxCleanup(result)
             childController.throwIfCancelled()
-            controlRegistry?.finish(subagentId, toolCall.id, finalized) ?: finalized
+            val selected = controlRegistry?.finish(subagentId, toolCall.id, finalized) ?: finalized
+            recordHistory {
+                if (cancelledByDecision.get()) finish("cancelled", "已停止", response.content)
+                else finish("completed", "子任务已完成。", response.content)
+            }
+            selected
         } catch (throwable: Throwable) {
             mailboxActive.set(false)
-            val partial = (throwable as? AgentModelExecutionException)?.let { ex ->
-                val partialHistory = SubagentContinuation.history(
-                    priorHistory,
-                    taskPrompt,
-                    ex.transcript,
-                    ex.contextSnapshot,
-                )
-                SubagentSessionStore.complete(conversationKey, subagentId, partialHistory)
-                tracker.partialOutput()
-            } ?: run {
-                SubagentSessionStore.releaseRunning(conversationKey, subagentId)
-                tracker.partialOutput()
+            val partialHistory = (throwable as? AgentModelExecutionException)?.let { ex ->
+                SubagentContinuation.history(priorHistory, taskPrompt, ex.transcript, ex.contextSnapshot)
             }
+            // Keep the known transcript before failure publication can itself throw.
+            if (partialHistory != null && !historyCommittedOnSuccess) entry.history = partialHistory
+            val partial = tracker.partialOutput()
 
             val cancellationCause = (throwable as? AgentModelExecutionException)?.cause
             val cancelled = parentController.isCancelled ||
@@ -548,6 +585,7 @@ internal class SubagentExecutor(
                 tracker.markFailed(errorMessage, partial)
             }
             if (cancelled) {
+                recordHistory { finish("cancelled", errorMessage) }
                 // Display failures must not turn cancellation into a startup error.
                 runCatching { publishSnapshot(force = true) }
                 throw AgentRunCancelledException()
@@ -586,13 +624,24 @@ internal class SubagentExecutor(
             try {
                 val finalized = withMailboxCleanup(result)
                 childController.throwIfCancelled()
-                controlRegistry?.finish(subagentId, toolCall.id, finalized) ?: finalized
+                val selected = controlRegistry?.finish(subagentId, toolCall.id, finalized) ?: finalized
+                recordHistory { finish("failed", errorMessage) }
+                selected
             } catch (cancelledAtPublication: AgentRunCancelledException) {
                 tracker.markCancelled(partial)
+                recordHistory { finish("cancelled", "已停止") }
                 runCatching { publishSnapshot(force = true) }
                 throw cancelledAtPublication
             }
         }
+        } catch (failure: Throwable) {
+            val cancelled = parentController.isCancelled || childController.isCancelled ||
+                failure is AgentRunCancelledException || failure is java.util.concurrent.CancellationException
+            runCatching {
+                historyRecorderForFailure?.finish(if (cancelled) "cancelled" else "failed",
+                    if (cancelled) "已停止" else failure.message ?: failure.javaClass.simpleName)
+            }
+            throw failure
         } finally {
             try {
                 // Fallback for startup/cancellation exits. Never replace an already selected outcome.
@@ -758,6 +807,11 @@ internal class SubagentExecutor(
         private val resumed: Boolean,
         private val contextWindow: Int? = null,
         private val successfulCompactions: AtomicInteger = AtomicInteger(0),
+        previousContext: SubagentSessionStore.ContextState? = null,
+        private val modelId: String = model,
+        private val providerId: String = "",
+        private val onContextChanged: (SubagentSessionStore.ContextState) -> Unit = {},
+        private val now: () -> Long = System::currentTimeMillis,
     ) {
         private val lock = Any()
         private val steps = mutableListOf<SubagentStepSnapshot>()
@@ -769,23 +823,62 @@ internal class SubagentExecutor(
         private var finalOutput = ""
         private var retainedTruncated = false
         private var errorText: String? = null
-        // Usage belongs to this invocation: resume may select a different model or append a prompt.
-        private var contextTokens: Int? = null
+        // Previous invocations are historical even when the model happens to be unchanged.
+        private var contextState = previousContext?.let { previous ->
+            previous.copy(reading = previous.reading.copy(
+                previousInvocation = true,
+                modelChanged = when {
+                    previous.model.isBlank() || modelId.isBlank() -> null
+                    previous.model != modelId -> true
+                    previous.providerId.isBlank() || providerId.isBlank() -> null
+                    else -> previous.providerId != providerId
+                },
+            ))
+        }
+        private var currentAttemptHasReading = false
+        private var contextRequestState = SubagentActivitySnapshot.REQUEST_UNKNOWN
         private var compactionCount = successfulCompactions.get()
         private var lastCompletedCompactionId: String? = null
+
+        private fun setContextState(state: SubagentSessionStore.ContextState) {
+            contextState = state
+            onContextChanged(state)
+        }
+
+        private fun markCurrentAttempt(outcome: String) {
+            val state = contextState ?: return
+            if (!currentAttemptHasReading || state.reading.source != SubagentContextReading.SOURCE_USAGE) return
+            setContextState(state.copy(reading = state.reading.copy(attempt = outcome)))
+        }
+
+        private fun closeCurrentRequest(state: String, attempt: String) {
+            if (contextRequestState != SubagentActivitySnapshot.REQUEST_IN_PROGRESS &&
+                contextRequestState != SubagentActivitySnapshot.REQUEST_RETRYING
+            ) return
+            markCurrentAttempt(attempt)
+            contextRequestState = state
+            currentAttemptHasReading = false
+        }
 
         fun onChildEvent(event: AgentEvent): Boolean = synchronized(lock) {
             when (event) {
                 is AgentEvent.RoundStarted -> {
+                    currentAttemptHasReading = false
+                    // Keep a previous failure visible while its retry is running.
+                    if (contextRequestState != SubagentActivitySnapshot.REQUEST_RETRYING) {
+                        contextRequestState = SubagentActivitySnapshot.REQUEST_IN_PROGRESS
+                    }
                     currentAction = "等待模型响应（第 ${event.round} 轮）"
                     true
                 }
 
                 is AgentEvent.ModelRetryScheduled -> {
+                    // The latest report may itself belong to the failed attempt; label it honestly.
+                    markCurrentAttempt(SubagentContextReading.ATTEMPT_FAILED)
+                    currentAttemptHasReading = false
+                    contextRequestState = SubagentActivitySnapshot.REQUEST_RETRYING
                     // 失败尝试只留作步骤记录，不拼进后续的部分汇报。
                     roundTexts.remove(event.round)
-                    // The retry discarded that attempt; await fresh usage rather than keep it.
-                    contextTokens = null
                     finishAllRunningSteps(SubagentStepSnapshot.STATUS_FAILED)
                     currentAction = event.displayMessage
                     true
@@ -793,9 +886,32 @@ internal class SubagentExecutor(
 
                 is AgentEvent.UsageReceived -> {
                     val reported = event.usage.contextTokens?.takeIf { it >= 0 }
-                    val changed = contextTokens != reported
-                    contextTokens = reported
-                    changed
+                    if (reported == null) {
+                        false
+                    } else {
+                        currentAttemptHasReading = true
+                        if (contextRequestState == SubagentActivitySnapshot.REQUEST_UNKNOWN) {
+                            contextRequestState = SubagentActivitySnapshot.REQUEST_IN_PROGRESS
+                        }
+                        setContextState(SubagentSessionStore.ContextState(
+                            reading = SubagentContextReading(
+                                tokens = reported,
+                                source = SubagentContextReading.SOURCE_USAGE,
+                                at = now(),
+                                attempt = SubagentContextReading.ATTEMPT_REPORTED,
+                            ),
+                            model = modelId,
+                            providerId = providerId,
+                        ))
+                        true // Even equal values are a new report with its own timestamp/attempt.
+                    }
+                }
+
+                is AgentEvent.AssistantReceived -> {
+                    markCurrentAttempt(SubagentContextReading.ATTEMPT_COMPLETED)
+                    currentAttemptHasReading = false
+                    contextRequestState = SubagentActivitySnapshot.REQUEST_COMPLETED
+                    true
                 }
 
                 is AgentEvent.ContextCompaction -> {
@@ -804,8 +920,19 @@ internal class SubagentExecutor(
                     ) {
                         lastCompletedCompactionId = event.operationId
                         compactionCount = successfulCompactions.incrementAndGet()
-                        // Only a supplied post-compaction value is current; never retain old usage.
-                        contextTokens = event.tokensAfter?.takeIf { it >= 0 }
+                        currentAttemptHasReading = false
+                        val after = event.tokensAfter?.takeIf { it >= 0 }
+                        if (after != null) {
+                            setContextState(SubagentSessionStore.ContextState(
+                                reading = SubagentContextReading(after, SubagentContextReading.SOURCE_COMPACTION, now()),
+                                model = modelId,
+                                providerId = providerId,
+                            ))
+                        } else {
+                            contextState?.let { state ->
+                                setContextState(state.copy(reading = state.reading.copy(beforeCompaction = true)))
+                            }
+                        }
                         true
                     } else {
                         false
@@ -937,6 +1064,7 @@ internal class SubagentExecutor(
         }
 
         fun markFailed(error: String, partial: String) = synchronized(lock) {
+            closeCurrentRequest(SubagentActivitySnapshot.REQUEST_FAILED, SubagentContextReading.ATTEMPT_FAILED)
             finishAllRunningSteps(SubagentStepSnapshot.STATUS_FAILED)
             status = SubagentActivitySnapshot.STATUS_FAILED
             errorText = error.take(1_000)
@@ -945,6 +1073,7 @@ internal class SubagentExecutor(
         }
 
         fun markCancelled(partial: String) = synchronized(lock) {
+            closeCurrentRequest(SubagentActivitySnapshot.REQUEST_CANCELLED, SubagentContextReading.ATTEMPT_CANCELLED)
             finishAllRunningSteps(SubagentStepSnapshot.STATUS_FAILED)
             status = SubagentActivitySnapshot.STATUS_CANCELLED
             errorText = "已停止"
@@ -983,9 +1112,13 @@ internal class SubagentExecutor(
                 previewTruncated = retainedTruncated || totalStepCount > MAX_STEPS,
                 output = liveOutput,
                 error = errorText,
-                contextTokens = contextTokens,
+                contextTokens = contextState?.reading?.takeUnless {
+                    it.beforeCompaction || it.previousInvocation
+                }?.tokens,
                 contextWindow = contextWindow,
                 compactionCount = compactionCount,
+                contextReading = contextState?.reading,
+                contextRequestState = contextRequestState,
             )
         }
 

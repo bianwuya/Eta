@@ -1,17 +1,10 @@
 package io.github.mangi.eta.local.richcontent
 
 import android.graphics.BitmapFactory
-import android.widget.Toast
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Code
-import androidx.compose.material.icons.rounded.Download
-import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -19,129 +12,53 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
 import io.github.mangi.eta.ui.components.ImageViewerDialog
 import io.github.mangi.eta.ui.components.MiuixScaffold
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.*
-import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 internal val LocalRichPreview = staticCompositionLocalOf<(String) -> Unit> { {} }
-
-private data class PreviewDocument(val html: String? = null, val bitmap: ImageBitmap? = null, val error: String? = null)
 
 @Composable
 internal fun RichPreviewScreen(reference: String, onBack: () -> Unit) {
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    // saveable：深浅色、字体缩放、旋转等重建后不重新加载页面，也不丢当前位置。
     var generation by rememberSaveable(reference) { mutableIntStateOf(0) }
-    var showSource by rememberSaveable(reference) { mutableStateOf(false) }
-    var scripts by rememberSaveable(reference) { mutableStateOf(false) }
-    var blocked by remember(generation, scripts) { mutableStateOf(false) }
-    var rendererFailed by remember(reference, generation, scripts) { mutableStateOf(false) }
-    // 滚动位置放在普通持有者里：滚动时只写这一个 int，不触发重组，也不重建 WebView。
-    // 用 Saver 交给 rememberSaveable 保存同一个值，深浅色/旋转变更后仍能回到原处。
-    val scrollY = rememberSaveable(
-        reference,
-        saver = androidx.compose.runtime.saveable.Saver<IntArray, Int>(
-            save = { it[0] },
-            restore = { intArrayOf(it) },
-        ),
-    ) { intArrayOf(0) }
-    val document by produceState<PreviewDocument?>(null, reference, generation) {
-        value = null
-        value = withContext(Dispatchers.IO) {
-            try {
+    var launchError by remember(reference, generation) { mutableStateOf<String?>(null) }
+    var imageBitmap by remember(reference, generation) { mutableStateOf<ImageBitmap?>(null) }
+    val currentOnBack by rememberUpdatedState(onBack)
+    LaunchedEffect(reference, generation) {
+        try {
+            val bitmap = withContext(Dispatchers.IO) {
                 val mime = if (reference.startsWith("content://")) context.contentResolver.getType(android.net.Uri.parse(reference)) else null
                 if (LocalPreviewFiles.isImage(reference) || mime?.startsWith("image/") == true) {
-                    PreviewDocument(bitmap = decodePreviewImage(context, reference))
+                    decodePreviewImage(context, reference)
                 } else {
                     require(mime == null || mime in setOf("text/html", "application/xhtml+xml", "text/plain")) { "不支持的附件类型" }
-                    PreviewDocument(html = LocalPreviewFiles.text(context, reference))
+                    null
                 }
-            } catch (e: CancellationException) { throw e }
-            catch (e: Exception) { PreviewDocument(error = e.message ?: "无法读取文件") }
-        }
+            }
+            if (bitmap != null) imageBitmap = bitmap
+            else {
+                openExternalHtmlPreview(context, reference)
+                currentOnBack()
+            }
+        } catch (e: CancellationException) { throw e }
+        catch (e: Exception) { launchError = e.message ?: "无法打开文件" }
     }
-    // The dialog owns image presentation. Dismissing it pops the route rather than
-    // exposing an empty preview screen behind it.
-    document?.bitmap?.let { bitmap ->
+    imageBitmap?.let { bitmap ->
         ImageViewerDialog(bitmap = bitmap, onDismiss = onBack)
         return
     }
-    val image = LocalPreviewFiles.isImage(reference)
-    val source = document?.html
-    val save = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/html")) { uri ->
-        if (uri != null && source != null) scope.launch {
-            val ok = withContext(Dispatchers.IO) {
-                runCatching { context.contentResolver.openOutputStream(uri)?.use { it.write(source.toByteArray()) } ?: error("无法保存") }.isSuccess
-            }
-            Toast.makeText(context, if (ok) "HTML 已保存" else "保存失败", Toast.LENGTH_SHORT).show()
-        }
-    }
-    val title = if (image) "图片预览" else "HTML 预览"
-    MiuixScaffold(title = title, onBack = onBack, actions = {
-        if (!image && source != null) {
-            IconButton(onClick = { showSource = !showSource }, modifier = Modifier.semantics { contentDescription = "预览或源码" }) {
-                Icon(Icons.Rounded.Code, contentDescription = "预览或源码")
-            }
-            IconButton(onClick = { save.launch("Eta-page.html") }) { Icon(Icons.Rounded.Download, contentDescription = "另存 HTML") }
-        }
-        IconButton(onClick = { generation++ }) { Icon(Icons.Rounded.Refresh, contentDescription = "重新加载") }
+    MiuixScaffold(title = if (LocalPreviewFiles.isImage(reference)) "图片预览" else "浏览器查看", onBack = onBack, actions = {
+        IconButton(onClick = { generation++ }) { Icon(Icons.Rounded.Refresh, contentDescription = "重试打开") }
     }) { padding, _, _ ->
-        Column(Modifier.fillMaxSize().padding(padding)) {
-            val error = document?.error
-            when {
-                error != null -> BasicComponent(title = "无法预览", summary = "$error。请确认文件仍存在且已授予访问权限。")
-                document == null -> Box(Modifier.padding(24.dp)) { CircularProgressIndicator() }
-                showSource -> SelectionContainer {
-                    val chunks = remember(source) { source.orEmpty().chunked(4000) }
-                    LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
-                        items(chunks) { chunk -> Text(chunk, fontFamily = FontFamily.Monospace, modifier = Modifier.fillMaxWidth()) }
-                    }
-                }
-                rendererFailed -> BasicComponent(title = "网页加载或渲染失败", summary = "可以查看源码或点击刷新重试。")
-                else -> {
-                    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text(if (scripts) "交互预览 · 禁止联网" else "静态预览 · 禁止联网", style = MiuixTheme.textStyles.footnote2, modifier = Modifier.weight(1f).padding(8.dp))
-                        TextButton(text = if (scripts) "关闭脚本" else "启用交互", onClick = { scripts = !scripts })
-                    }
-                    if (blocked) Text("部分外链或资源已拦截；页面不会自动联网或调用手机工具。", style = MiuixTheme.textStyles.footnote2, modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp))
-                    val prepared by produceState<Result<String>?>(null, source) {
-                        value = withContext(Dispatchers.Default) {
-                            try { Result.success(previewHtml(source.orEmpty())) }
-                            catch (e: CancellationException) { throw e }
-                            catch (e: Exception) { Result.failure(e) }
-                        }
-                    }
-                    val html = prepared?.getOrNull()
-                    when {
-                        prepared == null -> Box(Modifier.padding(24.dp)) { CircularProgressIndicator() }
-                        prepared?.isFailure == true -> BasicComponent(title = "无法预览", summary = prepared?.exceptionOrNull()?.message ?: "HTML 解析失败")
-                    }
-                    if (html != null) key(reference, generation, scripts, html) {
-                        AndroidView(
-                            factory = { ctx -> RichWebView(ctx, scripts, onBlocked = { blocked = true }, onFailed = { rendererFailed = true }).apply {
-                                resourceRoot = if (reference.startsWith("content://")) null else runCatching { LocalPreviewFiles.file(ctx, reference).parentFile }.getOrNull()
-                                onScrollYChanged = { y -> scrollY[0] = y }
-                                show(requireNotNull(html), restoreScrollY = scrollY[0])
-                            } },
-                            onRelease = { it.release() },
-                            // Column 里 fillMaxSize 会连同上方标题行一起超出父高，底部被裁掉，
-                            // 网页自身的滚动永远到不了最后一屏。改为占满剩余高度。
-                            modifier = Modifier.fillMaxWidth().weight(1f),
-                        )
-                    }
-                }
-            }
+        Box(Modifier.fillMaxSize().padding(padding)) {
+            val error = launchError
+            if (error != null) BasicComponent(title = "无法打开", summary = error)
+            else Box(Modifier.padding(24.dp)) { CircularProgressIndicator() }
         }
     }
 }

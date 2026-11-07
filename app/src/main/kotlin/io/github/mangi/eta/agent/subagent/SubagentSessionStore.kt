@@ -21,9 +21,14 @@ internal object SubagentSessionStore {
         // A live entry starts at zero and keeps the count across resume invocations.
         // The session store is process-local; archived snapshots have their own value.
         val compactionCount: AtomicInteger = AtomicInteger(0),
+        // Process-local resume only. The serialized activity snapshot holds the archived copy.
+        @Volatile var lastContext: ContextState? = null,
         val requestStatsBaseline: io.github.mangi.eta.local.subagentstats.SubagentRequestBaseline =
             io.github.mangi.eta.local.subagentstats.SubagentRequestBaseline(),
     )
+
+    // Identity stays process-local; it is never written to display snapshots or model inputs.
+    data class ContextState(val reading: SubagentContextReading, val model: String, val providerId: String)
 
     private class ConversationBucket {
         val sequence = AtomicInteger(0)
