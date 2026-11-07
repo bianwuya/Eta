@@ -298,6 +298,7 @@ internal class AgentRuntimeRunExecutor(
             val controlRegistry = SubagentControlRegistry()
             val supportsChildGroups = checkpointRecorder != null && request.operation == AgentRuntimeWire.OP_CHAT
             val groupStore = if (supportsChildGroups) AgentSubagentCheckpoint(appContext, request.runId) { runController.isCancelled } else null
+            val decisionBroker = groupStore?.let { io.github.mangi.eta.agent.subagent.SubagentDecisionBroker(request.runId, runController, it) }
             val subagentExecutor = SubagentExecutor(
                 conversationKey = browserKey,
                 parentRunId = request.runId,
@@ -313,6 +314,7 @@ internal class AgentRuntimeRunExecutor(
                 parentController = childController,
                 controlRegistry = controlRegistry,
                 mailboxStorage = groupStore,
+                decisionBroker = decisionBroker,
                 mailboxToolGate = { call, delegate ->
                     if (planGate == null) delegate() else planGate.executeChild(call, delegate)
                 },
@@ -364,6 +366,9 @@ internal class AgentRuntimeRunExecutor(
                                 "需要时请让用户在当前会话直接授权")
                             .toString(),
                     )
+                } else if (call.name == io.github.mangi.eta.agent.subagent.SubagentDecisionBroker.RESPOND) {
+                    decisionBroker?.respond(call) ?: AgentModelClient.ToolResult(JSONObject().put("ok", false)
+                        .put("code", "ASK_PARENT_UNAVAILABLE").toString())
                 } else if (call.name == AgentSubagentToolCatalog.SEAL_GROUP_TOOL_NAME) {
                     childOwner?.sealGroup(call) ?: AgentModelClient.ToolResult(JSONObject().put("ok", false)
                         .put("code", "SUBAGENT_GROUP_UNAVAILABLE").put("message", "当前运行不支持持久化关联组。").toString())
@@ -408,11 +413,16 @@ internal class AgentRuntimeRunExecutor(
                     persistence = store,
                     cancelChildren = childController::cancel,
                     parentRunId = request.runId,
+                    decisionBroker = decisionBroker,
+                    executeOwned = { call, taskId, started ->
+                        if (!subagentAllowed()) AgentModelClient.ToolResult(JSONObject().put("ok", false).put("code", "SUBAGENT_DISABLED").toString())
+                        else subagentExecutor.execute(call.round, call, onStarted = started, decisionTaskId = taskId)
+                    },
                     executeGrouped = { call, invocation, started ->
                         if (!subagentAllowed()) {
                             AgentModelClient.ToolResult(JSONObject().put("ok", false).put("code", "SUBAGENT_DISABLED")
                                 .put("message", "Subagent 权限已关闭").toString())
-                        } else subagentExecutor.execute(call.round, call, invocation, started)
+                        } else subagentExecutor.execute(call.round, call, invocation, onStarted = started)
                     },
                     execute = { call, started ->
                         if (!subagentAllowed()) {

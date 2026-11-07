@@ -19,6 +19,8 @@ internal class YieldableSubagents(
     private val parentRunId: String = java.util.UUID.randomUUID().toString(),
     private val executeGrouped: ((AgentModelClient.ToolCall, SubagentMailbox.Invocation,
         (String, String) -> Unit) -> AgentModelClient.ToolResult)? = null,
+    private val decisionBroker: SubagentDecisionBroker? = null,
+    private val executeOwned: ((AgentModelClient.ToolCall, String, (String, String) -> Unit) -> AgentModelClient.ToolResult)? = null,
     private val execute: (AgentModelClient.ToolCall, (String, String) -> Unit) -> AgentModelClient.ToolResult,
 ) : AutoCloseable {
     interface Persistence {
@@ -107,7 +109,7 @@ internal class YieldableSubagents(
                     val result = if (groupKey != null && executeGrouped != null) {
                         executeGrouped.invoke(executionCall,
                             SubagentMailbox.Invocation(SubagentMailbox.Scope(parentRunId, groupKey), taskId), onStarted)
-                    } else execute(executionCall, onStarted)
+                    } else executeOwned?.invoke(executionCall, taskId, onStarted) ?: execute(executionCall, onStarted)
                     if (!accepted) {
                         acknowledgement = if (groupKey == null) result else result.copy(content =
                             (runCatching { JSONObject(result.content) }.getOrNull() ?: JSONObject().put("message", result.content))
@@ -207,13 +209,15 @@ internal class YieldableSubagents(
 
     fun decision(): Decision = synchronized(lock) {
         when {
-            reports.isNotEmpty() || persistenceFailure != null -> Decision.RESUME
+            reports.isNotEmpty() || persistenceFailure != null || decisionBroker?.hasUndelivered() == true -> Decision.RESUME
             active.isNotEmpty() || (!aborted && !controller.isCancelled &&
                 groups.values.any { it.state != SubagentTaskGroup.State.DELIVERED }) -> Decision.WAIT
             else -> Decision.FINISH
         }
     }
     fun hasPending(): Boolean = decision() != Decision.FINISH
+    fun pendingDecisions(): List<JSONObject> = decisionBroker?.pendingBatch() ?: emptyList()
+    fun decisionsDelivered(ids: Collection<String>) { decisionBroker?.delivered(ids) }
     fun peekReports(): List<Report> = synchronized(lock) {
         persistenceFailure?.let { throw IllegalStateException("子代理结果未能持久化", it) }
         reports.values.toList()
@@ -282,6 +286,7 @@ internal class YieldableSubagents(
     }
 
     override fun close() {
+        decisionBroker?.close()
         val pending = synchronized(lock) { closed = true; active.isNotEmpty() || groups.values.any { it.state != SubagentTaskGroup.State.DELIVERED } }
         try {
             if (pending) abort()

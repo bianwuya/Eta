@@ -217,6 +217,7 @@ internal interface RuntimeRunDao : ChunkedTextDao {
     suspend fun removeInFlightRun(runId: String) {
         deleteLocalTextOwner("runtime_subagent_tasks_v1", runId)
         deleteLocalTextOwner("runtime_subagent_mailbox_v1", runId)
+        deleteLocalTextOwner("runtime_subagent_decisions_v1", runId)
         deleteInFlightRun(runId)
     }
 
