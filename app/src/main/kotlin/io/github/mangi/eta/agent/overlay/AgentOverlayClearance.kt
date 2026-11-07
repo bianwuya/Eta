@@ -6,6 +6,7 @@ import android.os.Looper
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Agent 手势与状态胶囊的避让协调。
@@ -15,19 +16,23 @@ import java.util.concurrent.atomic.AtomicBoolean
  * 恢复带去抖：连续的点击、滑动只在最后一次之后回来，胶囊不会随每一步上下闪动。
  */
 internal object AgentOverlayClearance {
+    class Rejected(val code: String, message: String) : RuntimeException(message)
 
-    /** 由持有胶囊窗口的服务实现；所有方法都在主线程调用。 */
+    /** 由持有胶囊窗口的服务实现；除 identity 快照外均在主线程调用。 */
     interface Host {
         /** 胶囊窗口在屏幕上的触摸范围（已含边缘余量）；窗口不存在时返回 null。 */
         fun capsuleTouchBounds(): Rect?
 
         /** 立即放行触摸并开始淡出动画。 */
-        fun yieldCapsule()
+        fun yieldCapsule(): Boolean
 
         /** 恢复可触摸并淡入；需要取消已排队的恢复时由 [cancelRestore] 撤销。 */
         fun scheduleCapsuleRestore(delayMs: Long)
 
         fun cancelRestore()
+
+        /** Thread-safe identity snapshot; stale gestures cannot yield/restore another owner. */
+        fun presentationIdentity(): Any? = this
     }
 
     @Volatile
@@ -48,25 +53,64 @@ internal object AgentOverlayClearance {
     fun <T> around(area: Rect, gesture: () -> T): T {
         val current = host ?: return gesture()
         if (Looper.myLooper() == Looper.getMainLooper()) return gesture()
+        val deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(MAX_WAIT_MS)
+        val identity = current.presentationIdentity()
         val yielded = AtomicBoolean(false)
+        val pending = AtomicBoolean(true)
+        val failure = AtomicReference<Rejected?>()
         val ready = CountDownLatch(1)
-        current.post {
-            val bounds = current.capsuleTouchBounds()
-            if (bounds != null && Rect.intersects(bounds, area)) {
-                current.cancelRestore()
-                current.yieldCapsule()
-                yielded.set(true)
+        fun preparationIsCurrent(): Boolean {
+            if (!pending.get() || System.nanoTime() >= deadlineNanos) {
+                failure.set(Rejected("GUI_CLEARANCE_TIMEOUT", "未能及时确认操作提示让路，本次手势未执行"))
+                return false
             }
-            ready.countDown()
+            if (identity != current.presentationIdentity()) {
+                failure.set(Rejected("GUI_PRESENTATION_STALE", "操作提示归属已变化，本次手势未执行"))
+                return false
+            }
+            return true
         }
-        ready.await(MAX_WAIT_MS, TimeUnit.MILLISECONDS)
-        // 触摸在 yieldCapsule 时已放行；稍等淡出让出视觉空间，避免手势指示与胶囊叠在一起。
-        if (yielded.get()) Thread.sleep(FADE_HEAD_START_MS)
+        current.post {
+            try {
+                if (!preparationIsCurrent()) return@post
+                val bounds = current.capsuleTouchBounds()
+                // Bounds lookup may block past the worker's deadline. Recheck before each effect.
+                if (!preparationIsCurrent()) return@post
+                if (bounds != null && Rect.intersects(bounds, area)) {
+                    if (!preparationIsCurrent()) return@post
+                    current.cancelRestore()
+                    if (!preparationIsCurrent()) return@post
+                    if (current.yieldCapsule()) yielded.set(true)
+                    else failure.set(Rejected("GUI_PRESENTATION_FAILED", "操作提示让路失败，本次手势未执行"))
+                }
+            } finally {
+                ready.countDown()
+            }
+        }
         return try {
+            val remainingNanos = (deadlineNanos - System.nanoTime()).coerceAtLeast(0L)
+            if (!ready.await(remainingNanos, TimeUnit.NANOSECONDS)) {
+                pending.set(false)
+                throw Rejected("GUI_CLEARANCE_TIMEOUT", "未能及时确认操作提示让路，本次手势未执行")
+            }
+            if (System.nanoTime() >= deadlineNanos) {
+                throw Rejected("GUI_CLEARANCE_TIMEOUT", "未能及时确认操作提示让路，本次手势未执行")
+            }
+            failure.get()?.let { throw it }
+            // 触摸已放行；稍等淡出，让点击反馈出现在干净的画面上。
+            if (yielded.get()) Thread.sleep(FADE_HEAD_START_MS)
+            if (identity != current.presentationIdentity()) {
+                throw Rejected("GUI_PRESENTATION_STALE", "操作提示归属已变化，本次手势未执行")
+            }
             gesture()
         } finally {
-            // 主线程按投递顺序执行：即使等待超时、避让晚于手势发生，这里的恢复也排在它之后。
-            current.post { if (yielded.get()) current.scheduleCapsuleRestore(RESTORE_DELAY_MS) }
+            pending.set(false)
+            // A previous gesture cannot restore a capsule rebound to a new presentation.
+            current.post {
+                if (yielded.get() && identity == current.presentationIdentity()) {
+                    current.scheduleCapsuleRestore(RESTORE_DELAY_MS)
+                }
+            }
         }
     }
 

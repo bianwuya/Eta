@@ -3,6 +3,12 @@ package io.github.mangi.eta.agent.tool
 import android.content.Context
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.Intent
+import android.content.pm.ActivityInfo
+import android.content.pm.ApplicationInfo
+import android.content.pm.PackageInfo
+import android.content.pm.ResolveInfo
+import android.net.Uri
 import io.github.mangi.eta.agent.device.RootShellDeviceController
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.agent.model.AgentScreenObservationContract
@@ -18,11 +24,185 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [36])
 class AgentLocalToolsPermissionTest {
+    @Test
+    fun accessibilityRejectionFromNewGuiGateInvalidatesObservationWithoutOwnershipChange() {
+        listOf("ACCESSIBILITY_UNAVAILABLE", "ACCESSIBILITY_PROTECTION_UNAVAILABLE", "ACCESSIBILITY_REPAIR_TIMEOUT")
+            .forEach { code ->
+                val coordinator = GuiControlCoordinator()
+                val control = coordinator.openRun("gui-test", AgentRunController())
+                var accessible = true
+                var observations = 0
+                tools(guiControl = control, beforeGuiAction = { _, _ ->
+                    if (accessible) ToolExecutionDecision.Allow
+                    else ToolExecutionDecision.Reject(code, "not performed")
+                }, screenObservationProvider = {
+                    observations++
+                    observation("before-disconnect", it.includeScreenshot)
+                }).use { tools ->
+                    fun call(name: String, args: String = "{}") = JSONObject(tools.execute(
+                        AgentModelClient.ToolCall(name, name, args)).content)
+                    assertTrue(call("observe_screen").getBoolean("ok"))
+                    val generation = control.withAction { it }
+                    accessible = false
+                    assertEquals(code, call("observe_screen").getString("code"))
+                    assertEquals(1, observations)
+                    accessible = true
+                    assertEquals(generation, control.withAction { it })
+                    assertEquals("gui-test", coordinator.state.value.ownerRunId)
+                    assertEquals("NO_OBSERVATION", call("tap",
+                        """{"x":10,"y":20,"coordinate_space":"screen"}""").getString("code"))
+                    assertEquals("NO_OBSERVATION", call("tap_element",
+                        """{"index":0,"observation_id":"before-disconnect"}""").getString("code"))
+                    assertTrue(call("observe_screen").getBoolean("ok"))
+                    assertEquals(2, observations)
+                }
+            }
+    }
+
+    @Test
+    fun gesturesReconfirmPresentationAfterTheClearanceWaitBeforeInjection() {
+        var confirmations = 0
+        val image = AgentModelClient.ModelImage("data:image/webp;base64,AA==", "image/webp", 1,
+            width = 1080, height = 2400, source = "screen")
+        tools(screenObservationProvider = { observation("coordinates", true, image) }, beforeGuiAction = { name, _ ->
+            if (name == "observe_screen" || ++confirmations == 1) ToolExecutionDecision.Allow
+            else ToolExecutionDecision.Reject("GUI_PRESENTATION_FAILED", "not performed")
+        }).use { tools ->
+            tools.execute(AgentModelClient.ToolCall("observe", "observe_screen", "{}"))
+            val result = JSONObject(tools.execute(AgentModelClient.ToolCall("tap", "tap",
+                """{"x":10,"y":20,"coordinate_space":"screen"}""")).content)
+            assertEquals("GUI_PRESENTATION_FAILED", result.getString("code"))
+            assertEquals(2, confirmations)
+        }
+    }
+
+    @Test
+    fun actualMainLaunchPathsReconfirmVisibilityImmediatelyBeforeStartActivity() {
+        val context = RuntimeEnvironment.getApplication() as Context
+        val pm = shadowOf(context.packageManager)
+        val resolver = ResolveInfo().apply {
+            activityInfo = ActivityInfo().apply {
+                packageName = "example.target"
+                name = "example.target.MainActivity"
+                exported = true
+                applicationInfo = ApplicationInfo().apply {
+                    packageName = "example.target"
+                    enabled = true
+                    flags = ApplicationInfo.FLAG_INSTALLED
+                }
+            }
+        }
+        pm.installPackage(PackageInfo().apply {
+            packageName = "example.target"
+            applicationInfo = resolver.activityInfo.applicationInfo
+            activities = arrayOf(resolver.activityInfo)
+        })
+        val launch = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER).setPackage("example.target")
+        pm.addResolveInfoForIntent(launch, resolver)
+        pm.addResolveInfoForIntent(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_INFO).setPackage("example.target"), resolver)
+        val uri = "https://example.invalid/gui-gate"
+        pm.addResolveInfoForIntent(Intent(Intent.ACTION_VIEW, Uri.parse(uri)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK), resolver)
+        listOf("launch_app" to """{"package_name":"example.target","display":"main"}""",
+            "open_uri" to """{"uri":"$uri"}""").forEach { (name, args) ->
+            var confirmations = 0
+            tools(virtualDisplayEnabled = { false }, beforeGuiAction = { _, _ ->
+                if (++confirmations == 1) ToolExecutionDecision.Allow
+                else ToolExecutionDecision.Reject("GUI_OVERLAY_PERMISSION_REQUIRED", "not performed")
+            }).use { tools ->
+                val result = JSONObject(tools.execute(AgentModelClient.ToolCall(name, name, args)).content)
+                assertEquals(name, "GUI_OVERLAY_PERMISSION_REQUIRED", result.getString("code"))
+                assertEquals(name, 2, confirmations)
+                assertEquals(null, shadowOf(context as android.app.Application).nextStartedActivity)
+            }
+        }
+    }
+
+    @Test
+    fun visibilityGateRunsAfterGuiAcquisitionForEveryActionAndRejectsWithoutExecuting() {
+        val coordinator = GuiControlCoordinator()
+        val control = coordinator.openRun("gui-test", AgentRunController())
+        var confirmations = 0
+        var observations = 0
+        var visible = true
+        tools(
+            guiControl = control,
+            beforeGuiAction = { _, isCurrent ->
+                assertEquals("gui-test", coordinator.state.value.ownerRunId)
+                assertTrue(isCurrent())
+                confirmations++
+                if (visible) ToolExecutionDecision.Allow
+                else ToolExecutionDecision.Reject("GUI_VISIBILITY_TIMEOUT", "not performed")
+            },
+            screenObservationProvider = { observations++; observation("observed", it.includeScreenshot) },
+        ).use { tools ->
+            assertTrue(JSONObject(tools.execute(AgentModelClient.ToolCall("1", "observe_screen", "{}")).content).getBoolean("ok"))
+            visible = false
+            val denied = JSONObject(tools.execute(AgentModelClient.ToolCall("2", "observe_screen", "{}")).content)
+            assertEquals("GUI_VISIBILITY_TIMEOUT", denied.getString("code"))
+            assertEquals(2, confirmations)
+            assertEquals(1, observations)
+            assertTrue(JSONObject(tools.execute(AgentModelClient.ToolCall("3", "release_gui", "{}")).content).getBoolean("ok"))
+            assertEquals(2, confirmations)
+            assertEquals(null, coordinator.state.value.ownerRunId)
+        }
+    }
+
+    @Test
+    fun visibilityFailureDoesNotBlockBackgroundToolsOrGuiRelease() {
+        val coordinator = GuiControlCoordinator()
+        val owner = coordinator.openRun("owner", AgentRunController())
+        owner.withAction { }
+        val background = coordinator.openRun("background", AgentRunController())
+        tools(guiControl = background, beforeGuiAction = { _, _ -> error("not a GUI action") }).use { tools ->
+            assertTrue(JSONObject(tools.execute(AgentModelClient.ToolCall("1", "release_gui", "{}")).content).getBoolean("ok"))
+            assertEquals("owner", coordinator.state.value.ownerRunId)
+            assertEquals("TERMINAL_TOOLS_DISABLED",
+                JSONObject(tools.execute(AgentModelClient.ToolCall("2", "terminal", "{}")).content).getString("code"))
+        }
+        owner.close()
+    }
+
+    @Test
+    fun alarmForegroundIntentAndLaunchToolsPropagateVisibleHintRejection() {
+        val coordinator = GuiControlCoordinator()
+        val control = coordinator.openRun("gui-test", AgentRunController())
+        val names = mutableListOf<String>()
+        tools(guiControl = control, beforeGuiAction = { name, isCurrent ->
+            assertTrue(isCurrent())
+            names += name
+            ToolExecutionDecision.Reject("GUI_PRESENTATION_FAILED", "not performed")
+        }).use { tools ->
+            listOf("set_alarm" to """{"hour":7,"minute":30}""",
+                "set_timer" to """{"duration_seconds":60}""",
+                "launch_app" to """{"package_name":"example.app"}""",
+                "open_uri" to """{"uri":"https://example.invalid"}""").forEachIndexed { index, (name, args) ->
+                assertEquals("GUI_PRESENTATION_FAILED", JSONObject(tools.execute(
+                    AgentModelClient.ToolCall(index.toString(), name, args)).content).getString("code"))
+            }
+            assertEquals(listOf("set_alarm", "set_timer", "launch_app", "open_uri"), names)
+        }
+    }
+
+    @Test
+    fun ownerReleaseDuringVisibilityAcknowledgmentCannotReachTheAction() {
+        val coordinator = GuiControlCoordinator()
+        val control = coordinator.openRun("gui-test", AgentRunController())
+        tools(guiControl = control, beforeGuiAction = { _, _ ->
+            control.release()
+            ToolExecutionDecision.Allow
+        }, screenObservationProvider = { error("stale action must not observe") }).use { tools ->
+            assertEquals("GUI_PRESENTATION_STALE", JSONObject(tools.execute(
+                AgentModelClient.ToolCall("1", "observe_screen", "{}")).content).getString("code"))
+            assertEquals(null, coordinator.state.value.ownerRunId)
+        }
+    }
+
     @Test
     fun releaseAndUserTakeoverInvalidateBothNodesAndRawScreenCoordinates() {
         val coordinator = GuiControlCoordinator()
@@ -407,6 +587,8 @@ class AgentLocalToolsPermissionTest {
             ToolExecutionDecision.Allow
         },
         guiControl: GuiControlCoordinator.RunControl? = null,
+        beforeGuiAction: (String, () -> Boolean) -> ToolExecutionDecision = { _, _ -> ToolExecutionDecision.Allow },
+        virtualDisplayEnabled: () -> Boolean = { true },
     ): AgentLocalTools =
         AgentLocalTools(
             context = RuntimeEnvironment.getApplication() as Context,
@@ -420,7 +602,9 @@ class AgentLocalToolsPermissionTest {
             deviceSensitiveReadToolsEnabled = sensitiveReadEnabled,
             screenObservationProvider = screenObservationProvider,
             beforeToolExecution = beforeToolExecution,
+            beforeGuiAction = beforeGuiAction,
             guiControl = guiControl,
+            virtualDisplayEnabled = virtualDisplayEnabled,
         )
 
     private fun observation(

@@ -89,6 +89,12 @@ internal class GuiControlCoordinator {
             if (closed) binding.close() else cancellationBinding = binding
         }
 
+        fun isActionCurrent(actionGeneration: Long): Boolean = lock.withLock {
+            owner === this && !closed && !releaseRequested && activeActions > 0 &&
+                generation == actionGeneration && !userPauseRequested &&
+                !controller.isCancelled && !controller.isPaused
+        }
+
         fun <T> withAction(block: (generation: Long) -> T): T {
             controller.throwIfCancelled()
             val queued = lock.withLock {

@@ -13,6 +13,48 @@ import org.junit.Test
 
 class GuiControlCoordinatorTest {
     @Test
+    fun visibilityLeaseIsValidOnlyInsideItsCurrentActionAndReleaseIsImmediate() {
+        val coordinator = GuiControlCoordinator()
+        val control = coordinator.openRun("a", AgentRunController())
+        var generation = -1L
+        control.withAction {
+            generation = it
+            assertTrue(control.isActionCurrent(it))
+        }
+        assertFalse(control.isActionCurrent(generation))
+        control.withAction {
+            assertTrue(control.isActionCurrent(it))
+            control.release()
+            assertFalse(control.isActionCurrent(it))
+        }
+        assertNull(coordinator.state.value.ownerRunId)
+        coordinator.openRun("b", AgentRunController()).use { next ->
+            next.withAction { assertTrue(next.isActionCurrent(it)) }
+        }
+        control.close()
+    }
+
+    @Test
+    fun pauseResumeAndCancellationInvalidateQueuedVisibilityCallbacksEvenForTheSameOwner() {
+        val coordinator = GuiControlCoordinator()
+        val controller = AgentRunController()
+        val control = coordinator.openRun("a", controller)
+        control.withAction { old ->
+            assertTrue(control.isActionCurrent(old))
+            coordinator.pauseForUser("a")
+            assertFalse(control.isActionCurrent(old))
+            coordinator.resumeForUser()
+            assertFalse(control.isActionCurrent(old))
+        }
+        control.withAction { current ->
+            assertTrue(control.isActionCurrent(current))
+            controller.cancel()
+            assertFalse(control.isActionCurrent(current))
+        }
+        assertNull(coordinator.state.value.ownerRunId)
+    }
+
+    @Test
     fun ownershipSpansActionsAndWaitersEnterInOrderAfterRelease() {
         val coordinator = GuiControlCoordinator()
         val a = coordinator.openRun("a", AgentRunController())

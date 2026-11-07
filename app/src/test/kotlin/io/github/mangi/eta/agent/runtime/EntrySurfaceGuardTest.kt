@@ -2,6 +2,8 @@ package io.github.mangi.eta.agent.runtime
 
 import io.github.mangi.eta.agent.accessibility.PackageWindowVisibility
 import io.github.mangi.eta.core.AgentLogger
+import io.github.mangi.eta.agent.tool.ToolExecutionDecision
+import io.github.mangi.eta.local.guipresentation.GuiActionPreparation
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertFalse
@@ -11,6 +13,24 @@ import org.junit.Test
 import java.util.concurrent.atomic.AtomicInteger
 
 class EntrySurfaceGuardTest {
+    @Test
+    fun rejectedVisibleHandoffKeepsFirstScreenshotExclusionAndDoesNotDismissEntry() {
+        val dismissCalls = AtomicInteger()
+        val guard = EntrySurfaceGuard.from(
+            handoff(AgentRuntimeWire.ETA_VOICE_HANDOFF_SOURCE, true), NoOpLogger,
+            etaVoiceSurfaceDismissal = { dismissCalls.incrementAndGet(); true },
+        )!!
+        val denied = ToolExecutionDecision.Reject("GUI_VISIBILITY_TIMEOUT", "not performed")
+        assertEquals(denied, GuiActionPreparation.prepare({ true }, { denied }, guard::dismissOnce))
+        assertFalse(guard.wasTriggered)
+        assertEquals(0, dismissCalls.get())
+        assertEquals(ToolExecutionDecision.Allow,
+            GuiActionPreparation.prepare({ true }, { ToolExecutionDecision.Allow }, guard::dismissOnce))
+        assertEquals(1, dismissCalls.get())
+        assertEquals(setOf("io.github.mangi.eta"), guard.consumeScreenshotExcludedPackages())
+        assertTrue(guard.consumeScreenshotExcludedPackages().isEmpty())
+    }
+
     @Test
     fun disabledHandoffDoesNotCreateGuard() {
         val guard = EntrySurfaceGuard.from(
