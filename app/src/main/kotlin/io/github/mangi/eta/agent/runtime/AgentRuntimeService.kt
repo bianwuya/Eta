@@ -135,6 +135,10 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     private var releaseVisual: Runnable? = null
     private var diagnosticEntryPackage: String? = null
 
+    // JVM lifecycle tests exercise real window management without starting an endless Compose frame clock.
+    @androidx.annotation.VisibleForTesting
+    internal var suppressOverlayCompositionForTest = false
+
     private var windowManager: WindowManager? = null
     private var glowView: ComposeView? = null
     private var capsuleView: ComposeView? = null
@@ -1895,12 +1899,14 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         ComposeView(context).apply {
             setViewTreeLifecycleOwner(this@AgentRuntimeService)
             setViewTreeSavedStateRegistryOwner(this@AgentRuntimeService)
-            setContent {
-                MiuixTheme(colors = if (isNightMode()) darkColorScheme() else lightColorScheme()) {
-                    // 部分 ROM 会给 TYPE_ACCESSIBILITY_OVERLAY 分配软件 Canvas；Miuix 的
-                    // RuntimeShader 只检查系统版本，因此系统浮层统一使用其普通圆角回退。
-                    CompositionLocalProvider(LocalSquircleEnabled provides false) {
-                        content()
+            if (!suppressOverlayCompositionForTest) {
+                setContent {
+                    MiuixTheme(colors = if (isNightMode()) darkColorScheme() else lightColorScheme()) {
+                        // 部分 ROM 会给 TYPE_ACCESSIBILITY_OVERLAY 分配软件 Canvas；Miuix 的
+                        // RuntimeShader 只检查系统版本，因此系统浮层统一使用其普通圆角回退。
+                        CompositionLocalProvider(LocalSquircleEnabled provides false) {
+                            content()
+                        }
                     }
                 }
             }

@@ -25,6 +25,7 @@ import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executors
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -46,7 +47,7 @@ class AgentRuntimeGuiPresentationTest {
     @Test
     fun missingOverlayPermissionIsAnExplicitRejectionNotAPhantomViewReference() {
         ShadowSettings.setCanDrawOverlays(false)
-        val host = Robolectric.buildService(AgentRuntimeService::class.java).create()
+        val host = runtimeHost()
         try {
             val service = host.get()
             val result = service.invoke("showOverlay") as ToolExecutionDecision.Reject
@@ -59,7 +60,7 @@ class AgentRuntimeGuiPresentationTest {
     @Test
     fun anAttachedWindowWithoutASettledComposeFrameDoesNotAuthorizeTheAction() {
         ShadowSettings.setCanDrawOverlays(true)
-        val host = Robolectric.buildService(AgentRuntimeService::class.java).create()
+        val host = runtimeHost()
         val worker = Executors.newSingleThreadExecutor()
         try {
             val service = host.get()
@@ -98,7 +99,7 @@ class AgentRuntimeGuiPresentationTest {
     @Config(shadows = [FailingWindowManager::class])
     fun addViewExceptionRejectsAndDoesNotCacheAnUnattachedOverlay() {
         ShadowSettings.setCanDrawOverlays(true)
-        val host = Robolectric.buildService(AgentRuntimeService::class.java).create()
+        val host = runtimeHost()
         try {
             val service = host.get()
             val result = service.invoke("showOverlay") as ToolExecutionDecision.Reject
@@ -110,7 +111,7 @@ class AgentRuntimeGuiPresentationTest {
 
     @Test
     fun releasedOwnerKeepsNeutralTouchableTaskControlWithoutGuiOwnership() {
-        val host = Robolectric.buildService(AgentRuntimeService::class.java).create()
+        val host = runtimeHost()
         try {
             val service = host.get()
             val run = service.register("a")
@@ -148,7 +149,7 @@ class AgentRuntimeGuiPresentationTest {
     fun accessibilityReconnectDiscardsAttachedWindowAndOldDrawConfirmation() {
         ShadowSettings.setCanDrawOverlays(true)
         val access = Robolectric.buildService(AgentAccessibilityService::class.java).create()
-        val host = Robolectric.buildService(AgentRuntimeService::class.java).create()
+        val host = runtimeHost()
         try {
             val service = host.get()
             val run = service.register("a")
@@ -157,11 +158,12 @@ class AgentRuntimeGuiPresentationTest {
             val (old, _) = service.attachTestCapsule()
             val oldEpoch = service.field<Long>("overlayEpoch")
             val oldConnection = AgentAccessibilityService.connection.value
-            AgentAccessibilityService::class.java.getDeclaredMethod("onServiceConnected").apply { isAccessible = true }.invoke(access.get())
             assertTrue(old.isAttachedToWindow)
+            AgentAccessibilityService::class.java.getDeclaredMethod("onServiceConnected").apply { isAccessible = true }.invoke(access.get())
             assertFalse(service.invoke("capsuleIsVisible") as Boolean)
             shadowOf(Looper.getMainLooper()).idle()
             assertTrue(service.field<Long>("overlayEpoch") > oldEpoch)
+            assertFalse(old.isAttachedToWindow)
             assertFalse(service.field<ComposeView?>("capsuleView") === old)
             service.invoke("onAccessibilityConnectionChanged", oldConnection.javaClass, oldConnection)
             assertFalse(service.field<ComposeView?>("capsuleView") === old)
@@ -173,7 +175,7 @@ class AgentRuntimeGuiPresentationTest {
     fun disconnectReconnectOfSameServiceNeverReusesOldAttachedView() {
         ShadowSettings.setCanDrawOverlays(true)
         val access = Robolectric.buildService(AgentAccessibilityService::class.java).create()
-        val host = Robolectric.buildService(AgentRuntimeService::class.java).create()
+        val host = runtimeHost()
         try {
             val service = host.get()
             val run = service.register("a")
@@ -184,14 +186,20 @@ class AgentRuntimeGuiPresentationTest {
             shadowOf(Looper.getMainLooper()).idle()
             val first = AgentAccessibilityService.connection.value
             val (old, _) = service.attachTestCapsule()
+            assertTrue(old.isAttachedToWindow)
+            assertSame(first, service.field<Any>("overlayConnection"))
             access.get().onUnbind(null)
+            assertNull(AgentAccessibilityService.current())
             assertFalse(service.invoke("capsuleIsVisible") as Boolean)
             shadowOf(Looper.getMainLooper()).idle()
             assertNull(service.field<ComposeView?>("capsuleView"))
             connect.invoke(access.get())
             shadowOf(Looper.getMainLooper()).idle()
             assertTrue(AgentAccessibilityService.connection.value.generation > first.generation)
-            assertFalse(service.field<ComposeView?>("capsuleView") === old)
+            val replacement = service.field<ComposeView?>("capsuleView")
+            assertTrue(replacement != null)
+            assertFalse(replacement === old)
+            assertSame(AgentAccessibilityService.connection.value, service.field<Any>("overlayConnection"))
         } finally { host.destroy(); access.destroy(); ShadowSettings.setCanDrawOverlays(false) }
     }
 
@@ -200,7 +208,7 @@ class AgentRuntimeGuiPresentationTest {
     fun connectionChangeDuringWindowCreationRejectsAndLeavesNoStaleWindows() {
         ShadowSettings.setCanDrawOverlays(true)
         val access = Robolectric.buildService(AgentAccessibilityService::class.java).create()
-        val host = Robolectric.buildService(AgentRuntimeService::class.java).create()
+        val host = runtimeHost()
         try {
             ReconnectDuringAdd.onFirstAdd = {
                 AgentAccessibilityService::class.java.getDeclaredMethod("onServiceConnected")
@@ -221,7 +229,7 @@ class AgentRuntimeGuiPresentationTest {
     fun terminalTaskDoesNotReturnOnReconnect() {
         ShadowSettings.setCanDrawOverlays(true)
         val access = Robolectric.buildService(AgentAccessibilityService::class.java).create()
-        val host = Robolectric.buildService(AgentRuntimeService::class.java).create()
+        val host = runtimeHost()
         try {
             val service = host.get()
             val run = service.register("voice", AgentRuntimeWire.ETA_VOICE_HANDOFF_SOURCE)
@@ -239,7 +247,7 @@ class AgentRuntimeGuiPresentationTest {
     @Test
     fun voiceEntryProjectsTaskBeforeFirstGuiAndBackgroundDoesNot() {
         ShadowSettings.setCanDrawOverlays(true)
-        val host = Robolectric.buildService(AgentRuntimeService::class.java).create()
+        val host = runtimeHost()
         try {
             val service = host.get()
             val background = service.register("background")
@@ -255,7 +263,7 @@ class AgentRuntimeGuiPresentationTest {
 
     @Test
     fun taskPauseDoesNotPauseAnotherOwnersController() {
-        val host = Robolectric.buildService(AgentRuntimeService::class.java).create()
+        val host = runtimeHost()
         try {
             val service = host.get()
             val a = service.register("a")
@@ -286,7 +294,7 @@ class AgentRuntimeGuiPresentationTest {
     @Test
     fun terminalOfCompetingRunReturnsToOldestStillPausedTask() {
         ShadowSettings.setCanDrawOverlays(true)
-        val host = Robolectric.buildService(AgentRuntimeService::class.java).create()
+        val host = runtimeHost()
         try {
             val service = host.get()
             val a = service.register("a")
@@ -311,7 +319,7 @@ class AgentRuntimeGuiPresentationTest {
     @Test
     fun multiplePausedTasksResumeInInsertionOrderAndSkipFinished() {
         ShadowSettings.setCanDrawOverlays(true)
-        val host = Robolectric.buildService(AgentRuntimeService::class.java).create()
+        val host = runtimeHost()
         try {
             val service = host.get()
             val a = service.register("a")
@@ -339,7 +347,7 @@ class AgentRuntimeGuiPresentationTest {
     fun initialDisconnectedTerminalTaskIsNotRevivedOnReconnect() {
         ShadowSettings.setCanDrawOverlays(false)
         val access = Robolectric.buildService(AgentAccessibilityService::class.java).create()
-        val host = Robolectric.buildService(AgentRuntimeService::class.java).create()
+        val host = runtimeHost()
         try {
             val service = host.get()
             val run = service.register("voice", AgentRuntimeWire.ETA_VOICE_HANDOFF_SOURCE)
@@ -357,7 +365,7 @@ class AgentRuntimeGuiPresentationTest {
     fun initialDisconnectedVoiceEntryReturnsOnConnectionWithoutAnyTaskEvent() {
         ShadowSettings.setCanDrawOverlays(false)
         val access = Robolectric.buildService(AgentAccessibilityService::class.java).create()
-        val host = Robolectric.buildService(AgentRuntimeService::class.java).create()
+        val host = runtimeHost()
         try {
             val service = host.get()
             val run = service.register("voice", AgentRuntimeWire.ETA_VOICE_HANDOFF_SOURCE)
@@ -378,7 +386,7 @@ class AgentRuntimeGuiPresentationTest {
     private fun oldGateDisposeAfterConnectionLoss(reconnectBeforeDispose: Boolean) {
         ShadowSettings.setCanDrawOverlays(true)
         val access = Robolectric.buildService(AgentAccessibilityService::class.java).create()
-        val host = Robolectric.buildService(AgentRuntimeService::class.java).create()
+        val host = runtimeHost()
         val worker = Executors.newSingleThreadExecutor()
         try {
             val connect = AgentAccessibilityService::class.java.getDeclaredMethod("onServiceConnected").apply { isAccessible = true }
@@ -389,18 +397,30 @@ class AgentRuntimeGuiPresentationTest {
             val control = coordinator.openRun("a", run.session.controller)
             control.withAction { }
             shadowOf(Looper.getMainLooper()).idle()
-            service.attachTestCapsule()
+            val (old, _) = service.attachTestCapsule()
+            val oldConnection = AgentAccessibilityService.connection.value
+            assertSame(access.get(), oldConnection.service)
+            assertSame(oldConnection, service.field<Any>("overlayConnection"))
+            assertTrue(old.isAttachedToWindow)
             service.setField("capsulePaintedOwner", null)
             val queue = LinkedBlockingQueue<() -> Unit>()
-            service.setField("visibilityGate", GuiVisibilityGate({ false }, { queue.add(it) }, timeoutMs = 80))
+            val clock = AtomicLong(0L)
+            service.setField("visibilityGate", GuiVisibilityGate({ false }, { queue.add(it) },
+                timeoutMs = 100, nanoTime = clock::get))
             val result = worker.submit<ToolExecutionDecision> {
                 control.withAction { generation -> service.awaitPresentation(run) { control.isActionCurrent(generation) } }
             }
             queue.poll(1, TimeUnit.SECONDS)!!.invoke() // actual gate present
-            val decision = result.get(1, TimeUnit.SECONDS)
+            assertSame(old, service.field<ComposeView>("capsuleView"))
+            assertSame(oldConnection, service.field<Any>("overlayConnection"))
+            assertTrue(service.field<Any?>("latestPresentationAttempt") != null)
+            clock.set(TimeUnit.MILLISECONDS.toNanos(101))
+            val decision = result.get(2, TimeUnit.SECONDS)
             assertTrue(decision is ToolExecutionDecision.Reject)
             val dispose = queue.poll(1, TimeUnit.SECONDS)!!
             access.get().onUnbind(null)
+            assertNull(AgentAccessibilityService.current())
+            assertTrue(AgentAccessibilityService.connection.value.generation > oldConnection.generation)
             service.invoke("onAccessibilityConnectionChanged", AgentAccessibilityService.connection.value.javaClass,
                 AgentAccessibilityService.connection.value)
             assertTrue(service.field<Boolean>("restoreAfterReconnect"))
@@ -428,7 +448,7 @@ class AgentRuntimeGuiPresentationTest {
     @Test
     fun expiredQueuedGateCannotMakeOwnerEventShowOperationOrCreateWindow() {
         ShadowSettings.setCanDrawOverlays(true)
-        val host = Robolectric.buildService(AgentRuntimeService::class.java).create()
+        val host = runtimeHost()
         val worker = Executors.newSingleThreadExecutor()
         try {
             val service = host.get()
@@ -460,7 +480,7 @@ class AgentRuntimeGuiPresentationTest {
 
     @Test
     fun reacquiringDuringTailReusesWindowsAndOldRemovalDoesNotRemoveNewOwner() {
-        val host = Robolectric.buildService(AgentRuntimeService::class.java).create()
+        val host = runtimeHost()
         try {
             val service = host.get()
             val a = service.register("a")
@@ -486,7 +506,7 @@ class AgentRuntimeGuiPresentationTest {
 
     @Test
     fun aQueuedAcquiredEventCannotRebindOrRecreateAReleasedRun() {
-        val host = Robolectric.buildService(AgentRuntimeService::class.java).create()
+        val host = runtimeHost()
         try {
             val service = host.get()
             val run = service.register("a")
@@ -501,7 +521,7 @@ class AgentRuntimeGuiPresentationTest {
 
     @Test
     fun toolFinishedKeepsTheLiveOwnerAndDoesNotTreatOneStepAsTheTaskTerminal() {
-        val host = Robolectric.buildService(AgentRuntimeService::class.java).create()
+        val host = runtimeHost()
         try {
             val service = host.get()
             val run = service.register("a")
@@ -520,7 +540,7 @@ class AgentRuntimeGuiPresentationTest {
 
     @Test
     fun cancelledPausedOwnerStillHasTheExistingResumeProjection() {
-        val host = Robolectric.buildService(AgentRuntimeService::class.java).create()
+        val host = runtimeHost()
         try {
             val service = host.get()
             val run = service.register("a")
@@ -539,6 +559,11 @@ class AgentRuntimeGuiPresentationTest {
             assertTrue(coordinator.resumeForUser())
         } finally { host.destroy() }
     }
+
+    private fun runtimeHost(): org.robolectric.android.controller.ServiceController<AgentRuntimeService> =
+        Robolectric.buildService(AgentRuntimeService::class.java).create().also {
+            it.get().suppressOverlayCompositionForTest = true
+        }
 
     private fun AgentRuntimeService.attachTestCapsule(): Pair<ComposeView, WindowManager.LayoutParams> {
         invoke("removeAmbientWindows")
