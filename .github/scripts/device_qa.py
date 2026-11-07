@@ -9,17 +9,18 @@ def need(x,msg):
 def api(path):
     req=urllib.request.Request('https://api.github.com'+path,headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'})
     with urllib.request.urlopen(req,timeout=30) as r: return json.load(r)
-def validate_identity(run,jobs,pr,commit,attempt):
+def validate_identity(run,jobs,pr,commit,attempt,checked_base=None):
     need(run['event']=='pull_request' and run['status']=='completed' and run['conclusion']=='success','unsuccessful run')
     need(run['path']=='.github/workflows/pr-check.yml' and run['run_attempt']==attempt,'workflow/attempt mismatch')
     need(run['repository']['full_name']==REPO and run['head_repository']['full_name']==REPO,'fork')
     need(len(jobs)==1 and jobs[0]['name']=='Lint / Test / Debug Build' and jobs[0]['status']=='completed' and jobs[0]['conclusion']=='success','missing required check')
     need(pr['state']=='open' and not pr.get('merged_at') and pr['base']['ref']=='local','closed or wrong base')
     need(pr['head']['repo']['full_name']==REPO and pr['base']['repo']['full_name']==REPO and pr['head']['sha']==run['head_sha'],'fork or stale head')
-    need([x['sha'] for x in commit['parents']]==[pr['base']['sha'],pr['head']['sha']],'stale merge candidate')
-    need(all(SHA.fullmatch(s) for s in (commit['sha'],pr['base']['sha'],pr['head']['sha'])),'bad SHA')
-def validate_manifest(m,run,pr,source,attempt):
-    expected={'schema_version':1,'repository':REPO,'pr_number':pr['number'],'feature_head_sha':pr['head']['sha'],'base_sha':pr['base']['sha'],'source_sha':source,'check_run_id':run['id'],'check_run_attempt':attempt}
+    base=checked_base or pr['base']['sha']
+    need([x['sha'] for x in commit['parents']]==[base,pr['head']['sha']],'unrelated merge candidate')
+    need(all(SHA.fullmatch(s) for s in (commit['sha'],base,pr['base']['sha'],pr['head']['sha'])),'bad SHA')
+def validate_manifest(m,run,pr,source,attempt,checked_base=None):
+    expected={'schema_version':1,'repository':REPO,'pr_number':pr['number'],'feature_head_sha':pr['head']['sha'],'base_sha':checked_base or pr['base']['sha'],'source_sha':source,'check_run_id':run['id'],'check_run_attempt':attempt}
     for k,v in expected.items(): need(m.get(k)==v,'manifest mismatch '+k)
     apks=m.get('apks'); need(isinstance(apks,list) and len(apks)==2 and {x.get('variant') for x in apks}=={'debug','release'},'missing APK')
     names=set()
@@ -71,13 +72,19 @@ def identity(run_id,attempt,source=None):
     run=api(f'/repos/{REPO}/actions/runs/{run_id}'); need(run['id']==run_id,'run mismatch'); pr=get_pr(run)
     jobs=api(f'/repos/{REPO}/actions/runs/{run_id}/attempts/{attempt}/jobs?per_page=100'); need(jobs['total_count']==len(jobs['jobs'])==1,'incomplete jobs')
     if source is None: source=api(f'/repos/{REPO}/git/ref/pull/{pr["number"]}/merge')['object']['sha']
-    need(SHA.fullmatch(source),'bad source'); commit=api(f'/repos/{REPO}/git/commits/{source}'); need(commit['sha']==source,'commit mismatch'); validate_identity(run,jobs['jobs'],pr,commit,attempt)
+    need(SHA.fullmatch(source),'bad source'); commit=api(f'/repos/{REPO}/git/commits/{source}'); need(commit['sha']==source,'commit mismatch')
+    need(len(commit.get('parents',[]))==2,'not a PR merge candidate')
+    checked_base=commit['parents'][0]['sha']
+    validate_identity(run,jobs['jobs'],pr,commit,attempt,checked_base)
+    if checked_base!=pr['base']['sha']:
+        comparison=api(f'/repos/{REPO}/compare/{checked_base}...{pr["base"]["sha"]}')
+        need(comparison['status'] in ('ahead','identical') and comparison['merge_base_commit']['sha']==checked_base,'checked base left local history')
     # Compare execution definitions, not merely the job name. Tests and application
     # sources remain PR code; CI evidence is still not a substitute for code review.
-    base_tree=api(f'/repos/{REPO}/git/trees/{pr["base"]["sha"]}?recursive=1')
+    base_tree=api(f'/repos/{REPO}/git/trees/{checked_base}?recursive=1')
     source_tree=api(f'/repos/{REPO}/git/trees/{source}?recursive=1')
     validate_build_inputs(base_tree, source_tree)
-    return run,pr,source
+    return run,pr,source,checked_base
 def download(url,target):
     class NoRedirect(urllib.request.HTTPRedirectHandler):
         def redirect_request(self,req,fp,code,msg,headers,newurl): return None
@@ -115,12 +122,12 @@ def prevent_duplicate(run_id,attempt):
 
 def prepare(run_id,attempt,dest,archive):
     prevent_duplicate(run_id,attempt)
-    run,pr,source=identity(run_id,attempt); arts=api(f'/repos/{REPO}/actions/runs/{run_id}/artifacts?per_page=100'); need(arts['total_count']==len(arts['artifacts']),'incomplete artifact list')
+    arts=api(f'/repos/{REPO}/actions/runs/{run_id}/artifacts?per_page=100'); need(arts['total_count']==len(arts['artifacts']),'incomplete artifact list')
     found=[x for x in arts['artifacts'] if x['name']=='pr-qa-input' and not x['expired']]; need(len(found)==1,'missing or duplicate input')
     download(f'https://api.github.com/repos/{REPO}/actions/artifacts/{found[0]["id"]}/zip',archive); unpack(archive,dest)
-    m=json.loads((dest/'manifest.json').read_text()); validate_manifest(m,run,pr,source,attempt); verify_files(m,dest)
+    m=json.loads((dest/'manifest.json').read_text()); run,pr,source,base=identity(run_id,attempt,m.get('source_sha','')); validate_manifest(m,run,pr,source,attempt,base); verify_files(m,dest)
 def recheck(run_id,attempt,dest):
-    m=json.loads((dest/'manifest.json').read_text()); run,pr,source=identity(run_id,attempt,m['source_sha']); validate_manifest(m,run,pr,source,attempt); verify_files(m,dest)
+    m=json.loads((dest/'manifest.json').read_text()); run,pr,source,base=identity(run_id,attempt,m['source_sha']); validate_manifest(m,run,pr,source,attempt,base); verify_files(m,dest)
 def receipt(run_id,attempt,dest,signed,proof):
     import shutil,subprocess
     m=json.loads((dest/'manifest.json').read_text())

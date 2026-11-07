@@ -157,7 +157,10 @@ jobs:
                   headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json'})
               with urllib.request.urlopen(request,timeout=30) as response: return json.load(response)
           current=api('pulls/'+pr)
-          assert current['state']=='open' and current['head']['sha']==os.environ['FEATURE_HEAD'] and current['base']['sha']==os.environ['BASE_SHA'], 'PR changed after signing; do not publish as latest'
+          assert current['state']=='open' and current['base']['ref']=='local' and current['head']['sha']==os.environ['FEATURE_HEAD'], 'PR head changed after signing; do not publish as latest'
+          if current['base']['sha']!=os.environ['BASE_SHA']:
+              comparison=api('compare/'+os.environ['BASE_SHA']+'...'+current['base']['sha'])
+              assert comparison['status'] in ('ahead','identical') and comparison['merge_base_commit']['sha']==os.environ['BASE_SHA'], 'Checked base left local history'
           marker='<!-- eta-qa:check-'+check+' -->'
           body=marker+'\n## 原签名 QA 双包\n\nSource `'+os.environ['SOURCE_SHA']+'`; feature head `'+os.environ['FEATURE_HEAD']+'`; base `'+os.environ['BASE_SHA']+'`.\n\n'
           # Query artifact IDs here rather than exporting filenames/URLs from a
@@ -174,7 +177,7 @@ jobs:
               assert len(items)==1, 'Missing or duplicate delivery artifact'
               url='https://github.com/'+repo+'/actions/runs/'+os.environ['GITHUB_RUN_ID']+'/artifacts/'+str(items[0]['id'])
               body+='['+label+']('+url+') · '
-          body+='[完整检查](https://github.com/'+repo+'/actions/runs/'+check+')\n\n业务未合入；未安装、未本人验收。不同分支包分别覆盖不等于集成功能。\n'
+          body+='[完整检查](https://github.com/'+repo+'/actions/runs/'+check+')\n\n业务未合入；未安装、未本人验收。包使用上面固定base，不自动包含之后的local更新；不同分支包分别覆盖不等于集成功能。\n'
           found=[]
           for page in range(1,11):
               rows=api('issues/'+pr+'/comments?per_page=100&page='+str(page))

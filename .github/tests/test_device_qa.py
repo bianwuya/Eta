@@ -17,6 +17,27 @@ class QA(unittest.TestCase):
     def test_stale_base(self):
         self.pr['base']['sha']='d'*40
         with self.assertRaises(ValueError): qa.validate_identity(self.run,self.jobs,self.pr,self.commit,1)
+    def test_fixed_checked_base_does_not_follow_concurrent_local_updates(self):
+        self.pr['base']['sha']='d'*40
+        qa.validate_identity(self.run,self.jobs,self.pr,self.commit,1,checked_base=self.base)
+        qa.validate_manifest(self.m,self.run,self.pr,self.source,1,checked_base=self.base)
+        self.commit['parents'][1]['sha']='e'*40
+        with self.assertRaises(ValueError):
+            qa.validate_identity(self.run,self.jobs,self.pr,self.commit,1,checked_base=self.base)
+    def test_identity_uses_fixed_source_and_validates_old_base_ancestry(self):
+        from unittest.mock import patch
+        self.run['pull_requests']=[{'number':2}]
+        self.pr['base']['sha']='d'*40
+        def api(path):
+            if path.endswith('/actions/runs/123'): return self.run
+            if path.endswith('/pulls/2'): return self.pr
+            if '/attempts/1/jobs?' in path: return {'total_count':1,'jobs':self.jobs}
+            if '/git/commits/' in path: return self.commit
+            if '/compare/' in path: return {'status':'ahead','merge_base_commit':{'sha':self.base}}
+            if '/git/trees/' in path: return {'truncated':False,'tree':[]}
+            raise AssertionError('Must not read a moving merge ref: '+path)
+        with patch.object(qa,'api',side_effect=api):
+            self.assertEqual((self.run,self.pr,self.source,self.base),qa.identity(123,1,self.source))
     def test_source_vs_head(self):
         self.m['source_sha']=self.head
         with self.assertRaises(ValueError): qa.validate_manifest(self.m,self.run,self.pr,self.source,1)
