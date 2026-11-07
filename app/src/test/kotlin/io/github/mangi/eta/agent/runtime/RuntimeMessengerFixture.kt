@@ -38,7 +38,7 @@ internal class RuntimeMessengerFixture : AutoCloseable {
             if (beforeDispatch(msg)) incoming.handleMessage(msg)
         }
     })
-    val context = object : ContextWrapper(RuntimeEnvironment.getApplication<Application>()) {
+    val context = object : ContextWrapper(RuntimeEnvironment.getApplication()) {
         override fun getApplicationContext(): Context = this
         override fun bindService(intent: Intent, connection: ServiceConnection, flags: Int): Boolean {
             connection.onServiceConnected(ComponentName(this, AgentRuntimeService::class.java), messenger.binder)

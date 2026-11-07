@@ -25,7 +25,7 @@ import org.robolectric.annotation.Config
 class AgentExecutionServiceTest {
     @Test
     fun zeroRunTerminalLeaseHasNoRunStopAndOldGlobalActionIsHarmless() {
-        val context = RuntimeEnvironment.getApplication<Application>()
+        val context = RuntimeEnvironment.getApplication()
         var stops = 0
         val id = "terminal:zero-runs"
         assertTrue(AgentExecutionService.acquire(context, id) { stops++ })
@@ -49,7 +49,7 @@ class AgentExecutionServiceTest {
 
     @Test
     fun stoppingAndGuiOwnershipBypassNoncriticalNotificationThrottle() {
-        val context = RuntimeEnvironment.getApplication<Application>()
+        val context = RuntimeEnvironment.getApplication()
         val id = "run:notification-transitions"
         assertTrue(AgentExecutionService.acquire(context, id) {})
         val initial = AgentRuntimeWire.ActiveRunSnapshot("notification-transitions", "conversation")

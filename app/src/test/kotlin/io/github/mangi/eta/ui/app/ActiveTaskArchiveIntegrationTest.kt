@@ -29,7 +29,7 @@ import org.robolectric.annotation.Config
 class ActiveTaskArchiveIntegrationTest {
     @Before fun reset() {
         EtaDatabase.closeForTests()
-        RuntimeEnvironment.getApplication<Application>().deleteDatabase("eta.db")
+        RuntimeEnvironment.getApplication().deleteDatabase("eta.db")
     }
     @After fun close() { EtaDatabase.closeForTests() }
 

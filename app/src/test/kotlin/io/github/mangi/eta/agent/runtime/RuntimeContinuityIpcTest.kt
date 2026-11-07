@@ -5,6 +5,7 @@ import android.os.Looper
 import android.os.Message
 import io.github.mangi.eta.data.db.EtaDatabase
 import io.github.mangi.eta.ui.app.AgentAppState
+import io.github.mangi.eta.ui.app.AgentConversationStore
 import io.github.mangi.eta.ui.model.AgentMessageUi
 import io.github.mangi.eta.ui.model.UserMessageUi
 import kotlinx.coroutines.CoroutineScope
@@ -28,7 +29,7 @@ import org.robolectric.annotation.Config
 class RuntimeContinuityIpcTest {
     @Before fun resetDatabase() {
         EtaDatabase.closeForTests()
-        RuntimeEnvironment.getApplication<Application>().deleteDatabase("eta.db")
+        RuntimeEnvironment.getApplication().deleteDatabase("eta.db")
     }
     @After fun closeDatabase() { EtaDatabase.closeForTests() }
 
@@ -257,7 +258,7 @@ class RuntimeContinuityIpcTest {
                 assertEquals(1, restored.messages.filterIsInstance<UserMessageUi>().size)
                 assertEquals(1, restored.messages.filterIsInstance<AgentMessageUi>()
                     .count { it.content == "saved before destruction" })
-                assertTrue(AgentRuntimeResultStore.list(fixture.context).isEmpty())
+                fixture.await { AgentRuntimeResultStore.list(fixture.context).isEmpty() }
                 assertFalse(AgentRuntimeWire.MSG_START_RUN in fixture.messages)
             } finally {
                 scope.cancel()

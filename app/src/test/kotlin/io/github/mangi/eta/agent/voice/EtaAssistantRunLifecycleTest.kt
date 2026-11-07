@@ -55,7 +55,7 @@ class EtaAssistantRunLifecycleTest {
             org.robolectric.shadows.ShadowSettings.setCanDrawOverlays(false)
             // Use the public show factory's actual intent, not an assumed action/extra contract.
             EtaAssistantOverlayService.show(service, null)
-            val started = org.robolectric.Shadows.shadowOf(org.robolectric.RuntimeEnvironment.getApplication<Application>()).nextStartedService
+            val started = org.robolectric.Shadows.shadowOf(org.robolectric.RuntimeEnvironment.getApplication()).nextStartedService
             service.onStartCommand(requireNotNull(started), 0, 1)
             val input = service.javaClass.getDeclaredField("inputText\$delegate").apply { isAccessible = true }
                 .get(service) as androidx.compose.runtime.MutableState<*>
