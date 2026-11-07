@@ -94,6 +94,7 @@ class RunPresentationIpcTest {
             assertFalse(AgentRuntimeWire.MSG_START_RUN in f.messages)
             assertFalse(AgentRuntimeWire.MSG_ACK_RESULT in f.messages)
         }
+    }
 
     @Test fun closedMailboxClosesLatePresentationDescriptors() {
         val context = RuntimeEnvironment.getApplication()
@@ -104,7 +105,6 @@ class RunPresentationIpcTest {
         AgentResultMailbox().also { it.close() }.set(bundle)
         assertFalse(descriptor.fileDescriptor.valid())
         assertFalse(AgentWireText.hasDescriptor(bundle, "presentation_user_text"))
-    }
     }
 
     @Test fun preferenceIsExplicitAndDoesNotTouchGuiOwnerOrControllers() {

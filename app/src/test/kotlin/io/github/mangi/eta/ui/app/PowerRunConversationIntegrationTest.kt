@@ -3,8 +3,11 @@ package io.github.mangi.eta.ui.app
 import android.app.Application
 import android.graphics.Bitmap
 import android.os.Looper
-import android.util.Base64
-import io.github.mangi.eta.agent.model.AgentModelClient
+import io.github.mangi.eta.data.model.Model
+import io.github.mangi.eta.data.model.OpenAiCompatibleProviderSetting
+import io.github.mangi.eta.data.repository.ProviderRepository
+import io.github.mangi.eta.data.repository.RuntimeConfigRepository
+import io.github.mangi.eta.agent.media.AgentImageCodec
 import io.github.mangi.eta.agent.runtime.*
 import io.github.mangi.eta.data.db.EtaDatabase
 import io.github.mangi.eta.ui.model.AgentMessageUi
@@ -19,6 +22,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
 
 /** Exercises the real UI state against Service/Registry/Client Messenger, without model calls. */
 @RunWith(RobolectricTestRunner::class)
@@ -48,7 +52,12 @@ class PowerRunConversationIntegrationTest {
                 assertEquals(1, app.homeState.messages.filterIsInstance<UserMessageUi>().size)
                 assertEquals("fixture task", app.homeState.messages.filterIsInstance<UserMessageUi>().single().content)
                 run.session.emit(delta(" live"))
-                fixture.await { app.homeState.messages.filterIsInstance<AgentMessageUi>().any { it.content == "replay live" } }
+                fixture.await {
+                    // Wall-clock sleeps in the Messenger fixture do not advance the paused
+                    // main Looper clock used by the production 80ms delta coalescer.
+                    shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(100))
+                    app.homeState.messages.filterIsInstance<AgentMessageUi>().any { it.content == "replay live" }
+                }
                 assertTrue(app.homeState.isStreaming)
                 assertFalse(fixture.messages.contains(AgentRuntimeWire.MSG_START_RUN))
                 fixture.complete(run, AgentRuntimeWire.RunResult(run.runId, true, "replay live"))
@@ -212,18 +221,23 @@ class PowerRunConversationIntegrationTest {
         }
     }
 
-    @Test fun runningImagePreviewComesFromActualRequestAndSurvivesTerminalImport() {
+    @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    fun runningImagePreviewComesFromActualRequestAndSurvivesTerminalImport() {
         RuntimeMessengerFixture().use { fixture ->
             val bytes = java.io.ByteArrayOutputStream().use { output ->
                 val bitmap = Bitmap.createBitmap(2, 2, Bitmap.Config.ARGB_8888)
                 bitmap.eraseColor(android.graphics.Color.GREEN)
-                bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)
+                check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, output))
                 bitmap.recycle()
                 output.toByteArray()
             }
-            val image = "data:image/png;base64," + Base64.encodeToString(bytes, Base64.NO_WRAP)
-            val request = fixture.request("image-power", "image-key").copy(images = listOf(
-                AgentModelClient.ModelImage(image, "image/png", bytes.size, source = "user_attach")))
+            // The real request ingestion produces a decoded attachment with dimensions;
+            // previewFromReference intentionally cannot preview a dimensionless ModelImage.
+            val image = AgentImageCodec.fromAttachmentBytes(bytes, source = "user_attach", mimeHint = "image/png")
+            assertEquals(2, image.width)
+            assertEquals(2, image.height)
+            val request = fixture.request("image-power", "image-key").copy(images = listOf(image))
             val run = fixture.admit(request).also { it.prepared(request) }
             val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
             try {
@@ -264,6 +278,139 @@ class PowerRunConversationIntegrationTest {
             } finally { scope.cancel(); shadowOf(Looper.getMainLooper()).idle() }
         }
     }
+
+    @Test fun newLocalWriterDuringSettlementQueryKeepsQueuedMessageUntouched() {
+        RuntimeMessengerFixture().use { fixture ->
+            configureModel(fixture)
+            val request = fixture.request("queue-race", "queue-race-key")
+            val run = fixture.admit(request).also { it.prepared(request) }
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+            try {
+                val app = AgentAppState(fixture.context, scope)
+                assertTrue(ui(fixture, scope) { app.openRunConversation(run.runId) })
+                app.sendCurrentMessage("Q")
+                fixture.await { !isRecovering(app) }
+                val queuedId = app.homeState.queuedMessages.single().id
+                var interleaved = false
+                val starts = mutableListOf<AgentRuntimeWire.RunRequest>()
+                fixture.beforeDispatch = { message ->
+                    when {
+                        message.what == AgentRuntimeWire.MSG_QUERY_ACTIVE_RUNS && !interleaved && hasPendingResume(app) -> {
+                            interleaved = true
+                            app.sendCurrentMessage("N")
+                            true // Real query returns idle; N already owns the UI writer.
+                        }
+                        message.what == AgentRuntimeWire.MSG_START_RUN -> {
+                            starts += AgentRuntimeWire.runRequestFromBundle(message.data)
+                            false // Keep the new request in flight without contacting a model.
+                        }
+                        else -> true
+                    }
+                }
+                fixture.complete(run, AgentRuntimeWire.RunResult(run.runId, true, "done"))
+                fixture.await { interleaved && starts.isNotEmpty() }
+                assertEquals(listOf("N"), starts.map { it.prompt })
+                assertTrue(app.homeState.isStreaming)
+                assertEquals(listOf(queuedId), app.homeState.queuedMessages.map { it.id })
+                assertEquals("Q", app.homeState.queuedMessages.single().content)
+            } finally { scope.cancel(); shadowOf(Looper.getMainLooper()).idle() }
+        }
+    }
+
+    @Test fun oneUnavailableSettlementQueryRecoversAndStartsQueuedTurnExactlyOnce() {
+        RuntimeMessengerFixture().use { fixture ->
+            configureModel(fixture)
+            val request = fixture.request("queue-reconnect", "queue-reconnect-key")
+            val run = fixture.admit(request).also { it.prepared(request) }
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+            try {
+                val app = AgentAppState(fixture.context, scope)
+                assertTrue(ui(fixture, scope) { app.openRunConversation(run.runId) })
+                app.sendCurrentMessage("Q after reconnect")
+                fixture.await { !isRecovering(app) }
+                // Hold the existing recovery gate so an unrelated terminal-revision
+                // reconciliation cannot bypass the one intentionally failed query.
+                recoveryFlag(app).set(true)
+                var dropped = false
+                var droppedAt = 0L
+                val starts = mutableListOf<AgentRuntimeWire.RunRequest>()
+                fixture.beforeDispatch = { message ->
+                    when {
+                        message.what == AgentRuntimeWire.MSG_QUERY_ACTIVE_RUNS && !dropped && hasPendingResume(app) -> {
+                            dropped = true
+                            droppedAt = System.nanoTime()
+                            false // The real client reports Unavailable after its bounded timeout.
+                        }
+                        message.what == AgentRuntimeWire.MSG_START_RUN -> {
+                            starts += AgentRuntimeWire.runRequestFromBundle(message.data)
+                            false
+                        }
+                        else -> true
+                    }
+                }
+                fixture.complete(run, AgentRuntimeWire.RunResult(run.runId, true, "done"))
+                fixture.await { dropped && System.nanoTime() - droppedAt >=
+                    java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(8_100) }
+                assertTrue(starts.isEmpty())
+                assertEquals("Q after reconnect", app.homeState.queuedMessages.single().content)
+                recoveryFlag(app).set(false)
+                app.refreshRuntimeResults()
+                fixture.await { starts.isNotEmpty() }
+                assertEquals(listOf("Q after reconnect"), starts.map { it.prompt })
+                assertTrue(app.homeState.queuedMessages.isEmpty())
+                app.refreshRuntimeResults()
+                fixture.await { !hasPendingResume(app) }
+                assertEquals(1, starts.size)
+            } finally { scope.cancel(); shadowOf(Looper.getMainLooper()).idle() }
+        }
+    }
+
+    @Test fun busySameKeyArchiveDoesNotBlockIndependentTerminalConversationOrAckPredecessor() {
+        RuntimeMessengerFixture().use { fixture ->
+            val aRequest = fixture.request("old-a", "shared-key")
+            val a = fixture.admit(aRequest).also { it.prepared(aRequest) }
+            fixture.complete(a, AgentRuntimeWire.RunResult(a.runId, true, "old answer"))
+            val bRequest = fixture.request("active-b", "shared-key")
+            val b = fixture.admit(bRequest).also { it.prepared(bRequest) }
+            val cRequest = fixture.request("independent-c", "independent-key")
+            val c = fixture.admit(cRequest).also { it.prepared(cRequest) }
+            fixture.complete(c, AgentRuntimeWire.RunResult(c.runId, true, "independent answer"))
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+            try {
+                val app = AgentAppState(fixture.context, scope)
+                assertTrue(ui(fixture, scope) { app.openRunConversation(c.runId) })
+                assertEquals(AgentConversationIdentity.archiveConversationId(AgentRuntimeWire.ETA_VOICE_HANDOFF_SOURCE,
+                    "independent-key"), app.conversationPaneState.selectedConversationId)
+                assertEquals("independent answer", app.homeState.messages.filterIsInstance<AgentMessageUi>().single().content)
+                assertTrue(AgentRuntimeResultStore.list(fixture.context).any { it.result.runId == a.runId })
+                assertTrue(AgentRunArchiveStore.list(fixture.context).any { it.result.runId == a.runId })
+                assertFalse(b.session.controller.isCancelled)
+                assertTrue(fixture.registry.snapshots().any { it.runId == b.runId })
+                fixture.complete(b, AgentRuntimeWire.RunResult(b.runId, true, "successor answer"))
+            } finally { scope.cancel(); shadowOf(Looper.getMainLooper()).idle() }
+        }
+    }
+
+    private fun configureModel(fixture: RuntimeMessengerFixture) {
+        fixture.result(fixture.worker { runBlocking {
+            ProviderRepository.addProvider(OpenAiCompatibleProviderSetting(id = "queue-provider", name = "Fixture",
+                baseUrl = "https://example.invalid", apiKey = "fixture",
+                models = listOf(Model(id = "queue-model", modelId = "fixture", displayName = "Fixture"))))
+            RuntimeConfigRepository.setSelectedProviderId("queue-provider")
+            RuntimeConfigRepository.setSelectedModelId("queue-model")
+        } })
+    }
+
+    private fun hasPendingResume(app: AgentAppState): Boolean =
+        (AgentAppState::class.java.getDeclaredField("pendingQueueResumes").apply { isAccessible = true }
+            .get(app) as Map<*, *>).isNotEmpty()
+
+    private fun isRecovering(app: AgentAppState): Boolean =
+        recoveryFlag(app).get()
+
+    private fun recoveryFlag(app: AgentAppState): java.util.concurrent.atomic.AtomicBoolean =
+        (AgentAppState::class.java.getDeclaredField("runtimeRecoveryInProgress").apply { isAccessible = true }
+            .get(app) as java.util.concurrent.atomic.AtomicBoolean)
 
     private fun delta(text: String) = AgentEvent.AssistantBlockDelta(1, AgentEvent.AssistantBlockKind.TEXT, 0, text.length, text)
 

@@ -48,6 +48,7 @@ class AgentExecutionServiceTest {
     }
 
     @Test
+    @Config(sdk = [33, 34, 36], application = Application::class)
     fun stoppingAndGuiOwnershipBypassNoncriticalNotificationThrottle() {
         val context = RuntimeEnvironment.getApplication()
         val id = "run:notification-transitions"
@@ -65,6 +66,20 @@ class AgentExecutionServiceTest {
             AgentExecutionService.updateRunStatus(context, AgentOverlayStatus.Stopping, 1, listOf(initial))
             shadowOf(Looper.getMainLooper()).idle()
             assertEquals(context.getString(R.string.overlay_stopping), current().extras.getString(Notification.EXTRA_TEXT))
+            if (Build.VERSION.SDK_INT >= 36) assertEquals(context.getString(R.string.overlay_stopping),
+                current().extras.getString("android.shortCriticalText"))
+            AgentExecutionService.updateRunStatus(context, AgentOverlayStatus.Stopping, 1,
+                listOf(initial.copy(phase = AgentRuntimeWire.RunPhase.WaitingForGui)))
+            shadowOf(Looper.getMainLooper()).idle()
+            assertEquals(context.getString(R.string.overlay_stopping), current().extras.getString(Notification.EXTRA_TEXT))
+            if (Build.VERSION.SDK_INT >= 36) assertEquals(context.getString(R.string.overlay_stopping),
+                current().extras.getString("android.shortCriticalText"))
+            AgentExecutionService.updateRunStatus(context, AgentOverlayStatus.Stopping, 1,
+                listOf(initial.copy(phase = AgentRuntimeWire.RunPhase.Committing)))
+            shadowOf(Looper.getMainLooper()).idle()
+            assertEquals(context.getString(R.string.task_archiving), current().extras.getString(Notification.EXTRA_TEXT))
+            if (Build.VERSION.SDK_INT >= 36) assertEquals(context.getString(R.string.task_archiving),
+                current().extras.getString("android.shortCriticalText"))
             AgentExecutionService.updateRunStatus(context, AgentOverlayStatus.Paused, 1,
                 listOf(initial.copy(guiStatus = GuiControlStatus.UserPaused, phase = AgentRuntimeWire.RunPhase.Paused)))
             shadowOf(Looper.getMainLooper()).idle()
@@ -229,6 +244,7 @@ class AgentExecutionServiceTest {
             shadowOf(Looper.getMainLooper()).idle()
             controller.destroy()
         }
+    }
 
     @Test
     fun latestPowerWinsAndTerminalFallsBackWhileOldClickStillTargetsOriginalRun() {
@@ -273,7 +289,6 @@ class AgentExecutionServiceTest {
             shadowOf(Looper.getMainLooper()).idle()
             host.destroy()
         }
-    }
     }
 
     @Test

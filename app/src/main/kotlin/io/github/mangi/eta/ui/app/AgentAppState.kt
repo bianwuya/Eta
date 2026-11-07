@@ -125,6 +125,8 @@ internal class AgentAppState(
     private val runtimeReconcileMutex = Mutex()
     private val externalRunIds = mutableSetOf<String>()
     private val runConversationHints = mutableMapOf<String, String>()
+    private data class PendingQueueResume(val runId: String, val stoppedByUser: Boolean)
+    private val pendingQueueResumes = mutableMapOf<String, PendingQueueResume>()
     private val defaultThinkingEnabled = agentBooleanForUi(Prefs.Keys.AGENT_THINKING_ENABLED)
     @Volatile
     private var conversationPersistence = AgentConversationPersistence(initialConversations)
@@ -211,6 +213,9 @@ internal class AgentAppState(
                     activeRunSnapshots = snapshots
                     conversationPaneState = conversationPaneState.copy(tasksConnected = true)
                     refreshConversationSummaries()
+                    if (pendingQueueResumes.isNotEmpty()) scope.launch {
+                        resumeSettledQueues(AgentRuntimeClient.ActiveRunsQuery.Known(snapshots))
+                    }
                     // Admission and Preparing -> Running are authoritative changes, not polling.
                     val changed = snapshots.filter { run ->
                         run.handoffSource != AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE &&
@@ -653,6 +658,7 @@ internal class AgentAppState(
                 withContext(Dispatchers.Main) { startReattachedRun(run.runId, run.conversationId, run.operation) }
             }
         }
+        resumeSettledQueues(activeRunQuery)
     }
 
     /** 把安全事件恢复为 UI 轨迹；半截回复不进入模型 history，设备工具也不会重放。 */
@@ -809,9 +815,13 @@ internal class AgentAppState(
             val payload = AgentExternalArchivePayload.from(archivedRun.handoff.payload) ?: continue
             val conversationId = archiveConversationId(archivedRun.handoff.source, payload.conversationKey)
             val saved = withLoadedConversations(setOf(conversationId)) {
-                val importedRunId = withContext(Dispatchers.Main) {
+                val imported = withContext(Dispatchers.Main) {
                     importExternalRun(archivedRun).also { refreshConversationSummaries() }
-                } ?: return@withLoadedConversations false
+                }
+                // A predecessor blocked by a same-key writer does not block independent
+                // conversations. Real persistence/ACK failure still stops the batch below.
+                if (imported !is ExternalImport.Imported) return@withLoadedConversations true
+                val importedRunId = imported.runId
                 if (!withContext(Dispatchers.Main) { persistConversations() }.await()) return@withLoadedConversations false
                 // Only acknowledge after the imported conversation is durably saved.
                 val acknowledged = withContext(Dispatchers.IO) {
@@ -968,10 +978,16 @@ internal class AgentAppState(
         }
     }
 
-    private fun importExternalRun(archivedRun: AgentRunArchiveStore.ArchivedRun): String? {
+    private sealed interface ExternalImport {
+        data class Imported(val runId: String) : ExternalImport
+        data object Deferred : ExternalImport
+        data object Invalid : ExternalImport
+    }
+
+    private fun importExternalRun(archivedRun: AgentRunArchiveStore.ArchivedRun): ExternalImport {
         val runId = archivedRun.result.runId.ifBlank { archivedRun.handoff.id }
-        if (runId.isBlank()) return null
-        val payload = AgentExternalArchivePayload.from(archivedRun.handoff.payload) ?: return null
+        if (runId.isBlank()) return ExternalImport.Invalid
+        val payload = AgentExternalArchivePayload.from(archivedRun.handoff.payload) ?: return ExternalImport.Invalid
         val conversationId = archiveConversationId(
             source = archivedRun.handoff.source,
             conversationKey = payload.conversationKey,
@@ -984,13 +1000,13 @@ internal class AgentAppState(
         ).copy(reasoningEffort = archivedEffort)
         // A completed text block can exist while tools/model execution are still running.
         val alreadyImported = AgentRuntimeHistoryReducer.wasApplied(existingState, runId)
-        if (alreadyImported) return runId
+        if (alreadyImported) return ExternalImport.Imported(runId)
 
         if (conversationTitles[conversationId].isNullOrBlank()) {
             conversationTitles = conversationTitles + (conversationId to payload.title)
         }
         if (runStore.activeRunId(conversationId) != null ||
-            !runStore.register(runId, conversationId, observed = false)) return null
+            !runStore.register(runId, conversationId, observed = false)) return ExternalImport.Deferred
         externalRunIds += runId
         runConversationHints[runId] = conversationId
         updateConversation(
@@ -1004,7 +1020,7 @@ internal class AgentAppState(
         restoreRunEvents(runId, archivedRun.events)
         applyRunResult(runId, archivedRun.result)
         conversationUpdatedAt = conversationUpdatedAt + (conversationId to archivedRun.createdAt)
-        return runId
+        return ExternalImport.Imported(runId)
     }
 
     fun updateThinkingEnabled(enabled: Boolean) {
@@ -1930,6 +1946,7 @@ internal class AgentAppState(
         requestMode: String = "normal",
     ) {
         if (conversationId in pendingConversationDeletes || !runStore.register(runId, conversationId)) return
+        pendingQueueResumes.remove(conversationId)
         // 发送即绑定：会话记住本轮实际使用的模型，回落到默认模型时也随之更新。
         val runModelId = state.effectiveModelId
         val runReasoningEffort = providers.enabledModel(runModelId)?.let { (provider, model) ->
@@ -2556,33 +2573,54 @@ internal class AgentAppState(
                 return@launch
             }
             if (!resultSaved || !resumeQueue || runStore.activeRunId(conversationId) != null) return@launch
+            val stoppedByUser = explicitlyStoppedByUser || stoppedDuringSettlement ||
+                (!result.ok && (result.error == LEGACY_STOPPED_ERROR || result.error == SYNTHETIC_STATUS_STOPPED))
             if (external) {
-                // Terminal delivery precedes Runtime's final cleanup. Do not pop a queued turn
-                // while its predecessor (or a newly admitted same-key run) still owns the writer.
+                pendingQueueResumes[conversationId] = PendingQueueResume(runId, stoppedByUser)
                 val active = withContext(Dispatchers.IO) {
                     AgentRuntimeClient(appContext, AndroidAgentLogger).queryActiveRuns()
                 }
-                if (active !is AgentRuntimeClient.ActiveRunsQuery.Known ||
-                    active.runs.any { it.conversationId == conversationId }) {
-                    refreshRuntimeResults()
-                    return@launch
-                }
+                resumeSettledQueues(active)
+                if (conversationId in pendingQueueResumes) refreshRuntimeResults()
+                return@launch
             }
-            val finishedState = conversationsById[conversationId]
-            if (finishedState != null && finishedState.queuedMessages.isNotEmpty()) {
-                if (finishedState.queuedMessages.any { it.id in unconfirmedSteering }) return@launch
-                val stoppedByUser = explicitlyStoppedByUser || stoppedDuringSettlement ||
-                    (!result.ok && (result.error == LEGACY_STOPPED_ERROR || result.error == SYNTHETIC_STATUS_STOPPED))
-                val (afterPopState, nextQueued) = AgentMessageQueueReducer.pollNextToSendAfterRun(
-                    state = finishedState,
-                    stoppedByUser = stoppedByUser,
-                )
-                updateConversation(conversationId, afterPopState, updateTimestamp = false)
-                if (nextQueued != null) {
-                    dispatchQueuedMessage(conversationId, nextQueued)
+            resumeConversationQueue(conversationId, stoppedByUser)
+        }
+    }
+
+    private suspend fun resumeSettledQueues(active: AgentRuntimeClient.ActiveRunsQuery) {
+        if (active !is AgentRuntimeClient.ActiveRunsQuery.Known) return
+        val pending = withContext(Dispatchers.Main) { pendingQueueResumes.toMap() }
+        for ((id, candidate) in pending) {
+            if (active.runs.any { it.conversationId == id }) continue
+            withLoadedConversations(setOf(id)) {
+                withContext(Dispatchers.Main) {
+                    // Loading and the Runtime query both suspend. Revalidate the latest
+                    // local writer and state in the same non-suspending section as poll.
+                    if (pendingQueueResumes[id] != candidate) return@withContext
+                    if (resumeConversationQueue(id, candidate.stoppedByUser)) pendingQueueResumes.remove(id)
                 }
             }
         }
+    }
+
+    /** Main-thread atomic guard/poll/dispatch: no queue removal across an IO window. */
+    private fun resumeConversationQueue(conversationId: String, stoppedByUser: Boolean): Boolean {
+        if (conversationId in pendingConversationDeletes || runStore.activeRunId(conversationId) != null) return false
+        val finishedState = conversationsById[conversationId]
+        if (finishedState?.isStreaming == true || finishedState?.isCompacting == true) return false
+        if (finishedState != null && finishedState.queuedMessages.isNotEmpty()) {
+            if (finishedState.queuedMessages.any { it.id in unconfirmedSteering }) return false
+            val (afterPopState, nextQueued) = AgentMessageQueueReducer.pollNextToSendAfterRun(
+                state = finishedState,
+                stoppedByUser = stoppedByUser,
+            )
+            updateConversation(conversationId, afterPopState, updateTimestamp = false)
+            if (nextQueued != null) {
+                dispatchQueuedMessage(conversationId, nextQueued)
+            }
+        }
+        return true
     }
 
     private fun updateRunTrace(

@@ -154,7 +154,12 @@ internal class AgentExecutionService : Service() {
         if (status != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA) {
             builder
                 .setStyle(Notification.ProgressStyle().setProgressIndeterminate(true))
-                .setShortCriticalText(run?.let { phaseText(this, it) } ?: status.shortText())
+                .setShortCriticalText(when {
+                    run?.phase == AgentRuntimeWire.RunPhase.Committing -> phaseText(this, run)
+                    status == AgentOverlayStatus.Stopping -> status.shortText()
+                    run != null -> phaseText(this, run)
+                    else -> status.shortText()
+                })
             // 请求方法从 API 36.1 才公开；标准 extra 也可供支持该协议的 API 36 系统读取。
             builder.extras.putBoolean("android.requestPromotedOngoing", true)
         }
@@ -244,11 +249,16 @@ internal class AgentExecutionService : Service() {
         private fun executionText(context: Context, status: AgentOverlayStatus?, taskCount: Int,
             run: AgentRuntimeWire.ActiveRunSnapshot? = null): String {
             val summary = context.resources.getQuantityString(R.plurals.execution_summary, taskCount, taskCount)
-            val statusText = if (run != null && run.phase != AgentRuntimeWire.RunPhase.Running) phaseText(context, run) else when (status) {
+            val statusText = when {
+                run?.phase == AgentRuntimeWire.RunPhase.Committing -> phaseText(context, run)
+                status == AgentOverlayStatus.Stopping -> status.localizedText(context.resources)
+                run != null && run.phase != AgentRuntimeWire.RunPhase.Running -> phaseText(context, run)
+                else -> when (status) {
                 is AgentOverlayStatus.RunningTool, is AgentOverlayStatus.HostedToolRunning ->
                     context.getString(R.string.execution_chip_running)
                 null -> null
                 else -> status.localizedText(context.resources)
+                }
             }
             return when {
                 statusText == null -> summary

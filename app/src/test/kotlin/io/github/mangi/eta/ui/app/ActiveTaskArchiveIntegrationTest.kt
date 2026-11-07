@@ -81,10 +81,24 @@ class ActiveTaskArchiveIntegrationTest {
             val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
             try {
                 val app = AgentAppState(fixture.context, scope)
-                fixture.await { app.conversationPaneState.tasksConnected && app.conversationPaneState.conversations.isNotEmpty() }
+                fixture.await {
+                    // Sidebar projection is published before the asynchronous conversation
+                    // commit. ACK and archive removal are the durable import boundary.
+                    app.conversationPaneState.tasksConnected &&
+                        app.conversationPaneState.conversations.isNotEmpty() &&
+                        AgentRuntimeWire.MSG_ACK_RESULT in fixture.messages &&
+                        AgentRunArchiveStore.list(fixture.context).isEmpty() &&
+                        AgentRuntimeResultStore.list(fixture.context).isEmpty()
+                }
                 val imported = fixture.result(fixture.worker { AgentConversationStore.load(fixture.context) })
                 val id = AgentConversationIdentity.archiveConversationId(AgentRuntimeWire.ETA_VOICE_HANDOFF_SOURCE, "stable-key")
                 assertTrue(id in imported.conversationsById)
+                val firstSaved = requireNotNull(fixture.result(fixture.worker { runBlocking {
+                    AgentConversationStore.loadConversation(fixture.context, id)
+                } }))
+                assertEquals(1, firstSaved.messages.filterIsInstance<UserMessageUi>().size)
+                assertEquals(1, firstSaved.messages.filterIsInstance<AgentMessageUi>().count { it.content == "answer" })
+                assertTrue(run.runId in firstSaved.appliedRuntimeRunIds)
                 // Re-enqueue the same durable archive, just as a process reconnect can expose it again.
                 AgentRunArchiveStore.add(fixture.context, AgentRunArchiveStore.ArchivedRun(request.handoff!!,
                     emptyList(), AgentRuntimeWire.RunResult(run.runId, true, "answer"), 1L))
