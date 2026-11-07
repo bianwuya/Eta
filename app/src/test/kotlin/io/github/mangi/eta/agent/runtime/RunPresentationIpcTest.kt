@@ -129,7 +129,7 @@ class RunPresentationIpcTest {
             val externalUid = Process.myUid() + 1000
             // Even an otherwise allowed assistant adapter cannot read this first-party projection.
             shadowOf(f.context.packageManager).setPackagesForUid(externalUid,
-                arrayOf(io.github.mangi.eta.core.ModuleConfig.AGENT_RUNTIME_ENTRY_PACKAGES.first()))
+                io.github.mangi.eta.core.ModuleConfig.AGENT_RUNTIME_ENTRY_PACKAGES.first())
             val run = f.admit(f.request("private"))
             val before = run.snapshot()
             val receiver = Messenger(object : Handler(Looper.getMainLooper()) {
