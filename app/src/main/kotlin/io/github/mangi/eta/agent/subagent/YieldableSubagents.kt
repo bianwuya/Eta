@@ -5,6 +5,7 @@ import io.github.mangi.eta.agent.runtime.AgentRunController
 import io.github.mangi.eta.agent.runtime.AgentRunCancelledException
 import io.github.mangi.eta.local.subagentcontext.SubagentTaskResult
 import io.github.mangi.eta.local.subagentcontext.SubagentTaskGroup
+import io.github.mangi.eta.local.subagentcontext.SubagentMailbox
 import java.util.concurrent.CancellationException
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
@@ -16,6 +17,8 @@ internal class YieldableSubagents(
     private val persistence: Persistence,
     private val cancelChildren: () -> Unit = {},
     private val parentRunId: String = java.util.UUID.randomUUID().toString(),
+    private val executeGrouped: ((AgentModelClient.ToolCall, SubagentMailbox.Invocation,
+        (String, String) -> Unit) -> AgentModelClient.ToolResult)? = null,
     private val execute: (AgentModelClient.ToolCall, (String, String) -> Unit) -> AgentModelClient.ToolResult,
 ) : AutoCloseable {
     interface Persistence {
@@ -89,7 +92,7 @@ internal class YieldableSubagents(
                     // Group metadata belongs to this owner, not the synchronous executor or child prompt.
                     val executionCall = if (groupKey == null) call else call.copy(argumentsJson =
                         JSONObject(call.argumentsJson).apply { remove("group_key") }.toString())
-                    val result = execute(executionCall) { subagentId, command ->
+                    val onStarted: (String, String) -> Unit = { subagentId, command ->
                         // The running identity is durable before telling the parent that launch succeeded.
                         val content = JSONObject().put("ok", true).put("status", "accepted")
                             .put("task_id", taskId).put("subagent_id", subagentId)
@@ -101,6 +104,10 @@ internal class YieldableSubagents(
                         accepted = true
                         started.countDown()
                     }
+                    val result = if (groupKey != null && executeGrouped != null) {
+                        executeGrouped.invoke(executionCall,
+                            SubagentMailbox.Invocation(SubagentMailbox.Scope(parentRunId, groupKey), taskId), onStarted)
+                    } else execute(executionCall, onStarted)
                     if (!accepted) {
                         acknowledgement = if (groupKey == null) result else result.copy(content =
                             (runCatching { JSONObject(result.content) }.getOrNull() ?: JSONObject().put("message", result.content))

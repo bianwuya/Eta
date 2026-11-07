@@ -26,6 +26,7 @@ internal object SubagentPromptPolicy {
             "最终汇报实际结论或产物、可核验证据和未完成事项；失败、部分完成或未验证结果如实区分，不把尝试当成功。" +
             "使用任务要求的语言和清晰、克制的 Markdown，不输出无关探索流水。")
         add(SubagentTaskResult.INSTRUCTIONS)
+        if (SubagentMailbox.TOOL_NAME in tools) add(SubagentMailbox.INSTRUCTIONS)
         if (tools.any { it in FILE_TOOLS }) {
             add(buildString {
                 append("文件操作：")
