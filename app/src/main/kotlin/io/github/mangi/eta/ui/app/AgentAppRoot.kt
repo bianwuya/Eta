@@ -243,7 +243,7 @@ fun AgentAppRoot(
             activeTaskTarget = task
             navigator.popToHome()
         } else {
-            Toast.makeText(context, "任务已结束，请从历史中查看", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, context.getString(R.string.task_old_notification), Toast.LENGTH_SHORT).show()
         }
         onRequestedRunOpened()
     }
@@ -868,28 +868,32 @@ fun AgentAppRoot(
         WindowDialog(
             show = true,
             title = task.title,
-            summary = listOf(current?.status ?: "任务已结束或正在归档", task.source.ifBlank { "Eta" }).joinToString(" · "),
+            summary = listOfNotNull(current?.status ?: context.getString(R.string.task_finished),
+                task.source.ifBlank { "Eta" }, task.createdAt.takeIf { it > 0L }?.let {
+                    context.getString(R.string.task_elapsed, java.text.DateFormat.getDateTimeInstance(
+                        java.text.DateFormat.SHORT, java.text.DateFormat.SHORT).format(java.util.Date(it)))
+                }).joinToString(" · "),
             cornerRadius = DialogDefaults.CornerRadius,
             onDismissRequest = { activeTaskTarget = null },
         ) {
             if (current != null) top.yukonga.miuix.kmp.basic.TextButton(
-                text = "停止此任务", modifier = Modifier.fillMaxWidth(),
+                text = stringResource(R.string.task_stop), modifier = Modifier.fillMaxWidth(),
                 onClick = { confirmStopRunId = current.runId; activeTaskTarget = null },
             )
             top.yukonga.miuix.kmp.basic.TextButton(
-                text = "查看会话或历史", modifier = Modifier.fillMaxWidth(), onClick = {
+                text = stringResource(R.string.task_view_history), modifier = Modifier.fillMaxWidth(), onClick = {
                     if (task.conversationKey.isNotBlank()) {
                         uiScope.launch {
                             if (agentState.openArchivedConversation(task.source, task.conversationKey)) {
                                 activeTaskTarget = null
                                 conversationPaneOpen = false
-                            } else Toast.makeText(context, "任务尚未归档，请稍后重试", Toast.LENGTH_SHORT).show()
+                            } else Toast.makeText(context, context.getString(R.string.task_not_archived), Toast.LENGTH_SHORT).show()
                         }
                     } else if (agentState.hasConversation(task.conversationId)) {
                         selectConversation(task.conversationId)
                         activeTaskTarget = null
                     } else {
-                        Toast.makeText(context, "会话暂不可用，请稍后重试", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, context.getString(R.string.task_not_available), Toast.LENGTH_SHORT).show()
                     }
                 },
             )
@@ -898,11 +902,11 @@ fun AgentAppRoot(
 
     confirmStopRunId?.let { runId ->
         WindowDialog(
-            show = true, title = "停止此任务？", summary = "其他任务不会被停止。",
+            show = true, title = stringResource(R.string.task_stop_confirm), summary = stringResource(R.string.task_stop_confirm_detail),
             cornerRadius = DialogDefaults.CornerRadius,
             onDismissRequest = { confirmStopRunId = null },
         ) {
-            MiuixDialogActions(confirmText = "停止", onCancel = { confirmStopRunId = null },
+            MiuixDialogActions(confirmText = stringResource(R.string.task_stop_action), onCancel = { confirmStopRunId = null },
                 onConfirm = { agentState.stopActiveTask(runId); confirmStopRunId = null })
         }
     }

@@ -214,13 +214,13 @@ internal class AgentAppState(
         conversationKey = run.conversationKey,
         title = conversationTitles[run.conversationId]?.takeIf { it.isNotBlank() } ?: run.title,
         status = when {
-            run.guiStatus == GuiControlStatus.Acquired -> "正在操作手机"
-            run.guiStatus == GuiControlStatus.UserPaused -> "手机操作已暂停"
-            run.phase == AgentRuntimeWire.RunPhase.WaitingForGui -> "等待手机控制权"
-            run.phase == AgentRuntimeWire.RunPhase.Preparing -> "准备中"
-            run.phase == AgentRuntimeWire.RunPhase.Paused -> "已暂停"
-            run.phase == AgentRuntimeWire.RunPhase.Committing -> "正在归档"
-            else -> "进行中"
+            run.guiStatus == GuiControlStatus.Acquired -> appContext.getString(R.string.task_gui_active)
+            run.guiStatus == GuiControlStatus.UserPaused -> appContext.getString(R.string.task_gui_paused)
+            run.phase == AgentRuntimeWire.RunPhase.WaitingForGui -> appContext.getString(R.string.run_waiting_for_gui)
+            run.phase == AgentRuntimeWire.RunPhase.Preparing -> appContext.getString(R.string.task_preparing)
+            run.phase == AgentRuntimeWire.RunPhase.Paused -> appContext.getString(R.string.task_paused)
+            run.phase == AgentRuntimeWire.RunPhase.Committing -> appContext.getString(R.string.task_archiving)
+            else -> appContext.getString(R.string.task_running)
         },
         createdAt = run.createdAt,
     )

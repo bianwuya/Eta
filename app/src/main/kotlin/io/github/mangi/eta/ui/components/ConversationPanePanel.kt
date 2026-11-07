@@ -176,13 +176,13 @@ internal fun ConversationPanePanel(
             ) {
                 if (!state.tasksConnected) {
                     item(key = "tasks-disconnected") {
-                        Text("任务连接中", style = MiuixTheme.textStyles.footnote1,
+                        Text(stringResource(R.string.task_connected), style = MiuixTheme.textStyles.footnote1,
                             color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
                     }
                 }
                 if (state.activeTasks.isNotEmpty()) {
                     item(key = "section-active-tasks") {
-                        Text("进行中 · ${state.activeTasks.size}",
+                        Text(stringResource(R.string.task_section, state.activeTasks.size),
                             modifier = Modifier.padding(top = ConversationPanelMetrics.SectionTopPadding,
                                 bottom = ConversationPanelMetrics.SectionBottomPadding),
                             color = MiuixTheme.colorScheme.onSurfaceVariantSummary,

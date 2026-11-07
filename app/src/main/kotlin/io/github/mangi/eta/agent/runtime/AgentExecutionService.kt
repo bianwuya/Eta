@@ -134,7 +134,7 @@ internal class AgentExecutionService : Service() {
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(when {
                 run != null -> run.title.ifBlank { getString(R.string.execution_title) }
-                activeRunSnapshots.size > 1 -> "Eta · ${activeRunSnapshots.size} 项任务进行中"
+                activeRunSnapshots.size > 1 -> getString(R.string.task_notification_multiple, activeRunSnapshots.size)
                 else -> getString(R.string.execution_title)
             })
             .setContentText(executionText(this, status, taskCount))
@@ -149,7 +149,7 @@ internal class AgentExecutionService : Service() {
                 .putExtra(EXTRA_RUN_ID, run.runId)
             val stop = PendingIntent.getService(this, 1, stopIntent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-            builder.addAction(Notification.Action.Builder(null, "停止此任务", stop).build())
+            builder.addAction(Notification.Action.Builder(null, getString(R.string.task_stop), stop).build())
         }
         // 只有 Agent run 在跑时才申请提升为 Live Update；终端会话、Linux 启动等长驻任务不属于"正在进行、需要持续关注"的活动。
         if (status != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA) {

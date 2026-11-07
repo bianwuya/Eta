@@ -41,7 +41,7 @@ class AgentExecutionServiceTest {
             assertNotNull(notification.publicVersion)
             assertFalse(notification.publicVersion.extras.getString(Notification.EXTRA_TITLE).orEmpty().contains("私人标题"))
             assertEquals(1, notification.actions.size)
-            assertEquals("停止此任务", notification.actions.single().title.toString())
+            assertEquals(context.getString(R.string.task_stop), notification.actions.single().title.toString())
             val stopIntent = shadowOf(notification.actions.single().actionIntent).savedIntent
             assertEquals("notification-single", stopIntent.getStringExtra("run_id"))
             assertEquals("notification-single", stopIntent.data?.lastPathSegment)
