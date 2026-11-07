@@ -272,8 +272,7 @@ internal class AgentRuntimeClient(
 
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     fun observeActiveRuns(): Flow<ActiveRunsUpdate> = callbackFlow {
-        var previousIds = emptySet<String>()
-        var terminalRevision = 0L
+        val tracker = ActiveRunsChangeTracker()
         val lease = withContext(Dispatchers.IO) { AgentRuntimeConnection.acquire(context, logger) }
         if (lease == null) {
             close(IllegalStateException("Agent Runtime 服务绑定失败"))
@@ -283,10 +282,7 @@ internal class AgentRuntimeClient(
             override fun handleMessage(msg: Message) {
                 if (msg.what == AgentRuntimeWire.MSG_ACTIVE_RUNS_CHANGED) {
                     val snapshots = AgentRuntimeWire.activeRunsFromBundle(msg.data ?: Bundle())
-                    val nextIds = snapshots.mapTo(mutableSetOf()) { it.runId }
-                    if ((previousIds - nextIds).isNotEmpty()) terminalRevision++
-                    previousIds = nextIds
-                    trySend(ActiveRunsUpdate(snapshots, terminalRevision))
+                    trySend(tracker.update(snapshots))
                 }
             }
         })
@@ -485,5 +481,17 @@ internal class AgentRuntimeClient(
 
     private companion object {
         const val RESPONSE_TIMEOUT_SECONDS = 8L
+    }
+}
+
+/** Tracks terminal transitions before the conflated channel can skip intermediate snapshots. */
+internal class ActiveRunsChangeTracker {
+    private var previousIds = emptySet<String>()
+    private var terminalRevision = 0L
+    fun update(snapshots: List<AgentRuntimeWire.ActiveRunSnapshot>): AgentRuntimeClient.ActiveRunsUpdate {
+        val nextIds = snapshots.mapTo(mutableSetOf()) { it.runId }
+        if ((previousIds - nextIds).isNotEmpty()) terminalRevision++
+        previousIds = nextIds
+        return AgentRuntimeClient.ActiveRunsUpdate(snapshots, terminalRevision)
     }
 }
