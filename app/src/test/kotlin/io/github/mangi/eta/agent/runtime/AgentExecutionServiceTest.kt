@@ -66,7 +66,7 @@ class AgentExecutionServiceTest {
             listOf("短私密提示", "https://example.invalid/?token=secret", "/storage/private/file.txt", "token=secret").forEach { prompt ->
                 val run = AgentRuntimeWire.ActiveRunSnapshot("privacy", "conversation", title = prompt,
                     handoffSource = AgentRuntimeWire.ETA_VOICE_HANDOFF_SOURCE)
-                AgentExecutionService.updateRunStatus(context, AgentOverlayStatus.Reasoning, 1, listOf(run))
+                AgentExecutionService.updateRunStatus(context, AgentOverlayStatus.HostedToolRunning(prompt), 1, listOf(run))
                 shadowOf(Looper.getMainLooper()).idle()
                 val notification = method.invoke(controller.get()) as Notification
                 val title = notification.extras.getString(Notification.EXTRA_TITLE).orEmpty()

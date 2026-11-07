@@ -230,10 +230,16 @@ internal class AgentExecutionService : Service() {
 
         private fun executionText(context: Context, status: AgentOverlayStatus?, taskCount: Int): String {
             val summary = context.resources.getQuantityString(R.plurals.execution_summary, taskCount, taskCount)
+            val statusText = when (status) {
+                is AgentOverlayStatus.RunningTool, is AgentOverlayStatus.HostedToolRunning ->
+                    context.getString(R.string.execution_chip_running)
+                null -> null
+                else -> status.localizedText(context.resources)
+            }
             return when {
-                status == null -> summary
-                taskCount <= 1 -> status.localizedText(context.resources)
-                else -> "$summary · ${status.localizedText(context.resources)}"
+                statusText == null -> summary
+                taskCount <= 1 -> statusText
+                else -> "$summary · $statusText"
             }
         }
 
