@@ -217,7 +217,8 @@ internal class AgentAppState(
         conversationId = run.conversationId,
         source = run.handoffSource,
         conversationKey = run.conversationKey,
-        title = conversationTitles[run.conversationId]?.takeIf { it.isNotBlank() } ?: run.title,
+        title = conversationTitles[run.conversationId]?.takeIf { it.isNotBlank() }
+            ?: run.title.ifBlank { appContext.getString(R.string.task_preparing) },
         status = when {
             run.guiStatus == GuiControlStatus.Acquired -> appContext.getString(R.string.task_gui_active)
             run.guiStatus == GuiControlStatus.UserPaused -> appContext.getString(R.string.task_gui_paused)

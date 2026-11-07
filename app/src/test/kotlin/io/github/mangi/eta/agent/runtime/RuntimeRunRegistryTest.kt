@@ -27,7 +27,7 @@ class RuntimeRunRegistryTest {
         val initial = registry.snapshots().single()
         assertEquals("run", initial.runId)
         assertEquals("conversation", initial.conversationId)
-        assertEquals("临时任务", initial.title)
+        assertEquals("", initial.title)
         assertTrue(initial.createdAt > 0L)
         run.guiStatus = GuiControlStatus.Waiting
         val waiting = registry.snapshots().single()
@@ -43,7 +43,7 @@ class RuntimeRunRegistryTest {
         val run = (registry.admit(initial) { RuntimeRunRegistry.Run(initial, AgentRuntimeSession(initial.runId)) }
             as RuntimeRunRegistry.Admission.Accepted).run
         val before = run.snapshot()
-        assertEquals("临时任务", before.title)
+        assertEquals("", before.title)
         repeat(100) { assertEquals(before, run.snapshot()) }
         run.prepared(initial.copy(prompt = " 实际\n标题 "))
         val after = run.snapshot()

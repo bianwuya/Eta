@@ -24,7 +24,7 @@ internal class RuntimeRunRegistry(private val capacity: Int = MAX_ACTIVE_RUNS) {
     ) {
         val runId: String get() = session.runId
         private val createdAt = System.currentTimeMillis()
-        @Volatile private var presentation = PresentationMetadata("", "临时任务")
+        @Volatile private var presentation = PresentationMetadata("", "")
         val conversationId: String = AgentConversationIdentity.fromHandoff(initialRequest.handoff, initialRequest.runId)
         @Volatile var request: AgentRuntimeWire.RunRequest = initialRequest
             private set
@@ -197,7 +197,7 @@ internal class RuntimeRunRegistry(private val capacity: Int = MAX_ACTIVE_RUNS) {
                 ?.let { AgentExternalArchivePayload.from(it.payload) }
             val source = external?.title.orEmpty().ifBlank { request.prompt }
             val title = source.take(512).replace(Regex("[\\p{Cc}\\p{Cf}\\s]+"), " ")
-                .trim().take(60).ifBlank { "临时任务" }
+                .trim().take(60)
             return PresentationMetadata(external?.conversationKey.orEmpty(), title)
         }
 
