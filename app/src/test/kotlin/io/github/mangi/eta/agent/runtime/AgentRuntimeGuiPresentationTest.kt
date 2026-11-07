@@ -23,6 +23,7 @@ import java.lang.reflect.InvocationTargetException
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executors
+import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -263,15 +264,199 @@ class AgentRuntimeGuiPresentationTest {
             service.invoke("requestPause", String::class.java, a.runId)
             assertTrue(a.session.controller.isPaused)
             val coordinator = service.field<GuiControlCoordinator>("guiControl")
-            coordinator.openRun("b", b.session.controller).withAction { }
+            val bControl = coordinator.openRun("b", b.session.controller)
+            bControl.withAction { }
             shadowOf(Looper.getMainLooper()).idle()
             assertFalse(b.session.controller.isPaused)
             assertEquals("b", coordinator.state.value.ownerRunId)
             service.invoke("requestResumeFor", String::class.java, "a")
             assertTrue(a.session.controller.isPaused)
             assertFalse(b.session.controller.isPaused)
+            bControl.release()
+            shadowOf(Looper.getMainLooper()).idle()
+            assertSame(a, service.field<RuntimeRunRegistry.Run>("displayedRun"))
+            assertEquals(AgentOverlayPhase.PAUSED, service.field<MutableState<AgentOverlayState>>("state").value.phase)
+            service.invoke("requestResume")
+            assertFalse(a.session.controller.isPaused)
+            assertFalse(b.session.controller.isPaused)
+            assertNull(coordinator.state.value.ownerRunId)
         } finally { host.destroy() }
     }
+
+    @Test
+    fun terminalOfCompetingRunReturnsToOldestStillPausedTask() {
+        ShadowSettings.setCanDrawOverlays(true)
+        val host = Robolectric.buildService(AgentRuntimeService::class.java).create()
+        try {
+            val service = host.get()
+            val a = service.register("a")
+            val b = service.register("b")
+            service.invoke("bindDisplayedRun", RuntimeRunRegistry.Run::class.java, a)
+            service.invoke("requestPause", String::class.java, a.runId)
+            val control = service.field<GuiControlCoordinator>("guiControl").openRun("b", b.session.controller)
+            control.withAction { }
+            shadowOf(Looper.getMainLooper()).idle()
+            assertSame(b, service.field<RuntimeRunRegistry.Run>("displayedRun"))
+            control.release()
+            b.session.complete(AgentRuntimeWire.RunResult(b.runId, true, "done"))
+            shadowOf(Looper.getMainLooper()).idle()
+            service.invoke("restorePausedTaskControl")
+            assertSame(a, service.field<RuntimeRunRegistry.Run>("displayedRun"))
+            assertTrue(a.session.controller.isPaused)
+            service.invoke("requestResume")
+            assertFalse(a.session.controller.isPaused)
+        } finally { host.destroy(); ShadowSettings.setCanDrawOverlays(false) }
+    }
+
+    @Test
+    fun multiplePausedTasksResumeInInsertionOrderAndSkipFinished() {
+        ShadowSettings.setCanDrawOverlays(true)
+        val host = Robolectric.buildService(AgentRuntimeService::class.java).create()
+        try {
+            val service = host.get()
+            val a = service.register("a")
+            val b = service.register("b")
+            val c = service.register("c")
+            service.invoke("bindDisplayedRun", RuntimeRunRegistry.Run::class.java, a)
+            service.invoke("requestPause", String::class.java, a.runId)
+            service.invoke("bindDisplayedRun", RuntimeRunRegistry.Run::class.java, b)
+            service.invoke("requestPause", String::class.java, b.runId)
+            val control = service.field<GuiControlCoordinator>("guiControl").openRun("c", c.session.controller)
+            control.withAction { }
+            shadowOf(Looper.getMainLooper()).idle()
+            a.session.complete(AgentRuntimeWire.RunResult(a.runId, true, "done"))
+            control.release()
+            shadowOf(Looper.getMainLooper()).idle()
+            assertSame(b, service.field<RuntimeRunRegistry.Run>("displayedRun"))
+            assertTrue(b.session.controller.isPaused)
+            service.invoke("requestResume")
+            assertFalse(b.session.controller.isPaused)
+            assertFalse(c.session.controller.isPaused)
+        } finally { host.destroy(); ShadowSettings.setCanDrawOverlays(false) }
+    }
+
+    @Test
+    fun initialDisconnectedTerminalTaskIsNotRevivedOnReconnect() {
+        ShadowSettings.setCanDrawOverlays(false)
+        val access = Robolectric.buildService(AgentAccessibilityService::class.java).create()
+        val host = Robolectric.buildService(AgentRuntimeService::class.java).create()
+        try {
+            val service = host.get()
+            val run = service.register("voice", AgentRuntimeWire.ETA_VOICE_HANDOFF_SOURCE)
+            service.invoke("showInitialTaskControl", RuntimeRunRegistry.Run::class.java, run)
+            assertTrue(service.field<Boolean>("restoreAfterReconnect"))
+            run.session.complete(AgentRuntimeWire.RunResult(run.runId, true, "done"))
+            AgentAccessibilityService::class.java.getDeclaredMethod("onServiceConnected")
+                .apply { isAccessible = true }.invoke(access.get())
+            shadowOf(Looper.getMainLooper()).idle()
+            assertNull(service.field<ComposeView?>("capsuleView"))
+        } finally { host.destroy(); access.destroy(); ShadowSettings.setCanDrawOverlays(false) }
+    }
+
+    @Test
+    fun initialDisconnectedVoiceEntryReturnsOnConnectionWithoutAnyTaskEvent() {
+        ShadowSettings.setCanDrawOverlays(false)
+        val access = Robolectric.buildService(AgentAccessibilityService::class.java).create()
+        val host = Robolectric.buildService(AgentRuntimeService::class.java).create()
+        try {
+            val service = host.get()
+            val run = service.register("voice", AgentRuntimeWire.ETA_VOICE_HANDOFF_SOURCE)
+            service.invoke("showInitialTaskControl", RuntimeRunRegistry.Run::class.java, run)
+            assertNull(service.field<ComposeView?>("capsuleView"))
+            assertTrue(service.field<Boolean>("restoreAfterReconnect"))
+            AgentAccessibilityService::class.java.getDeclaredMethod("onServiceConnected")
+                .apply { isAccessible = true }.invoke(access.get())
+            shadowOf(Looper.getMainLooper()).idle()
+            assertTrue(service.field<ComposeView?>("capsuleView") != null)
+            assertNull(service.field<GuiControlCoordinator>("guiControl").state.value.ownerRunId)
+        } finally { host.destroy(); access.destroy(); ShadowSettings.setCanDrawOverlays(false) }
+    }
+
+    @Test fun oldGateDisposeBeforeReconnectDoesNotCancelRestoration() = oldGateDisposeAfterConnectionLoss(false)
+    @Test fun oldGateDisposeAfterReconnectDoesNotRemoveReplacement() = oldGateDisposeAfterConnectionLoss(true)
+
+    private fun oldGateDisposeAfterConnectionLoss(reconnectBeforeDispose: Boolean) {
+        ShadowSettings.setCanDrawOverlays(true)
+        val access = Robolectric.buildService(AgentAccessibilityService::class.java).create()
+        val host = Robolectric.buildService(AgentRuntimeService::class.java).create()
+        val worker = Executors.newSingleThreadExecutor()
+        try {
+            val connect = AgentAccessibilityService::class.java.getDeclaredMethod("onServiceConnected").apply { isAccessible = true }
+            connect.invoke(access.get())
+            val service = host.get()
+            val run = service.register("a")
+            val coordinator = service.field<GuiControlCoordinator>("guiControl")
+            val control = coordinator.openRun("a", run.session.controller)
+            control.withAction { }
+            shadowOf(Looper.getMainLooper()).idle()
+            service.attachTestCapsule()
+            service.setField("capsulePaintedOwner", null)
+            val queue = LinkedBlockingQueue<() -> Unit>()
+            service.setField("visibilityGate", GuiVisibilityGate({ false }, { queue.add(it) }, timeoutMs = 80))
+            val result = worker.submit<ToolExecutionDecision> {
+                control.withAction { generation -> service.awaitPresentation(run) { control.isActionCurrent(generation) } }
+            }
+            queue.poll(1, TimeUnit.SECONDS)!!.invoke() // actual gate present
+            val decision = result.get(1, TimeUnit.SECONDS)
+            assertTrue(decision is ToolExecutionDecision.Reject)
+            val dispose = queue.poll(1, TimeUnit.SECONDS)!!
+            access.get().onUnbind(null)
+            service.invoke("onAccessibilityConnectionChanged", AgentAccessibilityService.connection.value.javaClass,
+                AgentAccessibilityService.connection.value)
+            assertTrue(service.field<Boolean>("restoreAfterReconnect"))
+            if (reconnectBeforeDispose) {
+                connect.invoke(access.get())
+                service.invoke("onAccessibilityConnectionChanged", AgentAccessibilityService.connection.value.javaClass,
+                    AgentAccessibilityService.connection.value)
+            }
+            val replacement = service.field<ComposeView?>("capsuleView")
+            dispose.invoke()
+            if (reconnectBeforeDispose) {
+                assertTrue(replacement != null)
+                assertSame(replacement, service.field<ComposeView?>("capsuleView"))
+                assertNull(service.field<String?>("blockedPresentationRunId"))
+            } else {
+                assertTrue(service.field<Boolean>("restoreAfterReconnect"))
+                connect.invoke(access.get())
+                service.invoke("onAccessibilityConnectionChanged", AgentAccessibilityService.connection.value.javaClass,
+                    AgentAccessibilityService.connection.value)
+                assertTrue(service.field<ComposeView?>("capsuleView") != null)
+            }
+        } finally { worker.shutdownNow(); host.destroy(); access.destroy(); ShadowSettings.setCanDrawOverlays(false) }
+    }
+
+    @Test
+    fun expiredQueuedGateCannotMakeOwnerEventShowOperationOrCreateWindow() {
+        ShadowSettings.setCanDrawOverlays(true)
+        val host = Robolectric.buildService(AgentRuntimeService::class.java).create()
+        val worker = Executors.newSingleThreadExecutor()
+        try {
+            val service = host.get()
+            val run = service.register("a")
+            run.overlayState = run.overlayState.copy(status = AgentOverlayStatus.RunningTool("tap"))
+            val control = service.field<GuiControlCoordinator>("guiControl").openRun("a", run.session.controller)
+            val queue = LinkedBlockingQueue<() -> Unit>()
+            service.setField("visibilityGate", GuiVisibilityGate({ false }, { queue.add(it) }, timeoutMs = 30))
+            val result = worker.submit<ToolExecutionDecision> {
+                control.withAction { generation -> service.awaitPresentation(run) { control.isActionCurrent(generation) } }
+            }
+            val present = queue.poll(1, TimeUnit.SECONDS)!!
+            assertTrue(result.get(1, TimeUnit.SECONDS) is ToolExecutionDecision.Reject)
+            shadowOf(Looper.getMainLooper()).idle() // process owner projection after deadline
+            present.invoke()
+            queue.poll(1, TimeUnit.SECONDS)!!.invoke()
+            assertNull(service.field<ComposeView?>("capsuleView"))
+            assertEquals(AgentOverlayStatus.Reasoning, service.field<MutableState<AgentOverlayState>>("state").value.status)
+            assertEquals("a", service.field<GuiControlCoordinator>("guiControl").state.value.ownerRunId)
+        } finally { worker.shutdownNow(); host.destroy(); ShadowSettings.setCanDrawOverlays(false) }
+    }
+
+    private fun AgentRuntimeService.awaitPresentation(run: RuntimeRunRegistry.Run, current: () -> Boolean): ToolExecutionDecision =
+        try {
+            AgentRuntimeService::class.java.getDeclaredMethod("awaitGuiPresentation", RuntimeRunRegistry.Run::class.java,
+                AgentRunController::class.java, Function0::class.java, String::class.java).apply { isAccessible = true }
+                .invoke(this, run, run.session.controller, current, null) as ToolExecutionDecision
+        } catch (failure: InvocationTargetException) { throw failure.cause!! }
 
     @Test
     fun reacquiringDuringTailReusesWindowsAndOldRemovalDoesNotRemoveNewOwner() {
@@ -293,7 +478,7 @@ class AgentRuntimeGuiPresentationTest {
             shadowOf(Looper.getMainLooper()).idle()
             assertSame(view, service.field<ComposeView>("capsuleView"))
             assertSame(b, service.field<RuntimeRunRegistry.Run>("displayedRun"))
-            assertEquals(b.overlayState, service.field<MutableState<AgentOverlayState>>("state").value)
+            assertEquals(AgentOverlayStatus.Reasoning, service.field<MutableState<AgentOverlayState>>("state").value.status)
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(800))
             assertSame(view, service.field<ComposeView>("capsuleView"))
         } finally { host.destroy() }

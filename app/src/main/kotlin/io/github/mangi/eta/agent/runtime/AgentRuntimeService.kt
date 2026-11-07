@@ -129,6 +129,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     private var overlayConnection: AgentAccessibilityService.Companion.Connection? = null
     @Volatile private var restoreAfterReconnect = false
     private var blockedPresentationRunId: String? = null
+    private var operationPresentationRunId: String? = null
     private val taskPausedRuns = mutableSetOf<String>()
     @Volatile private var clearanceIdentity: Any = Any()
     private var releaseVisual: Runnable? = null
@@ -206,7 +207,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                 if (wasActive != snapshot.active) {
                     if (!snapshot.active) VirtualDisplayController.setStageExpanded(false)
                     updateCapsuleWindowBounds()
-                    displayedRun?.let(::syncActiveRunOverlayVisibility)
+                    displayedRun?.let { syncActiveRunOverlayVisibility(it) }
                 }
             }
         }
@@ -217,14 +218,21 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         val bound = overlayConnection
         if (bound != null && bound != connection) {
             removeAmbientWindows()
+            operationPresentationRunId = null
+            if (displayedRun?.runId?.let { it !in taskPausedRuns } != false && !guiControl.state.value.userPaused) {
+                state.value = state.value.copy(phase = AgentOverlayPhase.RUNNING,
+                    status = AgentOverlayStatus.Reasoning, thought = "", detailText = "")
+            }
             // Old gate disposal is tied to its own connection, not a replacement window.
             restoreAfterReconnect = true
         }
         if (restoreAfterReconnect && connection.service != null) {
             restoreAfterReconnect = false
+            operationPresentationRunId = null
+            presentation.forgetVisible()
             val run = displayedRun
             if (run != null && runs.contains(run) && !run.session.isTerminal &&
-                !run.session.controller.isCancelled && blockedPresentationRunId != run.runId) syncActiveRunOverlayVisibility(run)
+                !run.session.controller.isCancelled) syncActiveRunOverlayVisibility(run, allowNeutralOwner = true)
         }
     }
 
@@ -517,6 +525,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                     mainHandler.post {
                         if (!destroyed) {
                             taskPausedRuns.remove(request.runId)
+                            restorePausedTaskControl()
                             publishExecutionState()
                             updateKeepScreenOn()
                             if (runs.all().isEmpty() && displayedRun == null && !guiControl.state.value.userPaused) stopSelf()
@@ -778,7 +787,8 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                 if (displayedRun === run && (ownsGui || guiState.ownerRunId == null) &&
                     !run.session.isTerminal && !run.session.controller.isCancelled) {
                     if (run.runId !in taskPausedRuns && !guiState.userPaused) {
-                        state.value = if (ownsGui) run.overlayState else run.overlayState.copy(
+                        state.value = if (ownsGui && operationPresentationRunId == run.runId &&
+                            (latestPresentationAttempt?.canPresent() == true || latestPresentationAttempt?.allowed == true)) run.overlayState else run.overlayState.copy(
                             status = AgentOverlayStatus.Reasoning, thought = "", detailText = "")
                     }
                     syncActiveRunOverlayVisibility(run)
@@ -816,7 +826,8 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
             if (destroyed) return@post
             run.completedContext = completedContext
             val guiState = guiControl.state.value
-            if ((lastGuiOwnerRunId != run.runId && displayedRun !== run) || guiState.userPaused ||
+            if ((displayedRun != null && displayedRun !== run) ||
+                (lastGuiOwnerRunId != run.runId && displayedRun !== run) || guiState.userPaused ||
                 (guiState.ownerRunId != null && guiState.ownerRunId != run.runId)) return@post
             bindDisplayedRun(run)
             updateKeepScreenOn()
@@ -1130,6 +1141,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                 run.session.controller.resume()
                 state.value = run.overlayState.copy(phase = AgentOverlayPhase.RUNNING,
                     status = AgentOverlayStatus.Reasoning, thought = "", detailText = "")
+                restorePausedTaskControl()
             }
         } else if (guiControl.state.value.userPaused &&
             (guiControl.state.value.ownerRunId == run.runId || guiControl.state.value.ownerRunId == null)) {
@@ -1177,7 +1189,12 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     }
 
     private fun ensureOverlayVisible() {
-        showOverlay()
+        val result = showOverlay()
+        if (result is ToolExecutionDecision.Reject && AgentAccessibilityService.current() == null &&
+            displayedRun?.let { runs.contains(it) && !it.session.isTerminal && !it.session.controller.isCancelled } == true) {
+            // A real connection event, not a timer, retries this eligible task control.
+            restoreAfterReconnect = true
+        }
     }
 
     private fun awaitGuiPresentation(
@@ -1202,17 +1219,28 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                 diagnosticEntryPackage = entryPackage
                 blockedPresentationRunId = null
                 latestPresentationAttempt = attempt
+                attemptConnection.set(AgentAccessibilityService.connection.value)
+                operationPresentationRunId = run.runId
                 when (val shown = showOverlay(attempt::canPresent)) {
                     is ToolExecutionDecision.Reject -> {
                         tracePresentation("gate_rejected", run)
                         attempt.reject(shown)
+                        if (AgentAccessibilityService.current() == null) {
+                            restoreAfterReconnect = true
+                            operationPresentationRunId = null
+                            state.value = state.value.copy(phase = AgentOverlayPhase.RUNNING,
+                                status = AgentOverlayStatus.Reasoning, thought = "", detailText = "")
+                        }
                         if (latestPresentationAttempt === attempt && displayedRun === run &&
-                            !guiControl.state.value.userPaused && !restoreAfterReconnect) removeAmbientWindows()
+                            !guiControl.state.value.userPaused && !restoreAfterReconnect &&
+                            attemptConnection.get() == AgentAccessibilityService.connection.value) removeAmbientWindows()
                     }
                     ToolExecutionDecision.Allow -> {
                         attemptConnection.set(overlayConnection)
                         if (!attempt.canPresent()) {
-                            if (latestPresentationAttempt === attempt && displayedRun === run) removeAmbientWindows()
+                            if (latestPresentationAttempt === attempt && displayedRun === run &&
+                                attemptConnection.get() == AgentAccessibilityService.connection.value &&
+                                overlayConnection == attemptConnection.get()) removeAmbientWindows()
                         } else {
                             // The callback is driven by the existing capsule's settled Compose draw,
                             // not just attachment/pre-draw or an Activity lifecycle flag.
@@ -1230,8 +1258,11 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                                     visibleWaiters.remove(attempt)
                                 }
                             }
-                            visibleWaiters[attempt]?.invoke()
-                            capsuleView?.invalidate()
+                            if (attempt.canPresent()) {
+                                state.value = run.overlayState
+                                visibleWaiters[attempt]?.invoke()
+                                capsuleView?.invalidate()
+                            }
                         }
                     }
                 }
@@ -1242,9 +1273,15 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
             if (!attempt.allowed && latestPresentationAttempt === attempt && displayedRun === run && visibleWaiters.isEmpty() &&
                 !guiControl.state.value.userPaused) {
                 tracePresentation("gate_disposed_rejected", run)
-                blockedPresentationRunId = run.runId
-                restoreAfterReconnect = false
-                if (attemptConnection.get() == null || overlayConnection == attemptConnection.get()) {
+                val connection = attemptConnection.get()
+                // A stale connection's disposal must not change restoration, block, or new view.
+                if (!restoreAfterReconnect && connection != null &&
+                    connection == AgentAccessibilityService.connection.value &&
+                    (overlayConnection == null || overlayConnection == connection)) {
+                    blockedPresentationRunId = run.runId
+                    operationPresentationRunId = null
+                    state.value = state.value.copy(phase = AgentOverlayPhase.RUNNING,
+                        status = AgentOverlayStatus.Reasoning, thought = "", detailText = "")
                     removeAmbientWindows()
                 }
             }
@@ -1267,7 +1304,10 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         val previousOwner = capsulePaintedOwner
         val contentIdentity = clearanceIdentity
         capsulePaintedOwner = owner
-        presentation.confirmVisible(owner)
+        if (operationPresentationRunId == owner &&
+            (latestPresentationAttempt?.canPresent() == true || latestPresentationAttempt?.allowed == true)) {
+            presentation.confirmVisible(owner)
+        }
         if (capsuleFramePending === contentIdentity || (visibleWaiters.isEmpty() && previousOwner == owner)) return
         capsuleFramePending = contentIdentity
         mainHandler.post {
@@ -1296,14 +1336,18 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         )
     }
 
-    private fun syncActiveRunOverlayVisibility(run: RuntimeRunRegistry.Run?) {
+    private fun syncActiveRunOverlayVisibility(run: RuntimeRunRegistry.Run?, allowNeutralOwner: Boolean = false) {
         if (run == null || ((!runs.contains(run) || run.session.isTerminal || run.session.controller.isCancelled) &&
                 !guiControl.state.value.userPaused)) return
         if (restoreAfterReconnect && AgentAccessibilityService.current() == null) return
         val owner = guiControl.state.value.ownerRunId
-        if (owner == run.runId && blockedPresentationRunId == run.runId) return
         if (owner != null && owner != run.runId) return
-        if (owner == null && !guiControl.state.value.userPaused &&
+        // Ownership notifications do not create an operation presentation after the gate deadline.
+        // A reconnect may restore a neutral task control, never the rejected action.
+        if (owner == run.runId && !guiControl.state.value.userPaused && !allowNeutralOwner &&
+            (operationPresentationRunId != run.runId ||
+                (latestPresentationAttempt?.canPresent() != true && latestPresentationAttempt?.allowed != true))) return
+        if ((owner == null || allowNeutralOwner) && !guiControl.state.value.userPaused &&
             AgentOverlayVisibilityPolicy.shouldSuppressOverlayInEtaUi(
                 handoffSource = run.request.handoff?.source,
                 etaUiInForeground = MainActivity.isInForeground,
@@ -1345,12 +1389,14 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         if (destroyed || guiState != guiControl.state.value) return
         releaseVisual?.let(mainHandler::removeCallbacks)
         releaseVisual = null
+        if (guiState.ownerRunId == null && !guiState.userPaused) restorePausedTaskControl()
         val owner = guiState.ownerRunId?.let(runs::get)?.takeIf {
             guiState.userPaused || (!it.session.isTerminal && !it.session.controller.isCancelled)
         }
         val wasReleasing = presentation.phase == GuiPresentationState.Phase.RELEASING
         presentation.update(owner?.runId, guiState.userPaused, SystemClock.uptimeMillis())
         if (owner != null && displayedRun !== owner) {
+            operationPresentationRunId = null
             bindDisplayedRun(owner)
             AgentHapticFeedback.perform(this, AgentHapticFeedback.Type.RUN_STARTED)
         }
@@ -1371,7 +1417,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                     presentation.setYielded(false)
                     capsulePaintedOwner = null
                 }
-                if (owner.overlayState.phase == AgentOverlayPhase.PAUSED) {
+                if (owner.overlayState.phase == AgentOverlayPhase.PAUSED && owner.runId !in taskPausedRuns) {
                     owner.overlayState = owner.overlayState.copy(
                         phase = AgentOverlayPhase.RUNNING,
                         status = AgentOverlayStatus.Continuing,
@@ -1380,17 +1426,21 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                 }
                 state.value = if (owner.runId in taskPausedRuns) owner.overlayState.copy(
                     phase = AgentOverlayPhase.PAUSED, status = AgentOverlayStatus.Paused, detailText = "任务已暂停")
-                    else owner.overlayState
+                    else if (operationPresentationRunId == owner.runId &&
+                        (latestPresentationAttempt?.canPresent() == true || latestPresentationAttempt?.allowed == true)) owner.overlayState
+                    else owner.overlayState.copy(status = AgentOverlayStatus.Reasoning, thought = "", detailText = "")
                 capsuleOwnerKey.value = owner.runId
                 if (reveal) syncActiveRunOverlayVisibility(owner)
             }
             else -> {
+                operationPresentationRunId = null
                 clearanceHost.cancelRestore()
                 clearanceIdentity = Any()
                 capsulePaintedOwner = null
                 capsuleOwnerKey.value = displayedRun?.runId.orEmpty() + ":released"
                 if (displayedRun?.runId?.let { it !in taskPausedRuns } != false) {
-                    state.value = state.value.copy(status = AgentOverlayStatus.Reasoning, thought = "", detailText = "")
+                    state.value = state.value.copy(phase = AgentOverlayPhase.RUNNING,
+                        status = AgentOverlayStatus.Reasoning, thought = "", detailText = "")
                 }
                 setCapsuleInputMode(false)
                 val run = displayedRun
@@ -1403,6 +1453,17 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         tracePresentation("owner_projection")
         updateKeepScreenOn()
         publishExecutionState()
+    }
+
+    private fun restorePausedTaskControl() {
+        if (guiControl.state.value.ownerRunId != null || guiControl.state.value.userPaused) return
+        val paused = taskPausedRuns.asSequence().mapNotNull(runs::get).firstOrNull {
+            !it.session.isTerminal && !it.session.controller.isCancelled && it.session.controller.isPaused
+        } ?: return
+        if (displayedRun !== paused) bindDisplayedRun(paused)
+        state.value = paused.overlayState.copy(phase = AgentOverlayPhase.PAUSED,
+            status = AgentOverlayStatus.Paused, detailText = "任务已暂停")
+        syncActiveRunOverlayVisibility(paused)
     }
 
     private fun bindDisplayedRun(run: RuntimeRunRegistry.Run) {
@@ -1480,7 +1541,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
             if (epoch != overlayEpoch) return
             val changed = AgentAccessibilityService.connection.value != connection
             removeAmbientWindows()
-            if (changed && isCurrent()) {
+            if (changed && !destroyed) {
                 restoreAfterReconnect = true
                 mainHandler.post { onAccessibilityConnectionChanged(AgentAccessibilityService.connection.value) }
             }
@@ -1993,7 +2054,15 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         (dp * resources.displayMetrics.density).toInt()
 
     private fun enterFinalState(finalState: AgentOverlayState) {
+        if (guiControl.state.value.ownerRunId == null && !guiControl.state.value.userPaused &&
+            taskPausedRuns.any { id -> id != displayedRun?.runId && runs.get(id)?.let {
+                !it.session.isTerminal && !it.session.controller.isCancelled && it.session.controller.isPaused
+            } == true }) {
+            restorePausedTaskControl()
+            return
+        }
         displayedRun?.runId?.let { presentation.terminal(it); taskPausedRuns.remove(it) }
+        operationPresentationRunId = null
         restoreAfterReconnect = false
         releaseVisual?.let(mainHandler::removeCallbacks)
         releaseVisual = null
@@ -2051,6 +2120,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     private fun removeOverlayWindows() {
         restoreAfterReconnect = false
         blockedPresentationRunId = null
+        operationPresentationRunId = null
         mainHandler.removeCallbacksAndMessages(hideToken)
         releaseVisual?.let(mainHandler::removeCallbacks)
         releaseVisual = null
