@@ -189,20 +189,25 @@ internal class AgentAppState(
 
     private fun observeActiveRuns() {
         scope.launch {
+            var terminalRevision = 0L
             AgentRuntimeClient(appContext, AndroidAgentLogger).observeActiveRuns()
                 .retryWhen { _, _ ->
+                    terminalRevision = 0L
                     conversationPaneState = conversationPaneState.copy(tasksConnected = false)
                     delay(2000) // only after a failed connection, not periodic task polling
                     true
                 }
-                .collect { snapshots ->
+                .collect { update ->
+                    val snapshots = update.snapshots
+                    val terminalChanged = update.terminalRevision != terminalRevision
+                    terminalRevision = update.terminalRevision
                     val wasDisconnected = !conversationPaneState.tasksConnected
                     val previousIds = activeRunSnapshots.map { it.runId }.toSet()
                     activeRunSnapshots = snapshots
                     conversationPaneState = conversationPaneState.copy(tasksConnected = true)
                     refreshConversationSummaries()
                     // Archive is written before the terminal registry removal; import once on disappearance.
-                    if (wasDisconnected || (previousIds - snapshots.map { it.runId }.toSet()).isNotEmpty()) refreshRuntimeResults()
+                    if (wasDisconnected || terminalChanged || (previousIds - snapshots.map { it.runId }.toSet()).isNotEmpty()) refreshRuntimeResults()
                 }
         }
     }

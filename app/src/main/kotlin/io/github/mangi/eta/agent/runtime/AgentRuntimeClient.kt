@@ -268,8 +268,12 @@ internal class AgentRuntimeClient(
     /** A new subscription atomically registers and receives the current snapshot from the service.
      * The caller may re-collect after disconnect; this method never polls Runtime.
      */
+    data class ActiveRunsUpdate(val snapshots: List<AgentRuntimeWire.ActiveRunSnapshot>, val terminalRevision: Long)
+
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
-    fun observeActiveRuns(): Flow<List<AgentRuntimeWire.ActiveRunSnapshot>> = callbackFlow {
+    fun observeActiveRuns(): Flow<ActiveRunsUpdate> = callbackFlow {
+        var previousIds = emptySet<String>()
+        var terminalRevision = 0L
         val lease = withContext(Dispatchers.IO) { AgentRuntimeConnection.acquire(context, logger) }
         if (lease == null) {
             close(IllegalStateException("Agent Runtime 服务绑定失败"))
@@ -278,7 +282,11 @@ internal class AgentRuntimeClient(
         val receiver = Messenger(object : Handler(Looper.getMainLooper()) {
             override fun handleMessage(msg: Message) {
                 if (msg.what == AgentRuntimeWire.MSG_ACTIVE_RUNS_CHANGED) {
-                    trySend(AgentRuntimeWire.activeRunsFromBundle(msg.data ?: Bundle()))
+                    val snapshots = AgentRuntimeWire.activeRunsFromBundle(msg.data ?: Bundle())
+                    val nextIds = snapshots.mapTo(mutableSetOf()) { it.runId }
+                    if ((previousIds - nextIds).isNotEmpty()) terminalRevision++
+                    previousIds = nextIds
+                    trySend(ActiveRunsUpdate(snapshots, terminalRevision))
                 }
             }
         })
