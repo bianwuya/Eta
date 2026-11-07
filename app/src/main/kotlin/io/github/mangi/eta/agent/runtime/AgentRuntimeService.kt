@@ -370,6 +370,17 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                     sendActiveRuns(msg.replyTo, msg.sendingUid == Process.myUid())
                 }
 
+                AgentRuntimeWire.MSG_QUERY_RUN_PRESENTATION -> {
+                    if (msg.sendingUid == Process.myUid()) {
+                        sendRunPresentation(AgentRuntimeWire.runIdFromBundle(msg.data ?: return), msg.replyTo)
+                    }
+                }
+
+                AgentRuntimeWire.MSG_PREFER_RUN -> {
+                    if (msg.sendingUid == Process.myUid() &&
+                        runs.preferRun(AgentRuntimeWire.runIdFromBundle(msg.data ?: return))) publishExecutionState()
+                }
+
                 AgentRuntimeWire.MSG_SUBSCRIBE_ACTIVE_RUNS -> {
                     // The presentation contains user titles; external runtime entry packages cannot subscribe.
                     if (msg.sendingUid == Process.myUid()) {
@@ -525,6 +536,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     ) {
         val run = admitRun(request, replyTo) ?: return
         run.prepared(request)
+        publishExecutionState()
         executePreparedRun(run)
     }
 
@@ -636,10 +648,10 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     }
 
     private fun showInitialTaskControl(run: RuntimeRunRegistry.Run) {
-        // The voice/power entry had an on-screen task control before its first GUI action.
-        // Do not turn unrelated background conversations into persistent overlays.
+        // Native notification owns ordinary background task presence. A live virtual preview
+        // retains its existing entry; a physical action always goes through awaitGuiPresentation.
         if (runs.contains(run) && !run.session.isTerminal &&
-            run.request.handoff?.source == AgentRuntimeWire.ETA_VOICE_HANDOFF_SOURCE &&
+            virtualDisplayState.value.active && lastGuiOwnerRunId == run.runId &&
             guiControl.state.value.ownerRunId == null && displayedRun == null) {
             bindDisplayedRun(run)
             state.value = run.overlayState
@@ -1008,6 +1020,75 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         }
     }
 
+    private fun sendRunPresentation(runId: String, replyTo: Messenger?) {
+        if (runId.isBlank() || replyTo == null) return
+        dispatchResultIo {
+            try {
+                val active = runs.get(runId)
+                val projection = if (active != null) {
+                    val preparing = active.preparing
+                    val snapshot = active.snapshot().let {
+                        if (preparing) it.copy(phase = AgentRuntimeWire.RunPhase.Preparing) else it
+                    }
+                    // Preparing headers may not contain the deferred prompt yet.
+                    if (preparing) AgentRuntimeWire.RunPresentation(snapshot, presentationHandoff(active.request.handoff), "")
+                    else {
+                        val request = active.snapshotRequest()
+                        AgentRuntimeWire.RunPresentation(snapshot, presentationHandoff(request.handoff),
+                            presentationUserText(request.handoff, request.prompt), presentationPreviews(request))
+                    }
+                } else {
+                    val archived = AgentRunArchiveStore.list(this).firstOrNull { it.result.runId == runId }
+                    val completed = if (archived == null) AgentRuntimeResultStore.list(this)
+                        .firstOrNull { it.result.runId == runId } else null
+                    val handoff = archived?.handoff ?: completed?.handoff
+                    val result = archived?.result ?: completed?.result
+                    if (handoff == null || result == null) null else {
+                        val external = AgentExternalArchivePayload.from(handoff.payload)
+                        AgentRuntimeWire.RunPresentation(
+                            AgentRuntimeWire.ActiveRunSnapshot(runId,
+                                AgentConversationIdentity.fromHandoff(handoff, runId),
+                                // RunPhase describes active runs only. UI resolves the terminal via attach/outbox,
+                                // never adds this projection to the active registry.
+                                phase = AgentRuntimeWire.RunPhase.Committing, operation = result.operation,
+                                handoffSource = handoff.source, conversationKey = external?.conversationKey.orEmpty(),
+                                title = external?.title.orEmpty().take(512)
+                                    .replace(Regex("[\\p{Cc}\\p{Cf}\\s]+"), " ").trim().take(60),
+                                createdAt = archived?.createdAt ?: completed!!.createdAt),
+                            presentationHandoff(handoff), external?.userText.orEmpty(), archived?.userImagePreviews.orEmpty(),
+                        )
+                    }
+                }
+                AgentWireText.send(replyTo, Message.obtain(null, AgentRuntimeWire.MSG_QUERY_RUN_PRESENTATION_RESPONSE).apply {
+                    data = AgentRuntimeWire.runPresentationToBundle(runId, projection, cacheDir)
+                })
+            } catch (failure: Exception) {
+                AndroidAgentLogger.warnThrottled("runtime_presentation_failed") {
+                    "Agent runtime presentation unavailable: type=${failure.safeLogType()}"
+                }
+                // No false NotFound on IO failure; the client reports Unavailable on timeout.
+            }
+        }
+    }
+
+    private fun presentationPreviews(request: AgentRuntimeWire.RunRequest): List<String> = request.images
+        .asSequence().take(MAX_ARCHIVED_USER_IMAGE_PREVIEWS)
+        .mapNotNull { AgentImageCodec.previewFromReference(this, it)?.reference }.toList()
+
+    private fun presentationUserText(handoff: AgentRuntimeWire.EntryHandoff?, fallback: String): String =
+        handoff?.let { AgentExternalArchivePayload.from(it.payload)?.userText } ?: fallback
+
+    /** Drop opaque adapter data: it is not part of the first-party display contract. */
+    private fun presentationHandoff(handoff: AgentRuntimeWire.EntryHandoff?): AgentRuntimeWire.EntryHandoff? = handoff?.let {
+        when (it.source) {
+            AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE -> it.copy(payload = AgentUiHandoffPayload(
+                conversationId = AgentUiHandoffPayload.from(it.payload).conversationId).toJson())
+            else -> AgentExternalArchivePayload.from(it.payload)?.let { external ->
+                it.copy(payload = external.copy(adapterPayload = org.json.JSONObject()).toJson())
+            } ?: it.copy(payload = "")
+        }
+    }
+
     private fun sendActiveRunsChanged(subscriber: Messenger, snapshots: List<AgentRuntimeWire.ActiveRunSnapshot>): Boolean =
         runCatching {
             subscriber.send(Message.obtain(null, AgentRuntimeWire.MSG_ACTIVE_RUNS_CHANGED).apply {
@@ -1027,7 +1108,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
             replyTo?.send(Message.obtain(null, AgentRuntimeWire.MSG_QUERY_ACTIVE_RUNS_RESPONSE).apply {
                 val snapshots = runs.snapshots()
                 data = AgentRuntimeWire.activeRunsToBundle(if (includePresentation) snapshots else snapshots.map {
-                    it.copy(title = "", conversationKey = "", createdAt = 0L, guiStatus = null)
+                    it.copy(title = "", conversationKey = "", createdAt = 0L, interactionAt = 0L, guiStatus = null)
                 })
             })
         }.onFailure { throwable ->
@@ -1389,12 +1470,38 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         if (restoreAfterReconnect && AgentAccessibilityService.current() == null) return
         val owner = guiControl.state.value.ownerRunId
         if (owner != null && owner != run.runId) return
+        val paused = guiControl.state.value.userPaused || run.runId in taskPausedRuns
+        val operationPresented = owner == run.runId && operationPresentationRunId == run.runId &&
+            (latestPresentationAttempt?.canPresent() == true || latestPresentationAttempt?.allowed == true)
+        if (!AgentOverlayVisibilityPolicy.needsTaskControl(operationPresented, paused, virtualDisplayState.value.active)) {
+            if (presentation.phase != GuiPresentationState.Phase.RELEASING) {
+                if (owner == run.runId && capsuleView != null && !allowNeutralOwner) {
+                    // A new action may reuse an already painted tail, but ownership alone
+                    // cannot keep it indefinitely. awaitGuiPresentation cancels this removal.
+                    if (releaseVisual == null) {
+                        val epoch = overlayEpoch
+                        val identity = clearanceIdentity
+                        releaseVisual = Runnable {
+                            releaseVisual = null
+                            if (!destroyed && epoch == overlayEpoch && identity == clearanceIdentity &&
+                                displayedRun === run && !guiControl.state.value.userPaused &&
+                                run.runId !in taskPausedRuns && !virtualDisplayState.value.active &&
+                                (operationPresentationRunId != run.runId ||
+                                    (latestPresentationAttempt?.canPresent() != true && latestPresentationAttempt?.allowed != true))) {
+                                removeAmbientWindows()
+                            }
+                        }.also { mainHandler.postDelayed(it, 500L) }
+                    }
+                } else removeAmbientWindows()
+            }
+            return
+        }
         // Ownership notifications do not create an operation presentation after the gate deadline.
-        // A reconnect may restore a neutral task control, never the rejected action.
-        if (owner == run.runId && !guiControl.state.value.userPaused && !allowNeutralOwner &&
+        // A reconnect can restore a paused/virtual entry, never a rejected physical action.
+        if (owner == run.runId && !paused && !virtualDisplayState.value.active && !allowNeutralOwner &&
             (operationPresentationRunId != run.runId ||
                 (latestPresentationAttempt?.canPresent() != true && latestPresentationAttempt?.allowed != true))) return
-        if ((owner == null || allowNeutralOwner) && !guiControl.state.value.userPaused &&
+        if ((owner == null || allowNeutralOwner) && !paused &&
             AgentOverlayVisibilityPolicy.shouldSuppressOverlayInEtaUi(
                 handoffSource = run.request.handoff?.source,
                 etaUiInForeground = MainActivity.isInForeground,
@@ -1491,7 +1598,19 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                 }
                 setCapsuleInputMode(false)
                 val run = displayedRun
-                if (run != null && runs.contains(run) && !run.session.isTerminal && !run.session.controller.isCancelled) {
+                if (presentation.phase == GuiPresentationState.Phase.RELEASING && capsuleView != null &&
+                    run?.runId !in taskPausedRuns && !virtualDisplayState.value.active) {
+                    val revision = presentation.revision
+                    val epoch = overlayEpoch
+                    releaseVisual = Runnable {
+                        releaseVisual = null
+                        if (!destroyed && overlayEpoch == epoch &&
+                            guiControl.state.value.ownerRunId == null && !guiControl.state.value.userPaused &&
+                            displayedRun?.runId !in taskPausedRuns && !virtualDisplayState.value.active &&
+                            presentation.expire(revision, SystemClock.uptimeMillis())) removeAmbientWindows()
+                    }.also { mainHandler.postDelayed(it,
+                        ((presentation.releaseDeadlineMs ?: SystemClock.uptimeMillis()) - SystemClock.uptimeMillis()).coerceAtLeast(0)) }
+                } else if (run != null && runs.contains(run) && !run.session.isTerminal && !run.session.controller.isCancelled) {
                     if (reveal) syncActiveRunOverlayVisibility(run)
                 } else removeAmbientWindows()
             }
@@ -1550,17 +1669,18 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         } else {
             mainHandler.post { if (!destroyed) publishActiveRuns(runs.snapshots()) }
         }
-        val owner = activeRuns.firstOrNull { it.runId == guiState.ownerRunId }
-        val status = if (owner != null && guiState.userPaused) {
+        val snapshots = activeRuns.map { it.snapshot() }
+        val selected = RuntimeNotificationSelection.select(snapshots)?.let { snapshot -> activeRuns.firstOrNull { it.runId == snapshot.runId } }
+        val status = if (selected != null && selected.runId == guiState.ownerRunId && guiState.userPaused) {
             AgentOverlayStatus.Paused
         } else {
-            (owner ?: activeRuns.firstOrNull())?.overlayState?.status
+            selected?.overlayState?.status
         }
         AgentExecutionService.updateRunStatus(
             this,
             status,
             activeRunCount = activeRuns.size,
-            snapshots = activeRuns.map { it.snapshot() },
+            snapshots = snapshots,
         )
     }
 
@@ -1737,6 +1857,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         val run = displayedRun
         val live = run != null && runs.contains(run) && !run.session.isTerminal && !run.session.controller.isCancelled
         val touchable = !capsuleYielded.value && (live || guiState.userPaused) &&
+            (presentation.touchable || virtualDisplayState.value.active || run?.runId in taskPausedRuns) &&
             (guiState.ownerRunId == null || guiState.ownerRunId == run?.runId) &&
             capsulePaintedOwner == run?.runId && overlayConnection == AgentAccessibilityService.connection.value
         val nextFlags = if (!touchable) {

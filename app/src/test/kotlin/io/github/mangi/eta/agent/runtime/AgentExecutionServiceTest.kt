@@ -66,9 +66,9 @@ class AgentExecutionServiceTest {
             shadowOf(Looper.getMainLooper()).idle()
             assertEquals(context.getString(R.string.overlay_stopping), current().extras.getString(Notification.EXTRA_TEXT))
             AgentExecutionService.updateRunStatus(context, AgentOverlayStatus.Paused, 1,
-                listOf(initial.copy(guiStatus = GuiControlStatus.UserPaused)))
+                listOf(initial.copy(guiStatus = GuiControlStatus.UserPaused, phase = AgentRuntimeWire.RunPhase.Paused)))
             shadowOf(Looper.getMainLooper()).idle()
-            assertEquals(context.getString(R.string.overlay_paused), current().extras.getString(Notification.EXTRA_TEXT))
+            assertEquals(context.getString(R.string.task_paused), current().extras.getString(Notification.EXTRA_TEXT))
             assertTrue(current().flags and Notification.FLAG_ONLY_ALERT_ONCE != 0)
         } finally {
             AgentExecutionService.release(id)
@@ -204,7 +204,7 @@ class AgentExecutionServiceTest {
     }
 
     @Test
-    fun multipleRunsDoNotOfferAmbiguousGlobalStop() {
+    fun multipleRunsSelectExactRunInsteadOfOfferingGlobalStop() {
         val context = RuntimeEnvironment.getApplication()
         val leaseId = "run:notification-multiple"
         assertTrue(AgentExecutionService.acquire(context, leaseId) {})
@@ -217,16 +217,63 @@ class AgentExecutionServiceTest {
         val controller = Robolectric.buildService(AgentExecutionService::class.java).create()
         try {
             val notification = requireNotNull(shadowOf(controller.get()).lastForegroundNotification)
-            assertTrue(notification.extras.getString(Notification.EXTRA_TITLE).orEmpty().contains("2"))
+            assertFalse(notification.extras.getString(Notification.EXTRA_TITLE).orEmpty().contains("A"))
             assertTrue(notification.actions.isNullOrEmpty())
-            assertEquals(io.github.mangi.eta.ui.MainActivity.ACTION_OPEN_ACTIVE_TASKS,
+            assertEquals(io.github.mangi.eta.ui.MainActivity.ACTION_OPEN_RUN,
                 shadowOf(notification.contentIntent).savedIntent.action)
+            assertEquals("b", shadowOf(notification.contentIntent).savedIntent
+                .getStringExtra(io.github.mangi.eta.ui.MainActivity.EXTRA_RUN_ID))
         } finally {
             AgentExecutionService.release(leaseId)
             AgentExecutionService.updateRunStatus(context, null, 0)
             shadowOf(Looper.getMainLooper()).idle()
             controller.destroy()
         }
+
+    @Test
+    fun latestPowerWinsAndTerminalFallsBackWhileOldClickStillTargetsOriginalRun() {
+        val context = RuntimeEnvironment.getApplication()
+        val ids = listOf("a", "b", "c")
+        ids.forEach { assertTrue(AgentExecutionService.acquire(context, "run:$it") {}) }
+        assertTrue(AgentExecutionService.acquire(context, "terminal:power-selection") {})
+        val a = AgentRuntimeWire.ActiveRunSnapshot("a", "a", createdAt = 1,
+            guiStatus = GuiControlStatus.Acquired)
+        val b = AgentRuntimeWire.ActiveRunSnapshot("b", "b", createdAt = 2,
+            handoffSource = AgentRuntimeWire.ETA_VOICE_HANDOFF_SOURCE,
+            phase = AgentRuntimeWire.RunPhase.Preparing)
+        val c = b.copy(runId = "c", conversationId = "c", createdAt = 3, interactionAt = 3,
+            phase = AgentRuntimeWire.RunPhase.WaitingForGui)
+        AgentExecutionService.updateRunStatus(context, AgentOverlayStatus.Reasoning, 1, listOf(a))
+        shadowOf(Looper.getMainLooper()).idle()
+        val host = Robolectric.buildService(AgentExecutionService::class.java).create()
+        fun publish(runs: List<AgentRuntimeWire.ActiveRunSnapshot>): Notification {
+            AgentExecutionService.updateRunStatus(context, AgentOverlayStatus.Reasoning, runs.size, runs)
+            shadowOf(Looper.getMainLooper()).idle()
+            return context.getSystemService(NotificationManager::class.java).activeNotifications.single().notification
+        }
+        fun target(n: Notification) = shadowOf(n.contentIntent).savedIntent
+            .getStringExtra(io.github.mangi.eta.ui.MainActivity.EXTRA_RUN_ID)
+        try {
+            val selectedB = publish(listOf(a, b))
+            val oldClick = selectedB.contentIntent
+            assertEquals("b", target(selectedB))
+            assertTrue(selectedB.extras.getString(Notification.EXTRA_TEXT).orEmpty().contains(context.getString(R.string.task_preparing)))
+            assertEquals("b", shadowOf(selectedB.actions.single().actionIntent).savedIntent.getStringExtra("run_id"))
+            val selectedC = publish(listOf(a, b, c))
+            assertEquals("c", target(selectedC))
+            assertTrue(selectedC.extras.getString(Notification.EXTRA_TEXT).orEmpty().contains(context.getString(R.string.run_waiting_for_gui)))
+            assertEquals("b", target(publish(listOf(a, b))))
+            assertEquals("a", target(publish(listOf(a))))
+            assertEquals("b", shadowOf(oldClick).savedIntent.getStringExtra(io.github.mangi.eta.ui.MainActivity.EXTRA_RUN_ID))
+            assertEquals(GuiControlStatus.Acquired, a.guiStatus)
+        } finally {
+            ids.forEach { AgentExecutionService.release("run:$it") }
+            AgentExecutionService.release("terminal:power-selection")
+            AgentExecutionService.updateRunStatus(context, null, 0)
+            shadowOf(Looper.getMainLooper()).idle()
+            host.destroy()
+        }
+    }
     }
 
     @Test

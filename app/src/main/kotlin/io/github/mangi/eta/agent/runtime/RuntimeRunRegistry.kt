@@ -24,6 +24,7 @@ internal class RuntimeRunRegistry(private val capacity: Int = MAX_ACTIVE_RUNS) {
     ) {
         val runId: String get() = session.runId
         private val createdAt = System.currentTimeMillis()
+        @Volatile private var interactionAt = createdAt
         @Volatile private var presentation = PresentationMetadata("", "")
         val conversationId: String = AgentConversationIdentity.fromHandoff(initialRequest.handoff, initialRequest.runId)
         @Volatile var request: AgentRuntimeWire.RunRequest = initialRequest
@@ -126,6 +127,7 @@ internal class RuntimeRunRegistry(private val capacity: Int = MAX_ACTIVE_RUNS) {
             conversationKey = metadata.conversationKey,
             title = metadata.title,
             createdAt = createdAt,
+            interactionAt = interactionAt,
             guiStatus = guiStatus,
             phase = when {
                 session.isCommitting -> AgentRuntimeWire.RunPhase.Committing
@@ -136,6 +138,8 @@ internal class RuntimeRunRegistry(private val capacity: Int = MAX_ACTIVE_RUNS) {
             },
             )
         }
+
+        fun prefer(now: Long) { interactionAt = maxOf(now, interactionAt) }
     }
 
     data class CompletedContext(
@@ -145,6 +149,12 @@ internal class RuntimeRunRegistry(private val capacity: Int = MAX_ACTIVE_RUNS) {
 
     private val lock = Any()
     private val runs = linkedMapOf<String, Run>()
+    private var latestInteractionAt = 0L
+
+    private fun nextInteractionAt(): Long {
+        latestInteractionAt = maxOf(System.currentTimeMillis(), latestInteractionAt + 1)
+        return latestInteractionAt
+    }
 
     fun admit(request: AgentRuntimeWire.RunRequest, create: () -> Run): Admission = synchronized(lock) {
         val conversationId = AgentConversationIdentity.fromHandoff(request.handoff, request.runId)
@@ -165,6 +175,7 @@ internal class RuntimeRunRegistry(private val capacity: Int = MAX_ACTIVE_RUNS) {
         }
         val run = create()
         check(run.runId == request.runId && run.conversationId == conversationId)
+        run.prefer(nextInteractionAt())
         run.predecessors = previous
         runs[run.runId] = run
         Admission.Accepted(run, previous)
@@ -175,6 +186,18 @@ internal class RuntimeRunRegistry(private val capacity: Int = MAX_ACTIVE_RUNS) {
     fun all(): List<Run> = synchronized(lock) { runs.values.toList() }
 
     fun contains(run: Run): Boolean = synchronized(lock) { runs[run.runId] === run }
+
+    /** Display ordering only: does not acquire GUI ownership, resume, or restart execution. */
+    fun preferRun(runId: String): Boolean {
+        val run = get(runId)?.takeUnless { it.session.isTerminal } ?: return false
+        // Never read Session under the registry lock: terminal publication removes its record.
+        return synchronized(lock) {
+            if (runs[runId] !== run) false else {
+                run.prefer(nextInteractionAt())
+                true
+            }
+        }
+    }
 
     fun finish(runId: String, session: AgentRuntimeSession): Run? = synchronized(lock) {
         runs[runId]?.takeIf { it.session === session }?.also {

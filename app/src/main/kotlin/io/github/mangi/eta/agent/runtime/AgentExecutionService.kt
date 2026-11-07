@@ -111,15 +111,13 @@ internal class AgentExecutionService : Service() {
     }
 
     private fun notification(): Notification {
+        val run = RuntimeNotificationSelection.select(activeRunSnapshots)
         val status = runStatus
-        val run = activeRunSnapshots.singleOrNull()
         val openIntent = Intent(this, MainActivity::class.java)
         if (run != null) {
             openIntent.action = MainActivity.ACTION_OPEN_RUN
             openIntent.data = Uri.Builder().scheme("eta-task").authority("open").appendPath(run.runId).build()
             openIntent.putExtra(MainActivity.EXTRA_RUN_ID, run.runId)
-        } else if (activeRunSnapshots.size > 1) {
-            openIntent.action = MainActivity.ACTION_OPEN_ACTIVE_TASKS
         }
         val open = PendingIntent.getActivity(
             this, 0, openIntent,
@@ -135,10 +133,9 @@ internal class AgentExecutionService : Service() {
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(when {
                 run != null -> notificationRunTitle(run)
-                activeRunSnapshots.size > 1 -> getString(R.string.task_notification_multiple, activeRunSnapshots.size)
                 else -> getString(R.string.execution_title)
             })
-            .setContentText(executionText(this, status, taskCount))
+            .setContentText(executionText(this, status, taskCount, run))
             .setContentIntent(open)
             .setVisibility(Notification.VISIBILITY_PRIVATE)
             .setPublicVersion(publicNotification)
@@ -157,7 +154,7 @@ internal class AgentExecutionService : Service() {
         if (status != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA) {
             builder
                 .setStyle(Notification.ProgressStyle().setProgressIndeterminate(true))
-                .setShortCriticalText(status.shortText())
+                .setShortCriticalText(run?.let { phaseText(this, it) } ?: status.shortText())
             // 请求方法从 API 36.1 才公开；标准 extra 也可供支持该协议的 API 36 系统读取。
             builder.extras.putBoolean("android.requestPromotedOngoing", true)
         }
@@ -219,10 +216,14 @@ internal class AgentExecutionService : Service() {
                 val previousRuns = this.activeRunSnapshots
                 this.activeRunSnapshots = snapshots
                 val count = if (activeRunCount > 0) activeRunCount else leases.count()
-                val text = executionText(context, status, count) + snapshots.joinToString { "${it.runId}:${it.handoffSource}:${it.guiStatus}" }
+                val selected = RuntimeNotificationSelection.select(snapshots)
+                val previousSelected = RuntimeNotificationSelection.select(previousRuns)
+                val text = executionText(context, status, count, selected) +
+                    snapshots.joinToString { "${it.runId}:${it.handoffSource}:${it.guiStatus}:${it.phase}:${it.interactionAt}" }
                 if (text == publishedStatusText) return@post
                 publishedStatusText = text
                 val critical = previousCount != activeRunCount ||
+                    previousSelected?.runId != selected?.runId || previousSelected?.phase != selected?.phase ||
                     status == AgentOverlayStatus.Stopping ||
                     previousRuns.map { it.runId to it.guiStatus } != snapshots.map { it.runId to it.guiStatus }
                 val wait = (2_000L - (SystemClock.elapsedRealtime() - lastNotificationAt)).coerceAtLeast(0)
@@ -232,9 +233,18 @@ internal class AgentExecutionService : Service() {
             }
         }
 
-        private fun executionText(context: Context, status: AgentOverlayStatus?, taskCount: Int): String {
+        private fun phaseText(context: Context, run: AgentRuntimeWire.ActiveRunSnapshot): String = context.getString(when (run.phase) {
+            AgentRuntimeWire.RunPhase.Preparing -> R.string.task_preparing
+            AgentRuntimeWire.RunPhase.WaitingForGui -> R.string.run_waiting_for_gui
+            AgentRuntimeWire.RunPhase.Paused -> R.string.task_paused
+            AgentRuntimeWire.RunPhase.Committing -> R.string.task_archiving
+            AgentRuntimeWire.RunPhase.Running -> R.string.task_running
+        })
+
+        private fun executionText(context: Context, status: AgentOverlayStatus?, taskCount: Int,
+            run: AgentRuntimeWire.ActiveRunSnapshot? = null): String {
             val summary = context.resources.getQuantityString(R.plurals.execution_summary, taskCount, taskCount)
-            val statusText = when (status) {
+            val statusText = if (run != null && run.phase != AgentRuntimeWire.RunPhase.Running) phaseText(context, run) else when (status) {
                 is AgentOverlayStatus.RunningTool, is AgentOverlayStatus.HostedToolRunning ->
                     context.getString(R.string.execution_chip_running)
                 null -> null

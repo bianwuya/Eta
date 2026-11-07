@@ -21,6 +21,26 @@ import org.robolectric.annotation.Config
 @Config(sdk = [36], application = Application::class)
 class RuntimeRunRegistryTest {
     @Test
+    fun explicitPreferenceChangesOnlyPresentationAndAdmissionIsMonotonic() {
+        val registry = RuntimeRunRegistry()
+        val a = registry.accept("a", "conversation-a")
+        val b = registry.accept("b", "conversation-b")
+        assertTrue(b.snapshot().interactionAt > a.snapshot().interactionAt)
+        a.guiStatus = GuiControlStatus.Acquired
+        val before = a.snapshot()
+        val request = a.request
+        assertTrue(registry.preferRun("a"))
+        assertTrue(a.snapshot().interactionAt > b.snapshot().interactionAt)
+        assertEquals(before, a.snapshot().copy(interactionAt = before.interactionAt))
+        assertSame(request, a.request)
+        assertFalse(a.session.controller.isCancelled)
+        assertFalse(b.session.controller.isCancelled)
+        assertFalse(registry.preferRun("wake-without-run"))
+        a.session.complete(AgentRuntimeWire.RunResult("a", true, "done"))
+        assertFalse(registry.preferRun("a"))
+    }
+
+    @Test
     fun acceptedSnapshotRetainsIdentityTimeAndReflectsGuiState() {
         val registry = RuntimeRunRegistry()
         val run = registry.accept("run", "conversation")

@@ -54,6 +54,55 @@ internal class AgentRuntimeClient(
         data object Unavailable : CompletedRunsQuery
     }
 
+    sealed interface RunPresentationQuery {
+        data class Known(val run: AgentRuntimeWire.RunPresentation) : RunPresentationQuery
+        data object Unavailable : RunPresentationQuery
+        data object NotFound : RunPresentationQuery
+    }
+
+    /** Blocking API: call on IO, just like attach/queryCompletedRuns. Handler never reads FDs. */
+    fun queryRunPresentation(runId: String): RunPresentationQuery {
+        if (runId.isBlank()) return RunPresentationQuery.NotFound
+        return AgentResultMailbox().use { mailbox ->
+            val received = CountDownLatch(1)
+            val receiver = Messenger(object : Handler(Looper.getMainLooper()) {
+                override fun handleMessage(msg: Message) {
+                    if (msg.what != AgentRuntimeWire.MSG_QUERY_RUN_PRESENTATION_RESPONSE) return
+                    val data = msg.data ?: return
+                    if (AgentRuntimeWire.runIdFromBundle(data) != runId) {
+                        AgentWireText.close(data)
+                        return
+                    }
+                    mailbox.set(data)
+                    received.countDown()
+                }
+            })
+            withRuntimeMessenger<RunPresentationQuery>(RunPresentationQuery.Unavailable) { service ->
+                service.send(Message.obtain(null, AgentRuntimeWire.MSG_QUERY_RUN_PRESENTATION).apply {
+                    replyTo = receiver
+                    data = AgentRuntimeWire.ackBundle(runId)
+                })
+                if (!received.await(RESPONSE_TIMEOUT_SECONDS, TimeUnit.SECONDS)) RunPresentationQuery.Unavailable
+                else mailbox.get()?.let { data ->
+                    AgentRuntimeWire.runPresentationFromBundle(data)?.let { run ->
+                        if (run.snapshot.runId != runId) RunPresentationQuery.Unavailable
+                        else RunPresentationQuery.Known(run)
+                    } ?: RunPresentationQuery.NotFound
+                } ?: RunPresentationQuery.Unavailable
+            }
+        }
+    }
+
+    /** Explicit user continuation, not a wake/attach side effect. */
+    fun preferRun(runId: String) {
+        if (runId.isBlank()) return
+        withRuntimeMessenger(Unit) { service ->
+            service.send(Message.obtain(null, AgentRuntimeWire.MSG_PREFER_RUN).apply {
+                data = AgentRuntimeWire.ackBundle(runId)
+            })
+        }
+    }
+
     fun run(
         request: AgentRuntimeWire.RunRequest,
         onRequestIngested: () -> Unit = {},

@@ -9,6 +9,14 @@ import org.junit.Test
 
 class AgentOverlayVisibilityPolicyTest {
     @Test
+    fun backgroundLifetimeAloneDoesNotNeedTaskControlButGuiPauseAndVirtualDo() {
+        assertFalse(AgentOverlayVisibilityPolicy.needsTaskControl(false, false, false))
+        assertTrue(AgentOverlayVisibilityPolicy.needsTaskControl(true, false, false))
+        assertTrue(AgentOverlayVisibilityPolicy.needsTaskControl(false, true, false))
+        assertTrue(AgentOverlayVisibilityPolicy.needsTaskControl(false, false, true))
+    }
+
+    @Test
     fun plannedToolsAndWaitingForGuiDoNotRevealOrDismissTheEntrySurface() {
         val events = listOf(
             AgentEvent.AssistantBlockStart(1, AgentEvent.AssistantBlockKind.TOOL_CALL, 0, name = "tap"),

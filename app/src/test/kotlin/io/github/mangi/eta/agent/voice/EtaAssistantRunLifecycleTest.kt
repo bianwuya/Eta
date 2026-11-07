@@ -35,6 +35,9 @@ class EtaAssistantRunLifecycleTest {
             service.javaClass.getDeclaredMethod("continueVoiceRun", AgentRuntimeWire.ActiveRunSnapshot::class.java)
                 .apply { isAccessible = true }.invoke(service, run.snapshot())
             fixture.await { AgentRuntimeWire.MSG_ATTACH_RUN in fixture.messages }
+            assertTrue(AgentRuntimeWire.MSG_PREFER_RUN in fixture.messages)
+            assertTrue(fixture.messages.indexOf(AgentRuntimeWire.MSG_PREFER_RUN) <
+                fixture.messages.indexOf(AgentRuntimeWire.MSG_ATTACH_RUN))
             assertEquals("original-key", service.field("conversationKey"))
             assertEquals(run.runId, service.field("activeRunId"))
             assertFalse(AgentRuntimeWire.MSG_START_RUN in fixture.messages)

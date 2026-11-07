@@ -56,7 +56,6 @@ import io.github.mangi.eta.ui.model.AgentMemoryAction
 import io.github.mangi.eta.ui.model.AgentSkillsAction
 import io.github.mangi.eta.ui.model.AgentSystemEnhanceAction
 import io.github.mangi.eta.ui.model.AgentToolsAction
-import io.github.mangi.eta.ui.model.ActiveTaskUi
 import io.github.mangi.eta.ui.model.ConversationSummaryUi
 import io.github.mangi.eta.ui.model.LOCAL_NETWORK_PERMISSION_ITEM_ID
 import io.github.mangi.eta.ui.model.PermissionHealthAction
@@ -99,6 +98,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.TextField
+import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.layout.DialogDefaults
 import top.yukonga.miuix.kmp.nav.core.NavDisplay
 import top.yukonga.miuix.kmp.nav.core.NavDisplayEffects
@@ -183,8 +184,6 @@ fun AgentAppRoot(
     }
 
     var conversationPaneOpen by rememberSaveable { mutableStateOf(false) }
-    var confirmStopRunId by remember { mutableStateOf<String?>(null) }
-    var activeTaskTarget by remember { mutableStateOf<ActiveTaskUi?>(null) }
     var conversationRenameTarget by remember { mutableStateOf<ConversationSummaryUi?>(null) }
     var conversationDeleteTarget by remember { mutableStateOf<ConversationSummaryUi?>(null) }
     var conversationExportTarget by remember { mutableStateOf<ConversationSummaryUi?>(null) }
@@ -238,9 +237,8 @@ fun AgentAppRoot(
     LaunchedEffect(requestedRunId, agentState.conversationPaneState.tasksConnected) {
         val runId = requestedRunId ?: return@LaunchedEffect
         if (!agentState.conversationPaneState.tasksConnected) return@LaunchedEffect
-        val task = agentState.activeTask(runId)
-        if (task != null) {
-            activeTaskTarget = task
+        if (agentState.openRunConversation(runId)) {
+            conversationPaneOpen = false
             navigator.popToHome()
         } else {
             Toast.makeText(context, resources.getString(R.string.task_old_notification), Toast.LENGTH_SHORT).show()
@@ -352,7 +350,14 @@ fun AgentAppRoot(
             onRefreshKimiWeb = appViewModel::refreshKimiWeb,
             onOpenBrowser = { openConversationBrowser() },
             onSelectConversation = { conversationId -> selectConversation(conversationId) },
-            onSelectActiveTask = { activeTaskTarget = it },
+            onSelectActiveTask = { task ->
+                uiScope.launch {
+                    if (agentState.openRunConversation(task.runId, task.source, task.conversationKey, task.conversationId)) {
+                        conversationPaneOpen = false
+                        navigator.popToHome()
+                    } else Toast.makeText(context, resources.getString(R.string.task_not_available), Toast.LENGTH_SHORT).show()
+                }
+            },
             onConversationRename = { conversation ->
                 conversationRenameTarget = conversation
             },
@@ -420,7 +425,14 @@ fun AgentAppRoot(
         ) {
             entry<AppRoute.Home>(swipeDismiss = swipeDismiss) {
                 RoutedShell(route = AppRoute.Home) {
+                    Column(Modifier.fillMaxSize()) {
+                        agentState.selectedRunStatus?.let { status ->
+                            Text(text = status, style = MiuixTheme.textStyles.footnote1,
+                                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
+                        }
                     AgentHomeScreen(
+                        modifier = Modifier.weight(1f),
                         state = agentState.homeState,
                         modelPickerState = agentState.modelPickerState,
                         conversationKey = agentState.conversationPaneState.selectedConversationId,
@@ -476,6 +488,7 @@ fun AgentAppRoot(
                         historyLoadState = agentState.historyLoadState,
                         isDrawerOpen = conversationPaneOpen,
                     )
+                    }
                 }
             }
             entry<AppRoute.Browser> { route ->
@@ -862,64 +875,6 @@ fun AgentAppRoot(
             top.yukonga.miuix.kmp.basic.TextButton(
                 text = "知道了", onClick = characterStore::dismissNotice, modifier = Modifier.fillMaxWidth(),
             )
-        }
-    }
-
-    activeTaskTarget?.let { task ->
-        val current = agentState.activeTask(task.runId)
-        var elapsedNow by remember(task.runId) { mutableStateOf(System.currentTimeMillis()) }
-        LaunchedEffect(task.runId, current != null) {
-            while (current != null) {
-                elapsedNow = System.currentTimeMillis()
-                kotlinx.coroutines.delay(60_000L)
-            }
-        }
-        WindowDialog(
-            show = true,
-            title = task.title,
-            summary = listOfNotNull(current?.status ?: resources.getString(R.string.task_finished),
-                task.source.ifBlank { "Eta" }, task.createdAt.takeIf { it > 0L }?.let {
-                    resources.getString(R.string.task_elapsed, java.text.DateFormat.getDateTimeInstance(
-                        java.text.DateFormat.SHORT, java.text.DateFormat.SHORT).format(java.util.Date(it)))
-                }, task.createdAt.takeIf { it > 0L && current != null }?.let {
-                    val minutes = ((elapsedNow - it).coerceAtLeast(0L) / 60_000L)
-                    resources.getQuantityString(R.plurals.task_running_minutes, minutes.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(), minutes)
-                }).joinToString(" · "),
-            cornerRadius = DialogDefaults.CornerRadius,
-            onDismissRequest = { activeTaskTarget = null },
-        ) {
-            if (current != null) top.yukonga.miuix.kmp.basic.TextButton(
-                text = stringResource(R.string.task_stop), modifier = Modifier.fillMaxWidth(),
-                onClick = { confirmStopRunId = current.runId; activeTaskTarget = null },
-            )
-            top.yukonga.miuix.kmp.basic.TextButton(
-                text = stringResource(R.string.task_view_history), modifier = Modifier.fillMaxWidth(), onClick = {
-                    if (task.conversationKey.isNotBlank()) {
-                        uiScope.launch {
-                            if (agentState.openArchivedConversation(task.source, task.conversationKey)) {
-                                activeTaskTarget = null
-                                conversationPaneOpen = false
-                            } else Toast.makeText(context, resources.getString(R.string.task_not_archived), Toast.LENGTH_SHORT).show()
-                        }
-                    } else if (agentState.hasConversation(task.conversationId)) {
-                        selectConversation(task.conversationId)
-                        activeTaskTarget = null
-                    } else {
-                        Toast.makeText(context, resources.getString(R.string.task_not_available), Toast.LENGTH_SHORT).show()
-                    }
-                },
-            )
-        }
-    }
-
-    confirmStopRunId?.let { runId ->
-        WindowDialog(
-            show = true, title = stringResource(R.string.task_stop_confirm), summary = stringResource(R.string.task_stop_confirm_detail),
-            cornerRadius = DialogDefaults.CornerRadius,
-            onDismissRequest = { confirmStopRunId = null },
-        ) {
-            MiuixDialogActions(confirmText = stringResource(R.string.task_stop_action), onCancel = { confirmStopRunId = null },
-                onConfirm = { agentState.stopActiveTask(runId); confirmStopRunId = null })
         }
     }
 

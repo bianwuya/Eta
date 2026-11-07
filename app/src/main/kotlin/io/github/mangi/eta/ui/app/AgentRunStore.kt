@@ -18,6 +18,7 @@ internal class AgentRunStore(
         var stopRequested = false
         var stoppedByUser = false
         var settling = false
+        var disconnected = false
         var guiStatus: GuiControlStatus? = null
     }
 
@@ -29,22 +30,36 @@ internal class AgentRunStore(
 
     val hasActiveRuns: Boolean get() = entries.values.any { it.observed }
 
+    val disconnectedRunIds: Set<String>
+        get() = entries.filterValues { it.disconnected && !it.settling }.keys.toSet()
+
     fun activeRunId(conversationId: String?): String? = entries.entries.firstOrNull {
         it.value.observed && it.value.conversationId == conversationId
     }?.key
 
     fun conversationId(runId: String): String? = entries[runId]?.conversationId
 
+    fun isSettling(runId: String): Boolean = entries[runId]?.settling == true
+
     fun register(runId: String, conversationId: String, observed: Boolean = true): Boolean {
+        entries[runId]?.let { existing ->
+            return observed && existing.observed && existing.conversationId == conversationId &&
+                existing.disconnected && existing.job == null && !existing.settling
+        }
         if (runId in entries || observed && activeRunId(conversationId) != null) return false
         entries[runId] = Entry(conversationId, observed)
         return true
+    }
+
+    fun disconnected(runId: String) {
+        entries[runId]?.let { it.job = null; it.disconnected = true }
     }
 
     fun observe(runId: String, job: Job) {
         val entry = checkNotNull(entries[runId])
         check(entry.observed && entry.job == null)
         entry.job = job
+        entry.disconnected = false
     }
 
     fun requestStop(runId: String, byUser: Boolean = false): Boolean {

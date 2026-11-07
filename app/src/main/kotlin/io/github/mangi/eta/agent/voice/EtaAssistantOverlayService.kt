@@ -380,7 +380,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                     if (choicePending && availableVoiceRuns.isNotEmpty()) {
                         WindowDialog(show = true, title = getString(R.string.voice_tasks_title),
                             cornerRadius = DialogDefaults.CornerRadius,
-                            onDismissRequest = { chooseNewTask() }) {
+                            onDismissRequest = ::dismissAndStop) {
                             Column {
                                 availableVoiceRuns.forEach { run ->
                                     val shortId = java.security.MessageDigest.getInstance("SHA-256")
@@ -821,6 +821,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
         uiState = EtaVoiceUiState(phase = EtaVoicePhase.PROCESSING, status = EtaVoiceStatus.Reasoning)
         attachObserverJob = scope.launch {
             val outcome = kotlinx.coroutines.runInterruptible {
+                runtimeClient.preferRun(run.runId)
                 runtimeClient.attachRun(run.runId,
                     onReplay = { events -> events.forEach { handleRuntimeEvent(run.runId, observer, it, replay = true) } },
                     onEvent = { handleRuntimeEvent(run.runId, observer, it) })
