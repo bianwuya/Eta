@@ -37,6 +37,23 @@ class RuntimeRunRegistryTest {
     }
 
     @Test
+    fun snapshotCachesPresentationAndPreparedRequestRefreshesTitleWithoutChangingIdentity() {
+        val registry = RuntimeRunRegistry()
+        val initial = request("prepared", "conversation").copy(prompt = "")
+        val run = (registry.admit(initial) { RuntimeRunRegistry.Run(initial, AgentRuntimeSession(initial.runId)) }
+            as RuntimeRunRegistry.Admission.Accepted).run
+        val before = run.snapshot()
+        assertEquals("临时任务", before.title)
+        repeat(100) { assertEquals(before, run.snapshot()) }
+        run.prepared(initial.copy(prompt = " 实际\n标题 "))
+        val after = run.snapshot()
+        assertEquals("实际 标题", after.title)
+        assertEquals(before.runId, after.runId)
+        assertEquals(before.conversationId, after.conversationId)
+        assertEquals(before.createdAt, after.createdAt)
+    }
+
+    @Test
     fun presentationTitleIsBoundedAndRemovesControlCharacters() {
         val request = request("run", "conversation").copy(prompt = "  第一行\n第二行\u0000" + "长".repeat(100))
         val title = RuntimeRunRegistry.presentationTitle(request)

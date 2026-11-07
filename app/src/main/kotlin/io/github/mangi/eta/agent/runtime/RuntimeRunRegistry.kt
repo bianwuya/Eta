@@ -24,6 +24,7 @@ internal class RuntimeRunRegistry(private val capacity: Int = MAX_ACTIVE_RUNS) {
     ) {
         val runId: String get() = session.runId
         private val createdAt = System.currentTimeMillis()
+        @Volatile private var presentation = presentationMetadata(initialRequest)
         val conversationId: String = AgentConversationIdentity.fromHandoff(initialRequest.handoff, initialRequest.runId)
         @Volatile var request: AgentRuntimeWire.RunRequest = initialRequest
             private set
@@ -51,6 +52,7 @@ internal class RuntimeRunRegistry(private val capacity: Int = MAX_ACTIVE_RUNS) {
         fun prepared(request: AgentRuntimeWire.RunRequest) {
             check(request.runId == runId)
             check(AgentConversationIdentity.fromHandoff(request.handoff, request.runId) == conversationId)
+            presentation = presentationMetadata(request)
             this.request = request
             preparing = false
             releaseIncoming()
@@ -114,14 +116,15 @@ internal class RuntimeRunRegistry(private val capacity: Int = MAX_ACTIVE_RUNS) {
             ))
         }
 
-        fun snapshot(): AgentRuntimeWire.ActiveRunSnapshot = AgentRuntimeWire.ActiveRunSnapshot(
+        fun snapshot(): AgentRuntimeWire.ActiveRunSnapshot {
+            val metadata = presentation
+            return AgentRuntimeWire.ActiveRunSnapshot(
             runId = runId,
             conversationId = conversationId,
             operation = request.operation,
             handoffSource = request.handoff?.source.orEmpty(),
-            conversationKey = request.handoff?.takeIf { it.source != AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE }
-                ?.let { AgentExternalArchivePayload.from(it.payload)?.conversationKey }.orEmpty(),
-            title = presentationTitle(request),
+            conversationKey = metadata.conversationKey,
+            title = metadata.title,
             createdAt = createdAt,
             guiStatus = guiStatus,
             phase = when {
@@ -131,7 +134,8 @@ internal class RuntimeRunRegistry(private val capacity: Int = MAX_ACTIVE_RUNS) {
                 session.controller.isPaused -> AgentRuntimeWire.RunPhase.Paused
                 else -> AgentRuntimeWire.RunPhase.Running
             },
-        )
+            )
+        }
     }
 
     data class CompletedContext(
@@ -185,14 +189,19 @@ internal class RuntimeRunRegistry(private val capacity: Int = MAX_ACTIVE_RUNS) {
         .map(Run::snapshot)
 
     companion object {
-        internal fun presentationTitle(request: AgentRuntimeWire.RunRequest): String {
-            val archiveTitle = request.handoff
+        private data class PresentationMetadata(val conversationKey: String, val title: String)
+
+        private fun presentationMetadata(request: AgentRuntimeWire.RunRequest): PresentationMetadata {
+            val external = request.handoff
                 ?.takeIf { it.source != AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE }
-                ?.let { AgentExternalArchivePayload.from(it.payload)?.title }.orEmpty()
-            return archiveTitle.ifBlank { request.prompt }
-                .replace(Regex("[\\p{Cc}\\p{Cf}\\s]+"), " ")
+                ?.let { AgentExternalArchivePayload.from(it.payload) }
+            val source = external?.title.orEmpty().ifBlank { request.prompt }
+            val title = source.take(512).replace(Regex("[\\p{Cc}\\p{Cf}\\s]+"), " ")
                 .trim().take(60).ifBlank { "临时任务" }
+            return PresentationMetadata(external?.conversationKey.orEmpty(), title)
         }
+
+        internal fun presentationTitle(request: AgentRuntimeWire.RunRequest): String = presentationMetadata(request).title
 
         const val MAX_ACTIVE_RUNS = 8
     }
