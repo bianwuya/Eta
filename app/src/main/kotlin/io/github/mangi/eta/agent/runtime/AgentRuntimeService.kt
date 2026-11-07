@@ -481,7 +481,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                     AgentRuntimeRequestConfigResolver.applyRuntimeConfig(request, runtimeConfig)
                 }
             }
-            val presentation = prepared.getOrNull()?.let(RuntimeRunRegistry::presentationMetadata)
+            val presentation = prepared.getOrNull()?.let { RuntimeRunRegistry.presentationMetadata(it) }
             mainHandler.post {
                 run.releaseIncoming()
                 if (destroyed || !runs.contains(run) || run.session.controller.isCancelled) return@post

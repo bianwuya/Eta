@@ -128,6 +128,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
     private var conversationKey = newConversationKey()
     private var observerGeneration = 0L
     private var destroyed = false
+    private var lastInvocationId: String? = null
     private var choicePending by mutableStateOf(false)
     private var availableVoiceRuns by mutableStateOf<List<AgentRuntimeWire.ActiveRunSnapshot>>(emptyList())
     private var conversationHistory = emptyList<AgentModelClient.ConversationMessage>()
@@ -199,7 +200,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             AssistantSpeechForeground.ACTION_STOP -> { speechInput.cancel(); playback.stop() }
-            ACTION_SHOW -> showEntry(intent.getStringExtra(EXTRA_SCREEN_CONTEXT_ID))
+            ACTION_SHOW -> showEntry(intent.getStringExtra(EXTRA_SCREEN_CONTEXT_ID), intent.getStringExtra(EXTRA_INVOCATION_ID))
             ACTION_HANDOFF_READY -> finishHandoff()
             else -> Unit
         }
@@ -222,9 +223,11 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
         super.onDestroy()
     }
 
-    private fun showEntry(screenContextId: String?) {
+    private fun showEntry(screenContextId: String?, invocationId: String?) {
         // The same invocation can be re-delivered; keep its current input intact.
+        if (invocationId != null && invocationId == lastInvocationId) return
         if (screenContextId != null && entryScreenContext?.id == screenContextId) return
+        lastInvocationId = invocationId
         if (!Settings.canDrawOverlays(this)) {
             EtaAssistantScreenContexts.release(screenContextId)
             AndroidAgentLogger.warnThrottled("eta_assistant_overlay_permission_missing") {
@@ -624,7 +627,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                 }
                 hiddenForForegroundOperation
             }
-            if (!destroyed && observer == observerGeneration && result.contextSnapshotRef.isBlank()) runtimeClient.ackResult(runId)
+            // External results are acknowledged only after durable import by the conversation store.
             if (shouldStopAfterResult) {
                 withContext(Dispatchers.Main.immediate) {
                     if (!destroyed && observer == observerGeneration && activeRunId == null) {
@@ -819,7 +822,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                         uiState = uiState.copy(phase = if (result.ok) EtaVoicePhase.READY else EtaVoicePhase.ERROR,
                             status = if (result.ok) EtaVoiceStatus.Completed else EtaVoiceStatus.Failed(result.error),
                             messages = finishRunMessages(run.runId, result))
-                        if (result.contextSnapshotRef.isBlank()) scope.launch { runtimeClient.ackResult(run.runId) }
+                        // Durable archive/import recovery owns the result acknowledgement.
                     }
                     else -> {
                         uiState = uiState.copy(phase = EtaVoicePhase.ERROR,
@@ -1017,6 +1020,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
         const val ACTION_OPEN_CONVERSATION = "io.github.mangi.eta.agent.voice.OPEN_CONVERSATION"
         const val EXTRA_CONVERSATION_KEY = "io.github.mangi.eta.agent.voice.extra.CONVERSATION_KEY"
         private const val EXTRA_SCREEN_CONTEXT_ID = "assistant_screen_context_id"
+        private const val EXTRA_INVOCATION_ID = "assistant_invocation_id"
         private const val ACTION_HANDOFF_READY = "io.github.mangi.eta.agent.voice.HANDOFF_READY"
         private const val HANDOFF_TIMEOUT_MS = 5_000L
         private const val HANDOFF_EXIT_DURATION_MS = 220L
@@ -1075,7 +1079,8 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
             context.applicationContext.startService(
                 Intent(context.applicationContext, EtaAssistantOverlayService::class.java)
                     .setAction(ACTION_SHOW)
-                    .putExtra(EXTRA_SCREEN_CONTEXT_ID, screenContextId),
+                    .putExtra(EXTRA_SCREEN_CONTEXT_ID, screenContextId)
+                    .putExtra(EXTRA_INVOCATION_ID, UUID.randomUUID().toString()),
             )
         }
 
