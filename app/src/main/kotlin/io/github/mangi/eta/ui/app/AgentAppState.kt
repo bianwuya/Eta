@@ -715,6 +715,8 @@ internal class AgentAppState(
                     importExternalRun(archivedRun).also { refreshConversationSummaries() }
                 } ?: return@withLoadedConversations true
                 if (!withContext(Dispatchers.Main) { persistConversations() }.await()) return@withLoadedConversations false
+                // Only acknowledge after the imported conversation is durably saved.
+                if (!AgentRuntimeClient(appContext, AndroidAgentLogger).ackResult(importedRunId)) return@withLoadedConversations false
                 AgentRunArchiveStore.remove(appContext, importedRunId)
                 true
             }

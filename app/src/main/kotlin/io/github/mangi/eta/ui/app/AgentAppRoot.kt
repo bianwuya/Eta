@@ -243,7 +243,7 @@ fun AgentAppRoot(
             activeTaskTarget = task
             navigator.popToHome()
         } else {
-            Toast.makeText(context, context.getString(R.string.task_old_notification), Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, resources.getString(R.string.task_old_notification), Toast.LENGTH_SHORT).show()
         }
         onRequestedRunOpened()
     }
@@ -875,13 +875,13 @@ fun AgentAppRoot(
         WindowDialog(
             show = true,
             title = task.title,
-            summary = listOfNotNull(current?.status ?: context.getString(R.string.task_finished),
+            summary = listOfNotNull(current?.status ?: resources.getString(R.string.task_finished),
                 task.source.ifBlank { "Eta" }, task.createdAt.takeIf { it > 0L }?.let {
-                    context.getString(R.string.task_elapsed, java.text.DateFormat.getDateTimeInstance(
+                    resources.getString(R.string.task_elapsed, java.text.DateFormat.getDateTimeInstance(
                         java.text.DateFormat.SHORT, java.text.DateFormat.SHORT).format(java.util.Date(it)))
                 }, task.createdAt.takeIf { it > 0L && current != null }?.let {
                     val minutes = ((elapsedNow - it).coerceAtLeast(0L) / 60_000L)
-                    context.resources.getQuantityString(R.plurals.task_running_minutes, minutes.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(), minutes)
+                    resources.getQuantityString(R.plurals.task_running_minutes, minutes.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(), minutes)
                 }).joinToString(" · "),
             cornerRadius = DialogDefaults.CornerRadius,
             onDismissRequest = { activeTaskTarget = null },
@@ -897,13 +897,13 @@ fun AgentAppRoot(
                             if (agentState.openArchivedConversation(task.source, task.conversationKey)) {
                                 activeTaskTarget = null
                                 conversationPaneOpen = false
-                            } else Toast.makeText(context, context.getString(R.string.task_not_archived), Toast.LENGTH_SHORT).show()
+                            } else Toast.makeText(context, resources.getString(R.string.task_not_archived), Toast.LENGTH_SHORT).show()
                         }
                     } else if (agentState.hasConversation(task.conversationId)) {
                         selectConversation(task.conversationId)
                         activeTaskTarget = null
                     } else {
-                        Toast.makeText(context, context.getString(R.string.task_not_available), Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, resources.getString(R.string.task_not_available), Toast.LENGTH_SHORT).show()
                     }
                 },
             )
