@@ -1,0 +1,33 @@
+# GUI task continuity: review and acceptance context
+
+## Base and scope
+
+This branch targets the user's fork `bianwuya/Eta`, base `local`. GUI-P0 PR #24 is merged at `1b36b55f0b1f42c7af39a0d5cd692c82e8d0af10`; preserve its actual visible-handoff gate, ownership and window fixes. Also retain `9b6edc4` P6/P7, HTML, statistics and TLS fixes. The user identified ColorOS Security Center as the physical capsule-loss cause and froze it separately; this branch does not alter that package or system safety settings. This document is the review context, not an assertion of test results.
+
+The explicit current instruction is to implement GUI-P1 → P2 → P3 in dependency order, without waiting after each stage for another user message or cloud-AI review. The stages have separately reviewable commits. User installation and physical acceptance remain separate. A build may contain P1/P2/P3 changes but cannot be called accepted until its exact SHA is checked and the user exercises the scenarios below.
+
+## P1: task presentation and history
+
+Use the existing RuntimeRunRegistry/AgentRuntimeService as the only active-run authority and the existing archive/conversation storage as history. Expose bounded, stable per-top-level-run identity, source, external conversation key, short display title, GUI state, phase and time. Do not expose each subagent as a top-level task. Activity/subscription starts with a snapshot, receives event-driven changes without polling or token-driven notifications, and reconnects/reconciles checkpoints and terminal archives after disconnection. Admission, preparing, waiting for GUI, paused, running and committing must not be conflated; a short-lived run completed before first subscription must not disappear from history or be imported twice. Cache projection metadata at admission/preparation so token events do not repeatedly parse the original payload or prompt.
+
+The small/full window uses the existing Miuix conversation drawer and theme, with a separate in-progress section, search, connection state and a read-only task summary. Do not attach rename/delete semantics or pretend an unarchived task is a full editable conversation. Navigation must target the precise run or external source/key, and failed/expired opens must preserve the existing screen and allow history retry. Terminal reconciliation imports existing archives idempotently. Handle empty/search-none, disconnected, archiving, unavailable and long/large-font states.
+
+## P2: one foreground-service notification
+
+Reuse the single existing FGS, channel and lease registry. Zero, one and N runs must be represented without treating non-run leases as independent Agent runs; one run gets precise identity and stop; N gets task-list entry, not an ambiguous global stop. PendingIntent identity must distinguish each run, and an old action for a finished run must be harmless. A stop requests only that run, does not release its execution lease until the original terminal cleanup, is idempotent, and does not stop other tasks or terminal leases.
+
+Notification content must not expose raw prompts, filenames, paths, URIs, tokens, screenshot contents, tool arguments or transcripts: use a user-safe source plus stable opaque short identifier or a separately verified safe title. Lock-screen publicVersion is generic. Keep promoted ongoing/indeterminate ProgressStyle where available, as an Android capability request only; OEM rendering is not guaranteed. Deduplicate content and throttle noncritical status changes (roughly 1–3 seconds); changes in task membership, GUI owner, stop and terminal state must be immediate. Do not refresh per model token. Preserve FGS legality and graceful notification-permission/system-capability handling.
+
+## P3: entry, run and identity lifetimes
+
+Showing or destroying the voice entry UI must never silently stop an accepted run; only an explicit, run-specific stop may do so. Split entry observers/input state from the existing Runtime lifecycle and archive, without a second scheduler, database, FGS or permanent diagnostic loop. Reinvocation offers continue current task, create new while the old continues, and view all. Continue binds the same run and original conversation identity; new creates a unique run and conversation key, preserving original request/account/session/prompt-prefix semantics. Closing a view, recreating the service, duplicate invocations or old result callbacks must not cancel, replace, mutate or route into another run. Report an admission/capacity failure visibly and avoid silent retries/duplicate submissions. GUI ownership remains serialized by the existing coordinator; waiting and actual owner are distinct. Explicit stop during preparation must not be lost at the admission boundary.
+
+## Required validation
+
+- Add behavioral unit/Robolectric tests for snapshot identity and preparation, initial subscription and race/reconnect, terminal/archive idempotency, top-level vs subagent, precise routing, 0/1/N notifications, privacy, content dedup/throttle, stale PendingIntent, targeted stop and lease lifetime, lifecycle/identity separation, duplicate intent and admission/capacity. Do not turn grep/regex assertions into false behavioral proof.
+- Compile, lint and tests must be associated with the exact SHA. Host aarch64 Robolectric may fail before assertions due to unsupported native runtime; report those tests as blocked there and run them in the existing x86 CI rather than weakening tests. No dependency/SDK downgrade or test deletion to make a result green.
+- User personally tests: small-window real-time changes and terminal import, 10–20 window/search/navigation switches, A/B tasks with one GUI owner, explicit stop A while B continues, repeated power-button invocations and service recreation, notification visibility/click/stop under 0/1/N, locks and disabled permissions, ColorOS promotion and repeated alert behavior. Compare APK size, startup, CPU/PSS and notification frequency to a matching baseline; static tests do not establish actual ROM or performance outcomes.
+
+## Non-goals and delivery
+
+Do not alter ColorOS SystemUI, draw a fake system pill, promise accurate percentage, hook private OEM APIs, change GUI scheduling, add token polling/wake locks, alter provider/session identity, tool/prompt prefix, account, versions, signing or GitHub workflows. Do not mutate main, force push, weaken branch protection, auto-install or publish. Feature source and this context should be visible on the user's GitHub branch/PR; final PR review must identify its exact feature/head/base and CI source and describe actual status. QA/stable build provenance, original signatures and device acceptance are separate gates.
