@@ -155,10 +155,12 @@ internal class SubagentExecutor(
                 onStarted = onStarted,
             )
         } catch (failure: Exception) {
-            SubagentSessionStore.releaseRunning(conversationKey, entry.subagentId)
             if (failure is AgentRunCancelledException || failure is java.util.concurrent.CancellationException) throw failure
             if (parentController.isCancelled) throw AgentRunCancelledException()
             failureResult(toolCall, "SUBAGENT_START_FAILED", failure.message ?: "启动失败")
+        } finally {
+            // This invocation exclusively owns the claim until all callbacks and cleanup finish.
+            SubagentSessionStore.releaseRunning(conversationKey, entry.subagentId)
         }
     }
 
@@ -231,7 +233,6 @@ internal class SubagentExecutor(
             if (parentController.isCancelled || childController.isCancelled) throw AgentRunCancelledException()
             val previousCompactions = entry.compactionCount.get()
             val previousReading = entry.lastContext?.reading?.copy(previousInvocation = true, modelChanged = null)
-            SubagentSessionStore.releaseRunning(conversationKey, subagentId)
             val message = throwable.message ?: "无法加载 Subagent 模型配置"
             // 启动失败必须是真实失败状态，不能停留在合成卡片初始的“正在启动”。
             val failedStore = runCatching { detailStoreFactory?.invoke() }.getOrNull()
@@ -425,7 +426,7 @@ internal class SubagentExecutor(
             supportsSearchSuggestions = false,
         )
 
-        var historyCommitted = false
+        var historyCommittedOnSuccess = false
         return try {
             childController.throwIfCancelled()
             AgentModelClient.validateConfig(subagentConfig)
@@ -523,7 +524,7 @@ internal class SubagentExecutor(
             // Commit the real transcript before checking cancellation, while keeping the
             // running guard until terminal tracking and measurement publication finish.
             entry.history = updatedHistory
-            historyCommitted = true
+            historyCommittedOnSuccess = true
             childController.throwIfCancelled()
             if (cancelledByDecision.get()) tracker.markCancelled(response.content)
             else tracker.markCompleted(response.content)
@@ -558,13 +559,14 @@ internal class SubagentExecutor(
                 if (cancelledByDecision.get()) finish("cancelled", "已停止", response.content)
                 else finish("completed", "子任务已完成。", response.content)
             }
-            SubagentSessionStore.complete(conversationKey, subagentId, updatedHistory)
             selected
         } catch (throwable: Throwable) {
             mailboxActive.set(false)
             val partialHistory = (throwable as? AgentModelExecutionException)?.let { ex ->
                 SubagentContinuation.history(priorHistory, taskPrompt, ex.transcript, ex.contextSnapshot)
             }
+            // Keep the known transcript before failure publication can itself throw.
+            if (partialHistory != null && !historyCommittedOnSuccess) entry.history = partialHistory
             val partial = tracker.partialOutput()
 
             val cancellationCause = (throwable as? AgentModelExecutionException)?.cause
@@ -582,14 +584,8 @@ internal class SubagentExecutor(
             } else {
                 tracker.markFailed(errorMessage, partial)
             }
-            fun releaseHistory() {
-                if (historyCommitted) SubagentSessionStore.complete(conversationKey, subagentId, entry.history)
-                else if (partialHistory != null) SubagentSessionStore.complete(conversationKey, subagentId, partialHistory)
-                else SubagentSessionStore.releaseRunning(conversationKey, subagentId)
-            }
             if (cancelled) {
                 recordHistory { finish("cancelled", errorMessage) }
-                releaseHistory()
                 // Display failures must not turn cancellation into a startup error.
                 runCatching { publishSnapshot(force = true) }
                 throw AgentRunCancelledException()
@@ -636,9 +632,6 @@ internal class SubagentExecutor(
                 recordHistory { finish("cancelled", "已停止") }
                 runCatching { publishSnapshot(force = true) }
                 throw cancelledAtPublication
-            } finally {
-                // Measurement and terminal history are committed before allowing resume.
-                releaseHistory()
             }
         }
         } catch (failure: Throwable) {
