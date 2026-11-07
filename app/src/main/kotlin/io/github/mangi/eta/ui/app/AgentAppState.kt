@@ -137,6 +137,8 @@ internal class AgentAppState(
     private var fileAttachmentOwnerVersion = 0L
     private val conversationLoadMutex = Mutex()
     private val conversationContentPins = mutableMapOf<String, Int>()
+    @androidx.annotation.VisibleForTesting
+    internal var beforeRunConversationSelectionForTest: (suspend (String) -> Unit)? = null
     private var conversationSelectionJob: Job? = null
     private var conversationSelectionVersion = 0L
     private var historyPageJob: Job? = null
@@ -940,12 +942,14 @@ internal class AgentAppState(
             else conversationId.takeIf(String::isNotBlank)
         val id = projected ?: persistedId ?: withContext(Dispatchers.Main) { runConversationHints[runId] }
             ?: fallbackId ?: return false
-        if (!ensureConversationLoaded(id)) return false
-        val opened = withContext(Dispatchers.Main) {
-            val state = conversationsById[id] ?: return@withContext false
-            if (runStore.activeRunId(id) != runId && !AgentRuntimeHistoryReducer.wasApplied(state, runId)) return@withContext false
-            selectConversation(id)
-            true
+        val opened = withLoadedConversations(setOf(id)) {
+            beforeRunConversationSelectionForTest?.invoke(id)
+            withContext(Dispatchers.Main) {
+                val state = conversationsById[id] ?: return@withContext false
+                if (runStore.activeRunId(id) != runId && !AgentRuntimeHistoryReducer.wasApplied(state, runId)) return@withContext false
+                selectConversation(id)
+                true
+            }
         }
         // Explicit selection is an interaction; passive subscriptions never change priority.
         if (opened) withContext(Dispatchers.IO) { AgentRuntimeClient(appContext, AndroidAgentLogger).preferRun(runId) }

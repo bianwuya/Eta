@@ -11,6 +11,7 @@ import io.github.mangi.eta.agent.media.AgentImageCodec
 import io.github.mangi.eta.agent.runtime.*
 import io.github.mangi.eta.data.db.EtaDatabase
 import io.github.mangi.eta.ui.model.AgentMessageUi
+import io.github.mangi.eta.ui.model.AgentChatHomeUiState
 import io.github.mangi.eta.ui.model.UserMessageUi
 import kotlinx.coroutines.*
 import org.junit.After
@@ -403,6 +404,60 @@ class PowerRunConversationIntegrationTest {
 
     @Test fun externalSuccessorStopWithFailedSaveCannotResumeFromPredecessorToken() {
         successorStopDoesNotResumeQueue(failSave = true)
+    }
+
+    @Test fun terminalNavigationPinsLoadedIdentityUntilSelectionDespitePendingRelease() {
+        RuntimeMessengerFixture().use { fixture ->
+            val runId = "navigation-pinned-terminal"
+            val targetId = AgentConversationIdentity.archiveConversationId(AgentRuntimeWire.ETA_VOICE_HANDOFF_SOURCE, "pin-key")
+            val target = AgentChatHomeUiState(
+                messages = listOf(UserMessageUi("user-$runId", "real input"),
+                    AgentMessageUi("assistant-$runId-1", "real answer", isStreaming = false)),
+                input = "", isStreaming = false, thinkingEnabled = false,
+                appliedRuntimeRunIds = listOf(runId),
+            )
+            val otherId = "navigation-unrelated"
+            val states = mapOf(otherId to target.copy(messages = emptyList(), appliedRuntimeRunIds = emptyList()), targetId to target)
+            val snapshot = AgentConversationStore.Snapshot(otherId, states, states.keys.associateWith { it }, states.keys.associateWith { 1L })
+            fixture.result(fixture.worker { runBlocking {
+                AgentConversationStore.save(fixture.context, otherId, states, snapshot.titles, snapshot.updatedAt)
+            } })
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+            try {
+                val app = AgentAppState(fixture.context, scope, snapshot)
+                fixture.await { !isRecovering(app) }
+                assertFalse(ui(fixture, scope) { app.openRunConversation("navigation-unknown") })
+                assertEquals(otherId, app.conversationPaneState.selectedConversationId)
+                var releasedBetweenLoadAndSelect = false
+                app.beforeRunConversationSelectionForTest = { id ->
+                    withContext(Dispatchers.Main.immediate) {
+                        assertEquals(targetId, id)
+                        val field = AgentAppState::class.java.getDeclaredField("conversationsById").apply { isAccessible = true }
+                        @Suppress("UNCHECKED_CAST")
+                        val current = field.get(app) as Map<String, AgentChatHomeUiState>
+                        assertTrue(requireNotNull(current[id]).isConversationLoaded)
+                        assertTrue(runId in requireNotNull(current[id]).appliedRuntimeRunIds)
+                        val release = AgentAppState::class.java.getDeclaredMethod("releaseInactiveConversations",
+                            Map::class.java, kotlin.coroutines.Continuation::class.java).apply { isAccessible = true }
+                        kotlin.coroutines.intrinsics.suspendCoroutineUninterceptedOrReturn<Unit> { continuation ->
+                            release.invoke(app, current, continuation)
+                        }
+                        @Suppress("UNCHECKED_CAST")
+                        val afterRelease = field.get(app) as Map<String, AgentChatHomeUiState>
+                        assertTrue(requireNotNull(afterRelease[id]).isConversationLoaded)
+                        assertTrue(runId in requireNotNull(afterRelease[id]).appliedRuntimeRunIds)
+                        assertEquals(otherId, app.conversationPaneState.selectedConversationId)
+                        releasedBetweenLoadAndSelect = true
+                    }
+                }
+                assertTrue(ui(fixture, scope) { app.openRunConversation(runId) })
+                assertTrue(releasedBetweenLoadAndSelect)
+                assertEquals(targetId, app.conversationPaneState.selectedConversationId)
+                assertEquals(1, app.homeState.messages.filterIsInstance<UserMessageUi>().size)
+                assertEquals("real answer", app.homeState.messages.filterIsInstance<AgentMessageUi>().single().content)
+                assertFalse(AgentRuntimeWire.MSG_START_RUN in fixture.messages)
+            } finally { cancelAndAwait(fixture, scope) }
+        }
     }
 
     @Test fun externalSuccessorStopWithSuccessfulSaveKeepsQueueStopped() {
