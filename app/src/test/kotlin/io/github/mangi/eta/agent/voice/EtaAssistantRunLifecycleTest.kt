@@ -5,6 +5,8 @@ import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.agent.runtime.AgentRuntimeSession
 import io.github.mangi.eta.agent.runtime.AgentRuntimeWire
 import io.github.mangi.eta.agent.runtime.RuntimeRunRegistry
+import io.github.mangi.eta.agent.runtime.RuntimeMessengerFixture
+import io.github.mangi.eta.agent.runtime.AgentEvent
 import kotlinx.coroutines.Job
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -20,6 +22,57 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [36], application = Application::class)
 class EtaAssistantRunLifecycleTest {
+    @Test
+    fun continueReallyAttachesAndDestroyDetachesWithoutStoppingRuntime() {
+        RuntimeMessengerFixture().use { fixture ->
+            val run = fixture.admit(fixture.request("voice-continue", "original-key"))
+            run.prepared(run.request)
+            run.session.emit(AgentEvent.RoundStarted(1, 1))
+            // Establish the shared real Messenger binding before the overlay's client uses it.
+            fixture.result(fixture.worker { fixture.client.queryActiveRuns() })
+            val host = Robolectric.buildService(EtaAssistantOverlayService::class.java).create()
+            val service = host.get()
+            service.javaClass.getDeclaredMethod("continueVoiceRun", AgentRuntimeWire.ActiveRunSnapshot::class.java)
+                .apply { isAccessible = true }.invoke(service, run.snapshot())
+            fixture.await { AgentRuntimeWire.MSG_ATTACH_RUN in fixture.messages }
+            assertEquals("original-key", service.field("conversationKey"))
+            assertEquals(run.runId, service.field("activeRunId"))
+            assertFalse(AgentRuntimeWire.MSG_START_RUN in fixture.messages)
+            host.destroy()
+            fixture.await { AgentRuntimeWire.MSG_DETACH_RUN in fixture.messages }
+            assertFalse(run.session.controller.isCancelled)
+            assertTrue(fixture.registry.contains(run))
+            fixture.complete(run, AgentRuntimeWire.RunResult(run.runId, true, "continues after UI destruction"))
+        }
+    }
+
+    @Test
+    fun repeatedIdentifiedIntentPreservesDraftEvenBeforeAWindowCanAttach() {
+        val host = Robolectric.buildService(EtaAssistantOverlayService::class.java).create()
+        try {
+            val service = host.get()
+            // Missing permission follows the real early-return path, after recording invocation identity.
+            org.robolectric.shadows.ShadowSettings.setCanDrawOverlays(false)
+            // Use the public show factory's actual intent, not an assumed action/extra contract.
+            EtaAssistantOverlayService.show(service, null)
+            val started = org.robolectric.Shadows.shadowOf(org.robolectric.RuntimeEnvironment.getApplication<Application>()).nextStartedService
+            service.onStartCommand(requireNotNull(started), 0, 1)
+            val input = service.javaClass.getDeclaredField("inputText\$delegate").apply { isAccessible = true }
+                .get(service) as androidx.compose.runtime.MutableState<*>
+            @Suppress("UNCHECKED_CAST")
+            (input as androidx.compose.runtime.MutableState<String>).value = "keep this draft"
+            val key = service.field("conversationKey")
+            service.onStartCommand(started, 0, 2)
+            assertEquals("keep this draft", input.value)
+            assertEquals(key, service.field("conversationKey"))
+            val legacy = android.content.Intent(started).replaceExtras(android.os.Bundle())
+            service.onStartCommand(legacy, 0, 3)
+            service.onStartCommand(legacy, 0, 4)
+            assertEquals("keep this draft", input.value)
+            assertEquals(key, service.field("conversationKey"))
+        } finally { host.destroy() }
+    }
+
     @Test
     fun detachedEntryLeavesRuntimeAndWorkerAliveAndInvalidatesOldObserver() {
         val host = Robolectric.buildService(EtaAssistantOverlayService::class.java).create()

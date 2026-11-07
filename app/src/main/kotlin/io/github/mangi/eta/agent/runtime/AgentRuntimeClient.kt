@@ -57,6 +57,7 @@ internal class AgentRuntimeClient(
     fun run(
         request: AgentRuntimeWire.RunRequest,
         onRequestIngested: () -> Unit = {},
+        stopRequested: () -> Boolean = { false },
         onEvent: (AgentEvent) -> Unit,
     ): AgentRuntimeWire.RunResult {
         val resultLatch = CountDownLatch(1)
@@ -96,6 +97,10 @@ internal class AgentRuntimeClient(
             preparedImagesRef.set(preparedImages)
             msg.data = AgentRuntimeWire.toBundle(request, preparedImages.images, context.cacheDir)
             AgentWireText.send(serviceMessenger, msg)
+            // Same Messenger ordering closes the stop-before-admission gap without replaying START.
+            if (stopRequested()) serviceMessenger.send(Message.obtain(null, AgentRuntimeWire.MSG_CANCEL).apply {
+                data = AgentRuntimeWire.ackBundle(request.runId)
+            })
             // 最终结果或 Binder 断连负责唤醒；正常长任务不因客户端等待时长被取消。
             resultLatch.await()
             return resultRef.get()?.let(AgentRuntimeWire::runResultFromBundle) ?: AgentRuntimeWire.RunResult("", false, "", "Agent Runtime 未返回结果")
@@ -341,8 +346,10 @@ internal class AgentRuntimeClient(
         val attachLatch = CountDownLatch(1)
         val attachedRef = AtomicReference<Boolean?>(null)
         val resultRef = AgentResultMailbox()
+        val observing = java.util.concurrent.atomic.AtomicBoolean(true)
         val clientMessenger = Messenger(
             AttachHandler(
+                observing = observing,
                 onReplay = onReplay,
                 onEvent = onEvent,
                 onAttachResponse = { attached ->
@@ -387,6 +394,7 @@ internal class AgentRuntimeClient(
             logger.warn("Agent runtime attach failed: type=${throwable.safeLogType()}")
             return AttachOutcome.Unavailable
         } finally {
+            observing.set(false)
             runCatching {
                 lease.messenger.send(Message.obtain(null, AgentRuntimeWire.MSG_DETACH_RUN).apply {
                     replyTo = clientMessenger
@@ -455,6 +463,7 @@ internal class AgentRuntimeClient(
     }
 
     private class AttachHandler(
+        private val observing: java.util.concurrent.atomic.AtomicBoolean,
         onReplay: ((List<AgentEvent>) -> Unit)?,
         onEvent: (AgentEvent) -> Unit,
         onAttachResponse: (Boolean) -> Unit,
@@ -468,6 +477,10 @@ internal class AgentRuntimeClient(
         )
 
         override fun handleMessage(msg: Message) {
+            if (!observing.get()) {
+                msg.data?.let(AgentWireText::close)
+                return
+            }
             when (msg.what) {
                 AgentRuntimeWire.MSG_EVENT ->
                     AgentRuntimeWire.eventFromBundle(msg.data ?: return)?.let(delivery::event)

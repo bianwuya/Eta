@@ -223,6 +223,7 @@ internal class AgentExecutionService : Service() {
                 if (text == publishedStatusText) return@post
                 publishedStatusText = text
                 val critical = previousCount != activeRunCount ||
+                    status == AgentOverlayStatus.Stopping ||
                     previousRuns.map { it.runId to it.guiStatus } != snapshots.map { it.runId to it.guiStatus }
                 val wait = (2_000L - (SystemClock.elapsedRealtime() - lastNotificationAt)).coerceAtLeast(0)
                 mainHandler.removeCallbacks(delayedNotification)

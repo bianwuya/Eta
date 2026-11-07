@@ -29,6 +29,8 @@ class RuntimeRunRegistryTest {
         assertEquals("conversation", initial.conversationId)
         assertEquals("", initial.title)
         assertTrue(initial.createdAt > 0L)
+        assertEquals(AgentRuntimeWire.RunPhase.Preparing, initial.phase)
+        run.prepared(run.request)
         run.guiStatus = GuiControlStatus.Waiting
         val waiting = registry.snapshots().single()
         assertEquals(initial.createdAt, waiting.createdAt)

@@ -128,7 +128,8 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
     private var conversationKey = newConversationKey()
     private var observerGeneration = 0L
     private var destroyed = false
-    private var lastInvocationId: String? = null
+    private val handledInvocations = linkedSetOf<String>()
+    private var handledLegacyInvocation = false
     private var choicePending by mutableStateOf(false)
     private var availableVoiceRuns by mutableStateOf<List<AgentRuntimeWire.ActiveRunSnapshot>>(emptyList())
     private var conversationHistory = emptyList<AgentModelClient.ConversationMessage>()
@@ -225,11 +226,17 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
 
     private fun showEntry(screenContextId: String?, invocationId: String?) {
         // The same invocation can be re-delivered; keep its current input intact.
-        if (invocationId != null && invocationId == lastInvocationId) return
+        if (invocationId != null && invocationId in handledInvocations) return
         // Legacy callers without invocation identity cannot distinguish redelivery; preserve an open draft.
-        if (invocationId == null && screenContextId == null && windowView != null) return
+        if (invocationId == null && screenContextId == null) {
+            if (handledLegacyInvocation) return
+            handledLegacyInvocation = true
+        }
         if (screenContextId != null && entryScreenContext?.id == screenContextId) return
-        lastInvocationId = invocationId
+        if (invocationId != null) {
+            handledInvocations += invocationId
+            if (handledInvocations.size > 16) handledInvocations.remove(handledInvocations.first())
+        }
         if (!Settings.canDrawOverlays(this)) {
             EtaAssistantScreenContexts.release(screenContextId)
             AndroidAgentLogger.warnThrottled("eta_assistant_overlay_permission_missing") {
@@ -376,7 +383,10 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                             onDismissRequest = { chooseNewTask() }) {
                             Column {
                                 availableVoiceRuns.forEach { run ->
-                                    TextButton(text = "${getString(R.string.voice_tasks_continue)} · ${run.title.ifBlank { run.runId.take(8) }}",
+                                    val shortId = java.security.MessageDigest.getInstance("SHA-256")
+                                        .digest(run.runId.toByteArray(Charsets.UTF_8)).take(4)
+                                        .joinToString("") { "%02x".format(it) }
+                                    TextButton(text = "${getString(R.string.voice_tasks_continue)} · ${run.title.ifBlank { getString(R.string.task_preparing) }} · $shortId",
                                         modifier = Modifier.fillMaxWidth(), onClick = { continueVoiceRun(run) })
                                 }
                                 TextButton(text = getString(R.string.voice_tasks_new), modifier = Modifier.fillMaxWidth(),
@@ -385,10 +395,6 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                                     onClick = ::openAllTasks)
                             }
                         }
-                    }
-                    if (uiState.phase == EtaVoicePhase.ERROR && conversationKey.isNotBlank()) {
-                        TextButton(text = getString(R.string.task_view_history), modifier = Modifier.fillMaxWidth(),
-                            onClick = ::openVoiceHistory)
                     }
                     EtaVoicePanel(
                         state = uiState,
@@ -441,6 +447,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                         handoffRunning = handoffInProgress,
                         exitRequested = handoffExitRequested,
                         onOpenConversation = ::openConversation,
+                        onRecoverHistory = ::openVoiceHistory,
                     )
                 }
             }
@@ -596,6 +603,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                     pendingVoiceSubmissions.remove(runId)
                     if (stopRequested.get()) CoroutineScope(Dispatchers.IO).launch { runtimeClient.cancelRun(runId) }
                 },
+                stopRequested = stopRequested::get,
             )
             pendingVoiceSubmissions.remove(runId)
             val shouldStopAfterResult = withContext(Dispatchers.Main.immediate) {
@@ -754,7 +762,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
             runStopRequested?.set(true)
             requestRuntimeCancellation(runId)
             // A stop can lose to terminal commit; keep observing until the actual result.
-            speechState = EtaSpeechState(message = getString(R.string.voice_stop_requested))
+            speechState = EtaSpeechState(message = getString(R.string.voice_stop_requested), feedbackIsError = false)
         } else {
             dismissAndStop()
         }
@@ -793,6 +801,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
     }
 
     private fun continueVoiceRun(run: AgentRuntimeWire.ActiveRunSnapshot) {
+        if (activeRunId != null) return
         if (pendingVoiceSubmissions.containsKey(run.runId)) {
             speechState = EtaSpeechState(message = getString(R.string.voice_task_preparing), feedbackIsError = true)
             return
@@ -810,7 +819,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
         val observer = ++observerGeneration
         runStopRequested = AtomicBoolean(false)
         uiState = EtaVoiceUiState(phase = EtaVoicePhase.PROCESSING, status = EtaVoiceStatus.Reasoning)
-        attachObserverJob = CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+        attachObserverJob = scope.launch {
             val outcome = kotlinx.coroutines.runInterruptible {
                 runtimeClient.attachRun(run.runId,
                     onReplay = { events -> events.forEach { handleRuntimeEvent(run.runId, observer, it, replay = true) } },
@@ -820,7 +829,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                 if (destroyed || observer != observerGeneration || activeRunId != run.runId) return@withContext
                 flushPendingDelta(run.runId)
                 activeRunId = null
-                runJob = null
+                attachObserverJob = null
                 when (outcome) {
                     is AgentRuntimeClient.AttachOutcome.Completed -> {
                         val result = outcome.result

@@ -113,6 +113,7 @@ internal class AgentRuntimeSession(
         subscriptionKey: Any? = null,
     ): Boolean = lock.withLock {
         if (state == State.TERMINAL) return false
+        if (subscriptionKey != null) subscribers.removeAll { it.subscriptionKey == subscriptionKey }
         replayEvents.forEach(eventSink)
         onReplayComplete()
         subscribers += Subscriber(eventSink, resultSink, subscriptionKey)

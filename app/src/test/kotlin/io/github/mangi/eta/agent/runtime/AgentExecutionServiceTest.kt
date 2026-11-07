@@ -24,6 +24,61 @@ import org.robolectric.annotation.Config
 @Config(sdk = [33, 34], application = Application::class)
 class AgentExecutionServiceTest {
     @Test
+    fun zeroRunTerminalLeaseHasNoRunStopAndOldGlobalActionIsHarmless() {
+        val context = RuntimeEnvironment.getApplication<Application>()
+        var stops = 0
+        val id = "terminal:zero-runs"
+        assertTrue(AgentExecutionService.acquire(context, id) { stops++ })
+        AgentExecutionService.updateRunStatus(context, null, 0)
+        shadowOf(Looper.getMainLooper()).idle()
+        val host = Robolectric.buildService(AgentExecutionService::class.java).create()
+        try {
+            val notification = requireNotNull(shadowOf(host.get()).lastForegroundNotification)
+            assertTrue(notification.actions.isNullOrEmpty())
+            assertFalse(notification.extras.getBoolean("android.requestPromotedOngoing"))
+            host.get().onStartCommand(android.content.Intent("io.github.mangi.eta.action.STOP_USER_EXECUTION"), 0, 1)
+            assertEquals(0, stops)
+            assertTrue(context.getSystemService(NotificationManager::class.java).activeNotifications.isNotEmpty())
+        } finally {
+            AgentExecutionService.release(id)
+            AgentExecutionService.updateRunStatus(context, null, 0)
+            shadowOf(Looper.getMainLooper()).idle()
+            host.destroy()
+        }
+    }
+
+    @Test
+    fun stoppingAndGuiOwnershipBypassNoncriticalNotificationThrottle() {
+        val context = RuntimeEnvironment.getApplication<Application>()
+        val id = "run:notification-transitions"
+        assertTrue(AgentExecutionService.acquire(context, id) {})
+        val initial = AgentRuntimeWire.ActiveRunSnapshot("notification-transitions", "conversation")
+        AgentExecutionService.updateRunStatus(context, AgentOverlayStatus.Reasoning, 1, listOf(initial))
+        shadowOf(Looper.getMainLooper()).idle()
+        val host = Robolectric.buildService(AgentExecutionService::class.java).create()
+        fun current(): Notification = context.getSystemService(NotificationManager::class.java)
+            .activeNotifications.single().notification
+        try {
+            AgentExecutionService.updateRunStatus(context, AgentOverlayStatus.GeneratingAnswer, 1, listOf(initial))
+            shadowOf(Looper.getMainLooper()).idle()
+            // No clock advance: stopping must cancel a pending noncritical update and publish now.
+            AgentExecutionService.updateRunStatus(context, AgentOverlayStatus.Stopping, 1, listOf(initial))
+            shadowOf(Looper.getMainLooper()).idle()
+            assertEquals(context.getString(R.string.overlay_stopping), current().extras.getString(Notification.EXTRA_TEXT))
+            AgentExecutionService.updateRunStatus(context, AgentOverlayStatus.Paused, 1,
+                listOf(initial.copy(guiStatus = GuiControlStatus.UserPaused)))
+            shadowOf(Looper.getMainLooper()).idle()
+            assertEquals(context.getString(R.string.overlay_paused), current().extras.getString(Notification.EXTRA_TEXT))
+            assertTrue(current().flags and Notification.FLAG_ONLY_ALERT_ONCE != 0)
+        } finally {
+            AgentExecutionService.release(id)
+            AgentExecutionService.updateRunStatus(context, null, 0)
+            shadowOf(Looper.getMainLooper()).idle()
+            host.destroy()
+        }
+    }
+
+    @Test
     fun notificationHasTargetedSingleRunAndPublicPrivateVersion() {
         val context = RuntimeEnvironment.getApplication()
         val leaseId = "run:notification-single"

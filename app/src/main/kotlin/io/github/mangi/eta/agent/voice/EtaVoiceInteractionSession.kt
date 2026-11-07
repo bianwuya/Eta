@@ -19,6 +19,8 @@ import android.view.View
 internal class EtaVoiceInteractionSession(context: Context) : VoiceInteractionSession(context) {
     private var screenContext: EtaAssistantScreenContext? = null
     private var shown = false
+    private var captureHandedOff = false
+    private var ambiguousCaptureCallbacks = false
     private val controlReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action == ACTION_HIDE_FOR_FOREGROUND_OPERATION) {
@@ -41,17 +43,27 @@ internal class EtaVoiceInteractionSession(context: Context) : VoiceInteractionSe
 
     override fun onPrepareShow(args: Bundle?, showFlags: Int) {
         super.onPrepareShow(args, showFlags)
+        // Framework screenshot/assist callbacks carry no show-invocation identifier. Once
+        // overlapping shows make them ambiguous, never feed them to another invocation.
+        if (screenContext?.hasPendingSystemCallbacks() == true) ambiguousCaptureCallbacks = true
+        screenContext?.sealCallbacks()
         shown = false
+        captureHandedOff = false
         screenContext = EtaAssistantScreenContexts.begin(
             showFlags,
             args?.getParcelableArrayList(KEY_FOREGROUND_ACTIVITIES, ComponentName::class.java).orEmpty(),
         )
+        if (ambiguousCaptureCallbacks) screenContext?.sealCallbacks(ambiguous = true)
     }
 
     override fun onShow(args: Bundle?, showFlags: Int) {
         super.onShow(args, showFlags)
         shown = true
+        captureHandedOff = true
         EtaAssistantOverlayService.show(context, screenContext?.id)
+        // No invocation token exists on screenshot callbacks. Retire an ambiguous session
+        // after handoff so the next wake gets a fresh callback endpoint, not permanent capture loss.
+        if (ambiguousCaptureCallbacks) finish()
     }
 
     override fun onHandleAssist(state: AssistState) {
@@ -64,10 +76,16 @@ internal class EtaVoiceInteractionSession(context: Context) : VoiceInteractionSe
     }
 
     override fun onHide() {
-        EtaAssistantScreenContexts.release(screenContext?.id)
+        if (screenContext?.hasPendingSystemCallbacks() == true) ambiguousCaptureCallbacks = true
+        screenContext?.sealCallbacks()
+        // ACTION_SHOW can still be queued when the framework hides/destroys this session.
+        // The overlay now owns the shared slot and releases it on close/replacement.
+        if (!captureHandedOff) EtaAssistantScreenContexts.release(screenContext?.id)
         screenContext = null
         shown = false
         super.onHide()
+        // Hidden sessions can still receive in-flight callbacks; never reuse their endpoint.
+        finish()
     }
 
     override fun onBackPressed() {
@@ -82,7 +100,8 @@ internal class EtaVoiceInteractionSession(context: Context) : VoiceInteractionSe
 
     override fun onDestroy() {
         // 浮窗拥有独立生命周期；系统会话重建不代表用户关闭了助理。
-        if (!shown) EtaAssistantScreenContexts.release(screenContext?.id)
+        screenContext?.sealCallbacks()
+        if (!captureHandedOff) EtaAssistantScreenContexts.release(screenContext?.id)
         screenContext = null
         context.unregisterReceiver(controlReceiver)
         super.onDestroy()

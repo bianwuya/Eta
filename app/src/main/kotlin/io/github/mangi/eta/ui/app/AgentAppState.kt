@@ -440,6 +440,19 @@ internal class AgentAppState(
             }
             .values
             .toList()
+        // Outbox commits before archive. Recover a failed archive write from its full owned
+        // result rather than leaving an external result permanently unimportable/unacknowledged.
+        val archivedIds = AgentRunArchiveStore.list(appContext).mapTo(mutableSetOf()) { it.result.runId }
+        completedRuns.filter { completed ->
+            completed.handoff.source != AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE &&
+                completed.result.contextSnapshotRef.isBlank() && completed.result.runId !in archivedIds &&
+                AgentExternalArchivePayload.from(completed.handoff.payload) != null
+        }.forEach { completed ->
+            val checkpoint = checkpoints.firstOrNull { it.runId == completed.result.runId }
+            AgentRunArchiveStore.add(appContext, AgentRunArchiveStore.ArchivedRun(
+                completed.handoff, checkpoint?.events.orEmpty(), completed.result, completed.createdAt,
+            ))
+        }
         val activeStateKnown = activeRunQuery is AgentRuntimeClient.ActiveRunsQuery.Known
         val terminalStateKnown = terminalRaceQuery is AgentRuntimeClient.CompletedRunsQuery.Known
         val activeRunIds = (activeRunQuery as? AgentRuntimeClient.ActiveRunsQuery.Known)?.runIds.orEmpty()
