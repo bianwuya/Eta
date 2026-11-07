@@ -384,6 +384,11 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                     if (msg.sendingUid == Process.myUid()) msg.replyTo?.let { activeRunSubscribers.remove(it.binder) }
                 }
 
+                AgentRuntimeWire.MSG_DETACH_RUN -> {
+                    val runId = msg.data?.let(AgentRuntimeWire::runIdFromBundle).orEmpty()
+                    msg.replyTo?.binder?.let { runs.get(runId)?.session?.detach(it) }
+                }
+
                 AgentRuntimeWire.MSG_ATTACH_RUN -> {
                     attachRun(
                         runId = AgentRuntimeWire.runIdFromBundle(msg.data ?: return),
@@ -476,6 +481,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                     AgentRuntimeRequestConfigResolver.applyRuntimeConfig(request, runtimeConfig)
                 }
             }
+            val presentation = prepared.getOrNull()?.let(RuntimeRunRegistry::presentationMetadata)
             mainHandler.post {
                 run.releaseIncoming()
                 if (destroyed || !runs.contains(run) || run.session.controller.isCancelled) return@post
@@ -488,6 +494,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                             request.copy(
                                 config = AgentRuntimePolicy.constrain(request.config, permissions),
                             ),
+                            requireNotNull(presentation),
                         )
                         publishExecutionState()
                         executePreparedRun(run)
@@ -1039,6 +1046,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                 eventSink = { event -> sendEventTo(replyTo, event) },
                 resultSink = { result -> sendResultTo(replyTo, result) },
                 onReplayComplete = { sendAttachRunResponse(runId, replyTo, attached = true) },
+                subscriptionKey = replyTo.binder,
             )
         if (!attached) sendAttachRunResponse(runId, replyTo, attached = false)
     }

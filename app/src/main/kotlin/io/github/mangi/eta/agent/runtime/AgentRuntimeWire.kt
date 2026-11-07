@@ -103,6 +103,7 @@ internal object AgentRuntimeWire {
     const val MSG_SUBSCRIBE_ACTIVE_RUNS = 20
     const val MSG_UNSUBSCRIBE_ACTIVE_RUNS = 21
     const val MSG_ACTIVE_RUNS_CHANGED = 22
+    const val MSG_DETACH_RUN = 23
 
     private const val MODULE_PACKAGE = "io.github.mangi.eta"
     private const val SERVICE_CLASS = "io.github.mangi.eta.agent.runtime.AgentRuntimeService"

@@ -1391,4 +1391,9 @@
   <string name="chat_queue_remove">移除排隊訊息</string>
   <string name="chat_queue_images_only">[%1$d 張圖片]</string>
   <string name="chat_queue_files_only">[%1$d 個檔案]</string>
+    <plurals name="task_running_minutes">
+        <item quantity="one">已執行 %d 分鐘</item>
+        <item quantity="other">已執行 %d 分鐘</item>
+    </plurals>
+    <string name="voice_stop_requested">已請求停止，正在等待任務結束。</string>
 </resources>

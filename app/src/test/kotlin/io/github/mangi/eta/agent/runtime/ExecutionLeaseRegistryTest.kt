@@ -30,6 +30,23 @@ class ExecutionLeaseRegistryTest {
     }
 
     @Test
+    fun staleStopTokenCannotStopReplacementWithSameId() {
+        val registry = ExecutionLeaseRegistry()
+        var stopped = 0
+        registry.acquire("run:reused") { stopped++ }
+        val old = registry.token("run:reused")!!
+        registry.release("run:reused")
+        registry.acquire("run:reused") { stopped++ }
+        val current = registry.token("run:reused")!!
+        assertTrue(old != current)
+        assertEquals(null, registry.requestStop("run:reused", old))
+        assertEquals(0, stopped)
+        registry.requestStop("run:reused", current)?.invoke()
+        assertEquals(1, stopped)
+        assertEquals(1, registry.count())
+    }
+
+    @Test
     fun taskAcquiredDuringServiceRestartIsNotDrainedByThePreviousOwner() {
         val registry = ExecutionLeaseRegistry()
         registry.attachOwner(1)

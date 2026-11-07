@@ -865,6 +865,13 @@ fun AgentAppRoot(
 
     activeTaskTarget?.let { task ->
         val current = agentState.activeTask(task.runId)
+        var elapsedNow by remember(task.runId) { mutableStateOf(System.currentTimeMillis()) }
+        LaunchedEffect(task.runId, current != null) {
+            while (current != null) {
+                elapsedNow = System.currentTimeMillis()
+                kotlinx.coroutines.delay(60_000L)
+            }
+        }
         WindowDialog(
             show = true,
             title = task.title,
@@ -872,6 +879,9 @@ fun AgentAppRoot(
                 task.source.ifBlank { "Eta" }, task.createdAt.takeIf { it > 0L }?.let {
                     context.getString(R.string.task_elapsed, java.text.DateFormat.getDateTimeInstance(
                         java.text.DateFormat.SHORT, java.text.DateFormat.SHORT).format(java.util.Date(it)))
+                }, task.createdAt.takeIf { it > 0L && current != null }?.let {
+                    val minutes = ((elapsedNow - it).coerceAtLeast(0L) / 60_000L)
+                    context.resources.getQuantityString(R.plurals.task_running_minutes, minutes.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(), minutes)
                 }).joinToString(" · "),
             cornerRadius = DialogDefaults.CornerRadius,
             onDismissRequest = { activeTaskTarget = null },

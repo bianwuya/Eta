@@ -6,6 +6,23 @@ import org.junit.Test
 
 class AgentRuntimeAttachDeliveryTest {
     @Test
+    fun detachedSubscribersReceiveNoFurtherEventsAndDoNotCancelRun() {
+        val session = AgentRuntimeSession("attached")
+        val old = mutableListOf<AgentEvent>()
+        repeat(20) { index ->
+            val key = "observer-$index"
+            assertTrue(session.attach(old::add, {}, subscriptionKey = key))
+            session.detach(key)
+        }
+        val live = mutableListOf<AgentEvent>()
+        assertTrue(session.attach(live::add, {}, subscriptionKey = "live"))
+        session.emit(round(1))
+        assertTrue(old.isEmpty())
+        assertEquals(listOf(round(1)), live)
+        assertTrue(!session.controller.isCancelled)
+    }
+
+    @Test
     fun historyIsPublishedOnceBeforeLiveEventsAndResult() {
         val deliveries = mutableListOf<String>()
         val replayBatches = mutableListOf<List<AgentEvent>>()

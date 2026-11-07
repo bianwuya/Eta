@@ -17,6 +17,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.buffer
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.withContext
 
 /**
@@ -300,7 +302,7 @@ internal class AgentRuntimeClient(
             runCatching { lease.binder.unlinkToDeath(death, 0) }
             lease.close()
         }
-    }
+    }.buffer(Channel.CONFLATED)
 
     fun queryActiveRuns(): ActiveRunsQuery {
         val responseLatch = CountDownLatch(1)
@@ -381,6 +383,12 @@ internal class AgentRuntimeClient(
             logger.warn("Agent runtime attach failed: type=${throwable.safeLogType()}")
             return AttachOutcome.Unavailable
         } finally {
+            runCatching {
+                lease.messenger.send(Message.obtain(null, AgentRuntimeWire.MSG_DETACH_RUN).apply {
+                    replyTo = clientMessenger
+                    data = AgentRuntimeWire.ackBundle(runId)
+                })
+            }
             resultRef.close()
             runCatching { lease.binder.unlinkToDeath(deathRecipient, 0) }
             lease.close()

@@ -44,7 +44,8 @@ class AgentExecutionServiceTest {
             assertEquals(context.getString(R.string.task_stop), notification.actions.single().title.toString())
             val stopIntent = shadowOf(notification.actions.single().actionIntent).savedIntent
             assertEquals("notification-single", stopIntent.getStringExtra("run_id"))
-            assertEquals("notification-single", stopIntent.data?.lastPathSegment)
+            assertEquals("notification-single", stopIntent.data?.pathSegments?.first())
+            assertNotNull(stopIntent.getStringExtra("lease_token"))
             val openIntent = shadowOf(notification.contentIntent).savedIntent
             assertEquals("notification-single", openIntent.getStringExtra(io.github.mangi.eta.ui.MainActivity.EXTRA_RUN_ID))
         } finally {

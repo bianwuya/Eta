@@ -24,7 +24,7 @@ internal class RuntimeRunRegistry(private val capacity: Int = MAX_ACTIVE_RUNS) {
     ) {
         val runId: String get() = session.runId
         private val createdAt = System.currentTimeMillis()
-        @Volatile private var presentation = presentationMetadata(initialRequest)
+        @Volatile private var presentation = PresentationMetadata("", "临时任务")
         val conversationId: String = AgentConversationIdentity.fromHandoff(initialRequest.handoff, initialRequest.runId)
         @Volatile var request: AgentRuntimeWire.RunRequest = initialRequest
             private set
@@ -49,10 +49,10 @@ internal class RuntimeRunRegistry(private val capacity: Int = MAX_ACTIVE_RUNS) {
             ?.let { AgentUiHandoffPayload.from(it.payload).lastSupplementIndex + 1 }
             ?: 1
 
-        fun prepared(request: AgentRuntimeWire.RunRequest) {
+        fun prepared(request: AgentRuntimeWire.RunRequest, metadata: PresentationMetadata = presentationMetadata(request)) {
             check(request.runId == runId)
             check(AgentConversationIdentity.fromHandoff(request.handoff, request.runId) == conversationId)
-            presentation = presentationMetadata(request)
+            presentation = metadata
             this.request = request
             preparing = false
             releaseIncoming()
@@ -189,9 +189,9 @@ internal class RuntimeRunRegistry(private val capacity: Int = MAX_ACTIVE_RUNS) {
         .map(Run::snapshot)
 
     companion object {
-        private data class PresentationMetadata(val conversationKey: String, val title: String)
+        internal data class PresentationMetadata(val conversationKey: String, val title: String)
 
-        private fun presentationMetadata(request: AgentRuntimeWire.RunRequest): PresentationMetadata {
+        internal fun presentationMetadata(request: AgentRuntimeWire.RunRequest): PresentationMetadata {
             val external = request.handoff
                 ?.takeIf { it.source != AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE }
                 ?.let { AgentExternalArchivePayload.from(it.payload) }

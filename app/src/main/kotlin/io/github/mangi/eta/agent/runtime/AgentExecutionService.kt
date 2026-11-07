@@ -66,7 +66,8 @@ internal class AgentExecutionService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP_RUN) {
             val runId = intent.getStringExtra(EXTRA_RUN_ID).orEmpty()
-            val stop = if (runId.isBlank()) null else leases.requestStop("run:$runId")
+            val token = intent.getStringExtra(EXTRA_LEASE_TOKEN).orEmpty()
+            val stop = if (runId.isBlank() || token.isBlank()) null else leases.requestStop("run:$runId", token)
             if (stop != null) stopQueue.submit(listOf(stop)) {
                 mainHandler.post { if (instance === this) refreshNotification() }
             }
@@ -143,10 +144,11 @@ internal class AgentExecutionService : Service() {
             .setPublicVersion(publicNotification)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
-        if (run != null) {
+        val stopToken = run?.let { leases.token("run:${it.runId}") }
+        if (run != null && stopToken != null) {
             val stopIntent = Intent(this, AgentExecutionService::class.java).setAction(ACTION_STOP_RUN)
-                .setData(Uri.Builder().scheme("eta-task").authority("stop").appendPath(run.runId).build())
-                .putExtra(EXTRA_RUN_ID, run.runId)
+                .setData(Uri.Builder().scheme("eta-task").authority("stop").appendPath(run.runId).appendPath(stopToken).build())
+                .putExtra(EXTRA_RUN_ID, run.runId).putExtra(EXTRA_LEASE_TOKEN, stopToken)
             val stop = PendingIntent.getService(this, 1, stopIntent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
             builder.addAction(Notification.Action.Builder(null, getString(R.string.task_stop), stop).build())
@@ -188,6 +190,7 @@ internal class AgentExecutionService : Service() {
         private const val NOTIFICATION_ID = 1107
         private const val ACTION_STOP_RUN = "io.github.mangi.eta.action.STOP_USER_RUN"
         private const val EXTRA_RUN_ID = "run_id"
+        private const val EXTRA_LEASE_TOKEN = "lease_token"
         private const val ACTION_STOP = "io.github.mangi.eta.action.STOP_USER_EXECUTION"
         private val leases = ExecutionLeaseRegistry()
         private val ownerSequence = AtomicLong()

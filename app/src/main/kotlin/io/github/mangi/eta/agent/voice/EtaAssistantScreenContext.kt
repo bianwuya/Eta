@@ -37,6 +37,7 @@ internal class EtaAssistantScreenContext(
     private var screenshotReceived = false
     private var image: AgentModelClient.ModelImage? = null
     private var closed = false
+    private var references = 1
 
     init { completeIfReady() }
 
@@ -111,8 +112,17 @@ internal class EtaAssistantScreenContext(
         }
     }
 
+    @Synchronized fun retain(): EtaAssistantScreenContext? {
+        if (closed) return null
+        references++
+        return this
+    }
+
     fun close() {
         synchronized(this) {
+            if (closed) return
+            references--
+            if (references > 0) return
             closed = true
             image = null
             activities.clear()

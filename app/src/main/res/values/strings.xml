@@ -1479,4 +1479,9 @@
   <string name="chat_queue_remove">移除排队消息</string>
   <string name="chat_queue_images_only">[%1$d 张图片]</string>
   <string name="chat_queue_files_only">[%1$d 个文件]</string>
+    <plurals name="task_running_minutes">
+        <item quantity="one">Running for %d minute</item>
+        <item quantity="other">Running for %d minutes</item>
+    </plurals>
+    <string name="voice_stop_requested">Stop requested; waiting for the task to finish.</string>
 </resources>
