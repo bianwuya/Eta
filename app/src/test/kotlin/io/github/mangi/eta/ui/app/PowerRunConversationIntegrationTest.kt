@@ -456,8 +456,14 @@ class PowerRunConversationIntegrationTest {
                 refreshAndAwait(fixture, app)
                 assertFalse("B registration must invalidate A's token", hasPendingResume(app))
                 assertEquals(listOf(queuedId), app.homeState.queuedMessages.map { it.id })
-                if (failSave) sql.execSQL("CREATE TRIGGER reject_token_b BEFORE INSERT ON conversation_messages " +
-                    "WHEN NEW.id LIKE 'assistant-token-b%' BEGIN SELECT RAISE(ABORT, 'fixture B save failure'); END")
+                if (failSave) {
+                    // Room upsert can update an existing streaming placeholder after an
+                    // INSERT constraint failure. Reject both writes to exercise failed save.
+                    listOf("INSERT", "UPDATE").forEach { operation ->
+                        sql.execSQL("CREATE TRIGGER reject_token_b_$operation BEFORE $operation ON conversation_messages " +
+                            "WHEN NEW.id LIKE 'assistant-token-b%' BEGIN SELECT RAISE(ABORT, 'fixture B save failure'); END")
+                    }
+                }
                 app.stopCurrentRun()
                 fixture.await { b.session.controller.isCancelled }
                 fixture.complete(b, AgentRuntimeWire.RunResult(b.runId, false, "", "已停止"))
@@ -476,7 +482,8 @@ class PowerRunConversationIntegrationTest {
                 }
             } finally {
                 cancelAndAwait(fixture, scope)
-                sql.execSQL("DROP TRIGGER IF EXISTS reject_token_b")
+                sql.execSQL("DROP TRIGGER IF EXISTS reject_token_b_INSERT")
+                sql.execSQL("DROP TRIGGER IF EXISTS reject_token_b_UPDATE")
             }
         }
     }
