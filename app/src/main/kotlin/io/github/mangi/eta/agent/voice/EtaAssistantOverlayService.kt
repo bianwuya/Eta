@@ -226,6 +226,8 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
     private fun showEntry(screenContextId: String?, invocationId: String?) {
         // The same invocation can be re-delivered; keep its current input intact.
         if (invocationId != null && invocationId == lastInvocationId) return
+        // Legacy callers without invocation identity cannot distinguish redelivery; preserve an open draft.
+        if (invocationId == null && screenContextId == null && windowView != null) return
         if (screenContextId != null && entryScreenContext?.id == screenContextId) return
         lastInvocationId = invocationId
         if (!Settings.canDrawOverlays(this)) {
