@@ -60,9 +60,7 @@ internal object AgentRuntimeImageTransfer {
         }
 
         val cacheDirectory = File(context.cacheDir, CACHE_DIRECTORY)
-        if (!cacheDirectory.isDirectory && !cacheDirectory.mkdirs()) {
-            throw ImageTransferException("无法创建图片传输缓存")
-        }
+        ensureCacheDirectory(cacheDirectory)
         cleanupStaleFiles(cacheDirectory)
 
         val files = mutableListOf<File>()
@@ -325,6 +323,12 @@ internal object AgentRuntimeImageTransfer {
                 .asSequence()
                 .filter { file -> file.isFile && file.lastModified() < cutoff }
                 .forEach { file -> file.delete() }
+        }
+    }
+
+    internal fun ensureCacheDirectory(directory: File) {
+        if (!directory.isDirectory && !directory.mkdirs() && !directory.isDirectory) {
+            throw ImageTransferException("无法创建图片传输缓存")
         }
     }
 }

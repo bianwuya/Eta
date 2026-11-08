@@ -29,6 +29,18 @@ import org.robolectric.annotation.Config
 @Config(sdk = [33, 36])
 class AgentRuntimeWireTest {
     @Test
+    fun concurrentTransferDirectoryCreationAcceptsDirectoryCreatedByAnotherCaller() {
+        val directory = object : File("concurrent-transfer-directory") {
+            private var checks = 0
+
+            override fun isDirectory(): Boolean = ++checks > 1
+            override fun mkdirs(): Boolean = false
+        }
+
+        AgentRuntimeImageTransfer.ensureCacheDirectory(directory)
+    }
+
+    @Test
     fun legacyActiveRunSnapshotDefaultsInteractionTimeToCreation() {
         val run = AgentRuntimeWire.ActiveRunSnapshot("legacy", "conversation", createdAt = 123L)
         val bundle = AgentRuntimeWire.activeRunsToBundle(listOf(run))
