@@ -353,7 +353,7 @@ private fun SettingsPageContent(
                         } },
                         startAction = {
                             SettingsIcon(
-                                icon = Icons.Rounded.Title,
+                                icon = Icons.Rounded.EditNote,
                                 tint = SettingsIconColors.Blue,
                             )
                         },
