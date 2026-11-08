@@ -19,6 +19,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.ViewRootForTest
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsNode
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.unit.Density
@@ -44,6 +45,37 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 @Config(sdk = [36], application = Application::class, qualifiers = "w360dp-h800dp-xhdpi")
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class HistoryStripInteractionTest {
+    @Test fun activeQuestionTabsOptionsAndLargeTextKeepSemanticSelection() = withFixture { f ->
+        val (id, waiter) = f.active()
+        f.render(fontScale = 1.4f, maxHeight = 520.dp)
+        f.awaitText("1 · 策略")
+        f.awaitText("多选，也可以直接填写")
+        assertTrue(f.hasText("选项说明可折行并保留说明层级"))
+
+        val optionA = f.nodes().first { it.text() == "保留手动标题" }
+        assertEquals(Role.Checkbox, f.clickable(optionA).config.getOrNull(SemanticsProperties.Role))
+        f.clickText("保留手动标题")
+        assertTrue(f.clickable(f.nodes().first { it.text() == "保留手动标题" })
+            .config.getOrNull(SemanticsProperties.Selected) == true)
+        f.clickText("失败不影响聊天")
+        assertEquals(2, UserQuestionStore.forms.value.single { it.id == id }.drafts[0].selected.size)
+
+        f.clickText("2 · 外观")
+        f.awaitText("先保留现有主题")
+        val optionB = f.nodes().first { it.text() == "先保留现有主题" }
+        assertEquals(Role.RadioButton, f.clickable(optionB).config.getOrNull(SemanticsProperties.Role))
+        f.clickText("先保留现有主题")
+        assertTrue(f.clickable(f.nodes().first { it.text() == "先保留现有主题" })
+            .config.getOrNull(SemanticsProperties.Selected) == true)
+        f.clickText("1 · 策略")
+        assertTrue(f.clickable(f.nodes().first { it.text() == "保留手动标题" })
+            .config.getOrNull(SemanticsProperties.Selected) == true)
+        assertFalse(waiter.isDone)
+        assertTrue(UserQuestionStore.setPresentation(id, UserQuestionPresentation.HIDDEN))
+        assertTrue(UserQuestionStore.setPresentation(id, UserQuestionPresentation.EXPANDED))
+        assertEquals(2, UserQuestionStore.forms.value.single { it.id == id }.drafts[0].selected.size)
+    }
+
     @Test fun historyViewCollapseAndCloseRemainReadOnlyAfterTimeout() = withFixture { f ->
         val (id, waiter) = f.expired()
         f.render()
@@ -111,14 +143,20 @@ class HistoryStripInteractionTest {
             UserQuestionStore.dismiss(pair.first, "等待回答超时 · 原提问已过期", expired = true)
             return pair
         }
-        fun render(fontScale: Float = 1f) {
+        fun active(): Pair<String, java.util.concurrent.CompletableFuture<String>> {
+            UserQuestionStore.initialize(activity)
+            val pair = UserQuestionStore.open(conversation, "run-$conversation", "call", JSONObject("""{"questions":[{"prompt":"本轮策略","tab":"策略","multiple":true,"options":[{"label":"保留手动标题","description":"首轮完成后不会覆盖已手动设置的标题"},{"label":"失败不影响聊天","description":"选项说明可折行并保留说明层级"}]},{"prompt":"设置外观","tab":"外观","options":[{"label":"先保留现有主题"},{"label":"沿相邻组件对齐"}]}]}"""))
+            check(UserQuestionStore.setPresentation(pair.first, UserQuestionPresentation.EXPANDED))
+            return pair
+        }
+        fun render(fontScale: Float = 1f, maxHeight: androidx.compose.ui.unit.Dp = 220.dp) {
             scope.launch { recomposer.runRecomposeAndApplyChanges() }
             host.setParentCompositionContext(recomposer)
             host.setContent {
                 MiuixTheme {
                     val density = LocalDensity.current.density
                     CompositionLocalProvider(LocalDensity provides Density(density, fontScale)) {
-                        Box(Modifier.width(300.dp)) { UserQuestionsPanel(conversation, maxHeight = 220.dp) }
+                        Box(Modifier.width(300.dp)) { UserQuestionsPanel(conversation, maxHeight = maxHeight) }
                     }
                 }
             }

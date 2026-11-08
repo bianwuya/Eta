@@ -181,6 +181,21 @@ class UserQuestionTest {
         assertEquals(latest, form(id).drafts)
     }
 
+    @Test fun rejectUsesUnansweredProtocolAndNeverSignalsConsent() {
+        UserQuestionStore.initialize(context)
+        val (id, future) = UserQuestionStore.open("chat", "run", "call", args())
+        val latest = listOf(QuestionDraft(other = "保留草稿"))
+        assertTrue(UserQuestionStore.defer(id, latest, "用户拒绝回答；未回答不代表同意"))
+        assertFalse(UserQuestionStore.defer(id, latest, "重复点击"))
+        val result = waitResult(future)
+        assertFalse(result.getBoolean("ok"))
+        assertEquals("unanswered", result.getString("status"))
+        assertEquals("USER_QUESTION_UNANSWERED", result.getString("code"))
+        assertTrue(result.getString("message").contains("未回答不代表同意"))
+        assertEquals("unanswered", form(id).status)
+        assertEquals(latest, form(id).drafts)
+    }
+
     @Test fun failedPersistenceNeverAcknowledgesUserActionsOrCompletesFuture() {
         UserQuestionStore.initialize(context)
         val (id, future) = UserQuestionStore.open("chat", "run", "call", args())

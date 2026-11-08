@@ -346,11 +346,17 @@ private fun SettingsPageContent(
                 SettingsGroupCard {
                     SwitchPreference(
                         title = "自动命名新会话",
-                        summary = "首轮完成后生成一次简短标题；手动名称不覆盖，失败不影响聊天",
+                        summary = "首轮完成后命名一次；不覆盖手动标题，失败不影响聊天",
                         checked = chatSettings.autoConversationTitle,
                         onCheckedChange = { enabled -> coroutineScope.launch {
                             io.github.mangi.eta.data.datastore.SettingsDataStore.updateSettings { it.copy(autoConversationTitle = enabled) }
                         } },
+                        startAction = {
+                            SettingsIcon(
+                                icon = Icons.Rounded.Title,
+                                tint = SettingsIconColors.Blue,
+                            )
+                        },
                     )
                     SwitchPref(
                         context = context,

@@ -154,7 +154,11 @@ internal object UserQuestionStore {
     }
 
     @Synchronized
-    fun defer(id: String, latestDrafts: List<QuestionDraft>): Boolean {
+    fun defer(
+        id: String,
+        latestDrafts: List<QuestionDraft>,
+        message: String = "用户选择稍后回答；这不代表同意",
+    ): Boolean {
         val form = mutable.value.firstOrNull { it.id == id } ?: return false
         val waiter = waiters[id] ?: return false
         if (!form.active || form.status != "waiting" || System.nanoTime() >= (deadlines[id] ?: 0L) || validity[id]?.invoke() != true) return false
@@ -162,7 +166,7 @@ internal object UserQuestionStore {
         val settled = form.copy(drafts = drafts, active = false, status = "unanswered")
         publish(mutable.value.map { if (it.id == id) settled else it })
         waiters.remove(id); validity.remove(id); deadlines.remove(id)
-        waiter.complete(unanswered("用户选择稍后回答；这不代表同意"))
+        waiter.complete(unanswered(message))
         return true
     }
 
