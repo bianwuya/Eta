@@ -59,6 +59,7 @@ class HistoryStripInteractionTest {
         assertEquals(ToggleableState.On, f.clickable(f.nodes().first { it.text().contains("保留手动标题") })
             .config.getOrNull(SemanticsProperties.ToggleableState))
         f.clickContains("失败不影响聊天")
+        f.awaitDraftCount(id, 2)
         assertEquals(2, UserQuestionStore.forms.value.single { it.id == id }.drafts[0].selected.size)
 
         f.clickText("2 · 外观")
@@ -177,6 +178,13 @@ class HistoryStripInteractionTest {
         fun awaitText(text: String) {
             repeat(120) { advance(2); if (hasText(text)) return }
             error("text not found: $text; ${nodes().map { it.text() }}")
+        }
+        fun awaitDraftCount(id: String, count: Int) {
+            repeat(80) {
+                advance(2)
+                if (UserQuestionStore.forms.value.singleOrNull { it.id == id }?.drafts?.firstOrNull()?.selected?.size == count) return
+            }
+            error("draft selection did not persist: ${UserQuestionStore.forms.value.singleOrNull { it.id == id }?.drafts}")
         }
         fun hasText(text: String) = nodes().any { it.text() == text }
         fun clickText(text: String) = click(nodes().first { it.text() == text })
