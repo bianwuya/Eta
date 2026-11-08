@@ -115,7 +115,7 @@ class AgentContextRecoveryTest {
                 throw AgentModelFailure(code, true, "fixture")
             }, AgentRunController(), { emptySet() }, {}, { fail("失败摘要不能提交") })
             val failure = assertThrows(AgentModelFailure::class.java) { session.compact(force = true) }
-            assertEquals(code, failure.code)
+            assertEquals(if (code == "CONTEXT_OVERFLOW") "COMPACTION_MODEL_CAPACITY" else code, failure.code)
             assertEquals(1, requests)
             assertEquals(original, messages.toString())
             assertNull(session.snapshot())

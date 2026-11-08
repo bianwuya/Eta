@@ -12,9 +12,6 @@ internal class AgentContextSummarizer(
     private val roleplay: Boolean,
     private val prompt: String = AgentCompactionTarget.DEFAULT_PROMPT,
 ) {
-    // Byte budget is a conservative bound, not a claim about the provider's actual token usage.
-    private val window = config.knownContextWindow ?: 128_000
-    private val inputBudget = window - window / 4 - 1_024
     private var binding: io.github.mangi.eta.agent.auth.ProviderCredentialBinding? = null
     private var bindingResolved = false
     private var forceHttp1 = false
@@ -33,13 +30,9 @@ internal class AgentContextSummarizer(
         }))
         .put(AgentConversationCodec.userTextMessage(body))
 
-    private fun fits(body: String): Boolean = messages(body).toString().toByteArray(Charsets.UTF_8).size <= inputBudget
-
     fun summarize(history: List<AgentModelClient.ConversationMessage>): String {
         controller.throwIfCancelled()
-        val complete = payload(history)
-        if (fits(complete)) return request(complete)
-        throw capacityFailure()
+        return request(payload(history))
     }
 
     private fun request(body: String): String {
@@ -56,13 +49,13 @@ internal class AgentContextSummarizer(
                 event.kind == AssistantBlockKind.TOOL_CALL) throw invalidSummary()
         }
         val response = try {
-            provider.complete(request, controller, onEvent)
+            complete(request, onEvent)
         } catch (failure: Exception) {
             controller.throwIfCancelled()
             if (forceHttp1 || AgentModelFailure.transport(failure)?.code != "MODEL_HTTP2_DISCONNECTED") throw failure
             // One reactive downgrade per compaction operation, same bound account, no hidden retry loop.
             forceHttp1 = true
-            provider.complete(request.copy(forceHttp1 = true, credentialBinding = binding), controller, onEvent)
+            complete(request.copy(forceHttp1 = true, credentialBinding = binding), onEvent)
         }
         controller.throwIfCancelled()
         val summary = response.assistantMessage.optString("content").trim()
@@ -72,8 +65,17 @@ internal class AgentContextSummarizer(
         return summary
     }
 
-    private fun capacityFailure() = AgentModelFailure("COMPACTION_MODEL_CAPACITY", false,
-        "压缩模型 ${config.model} 的窗口不足以一次性处理完整历史。请选择更大窗口的压缩模型；原历史未改变。")
+    private fun complete(request: ProviderRequest, onEvent: (ProviderEvent) -> Unit): ProviderResponse = try {
+        provider.complete(request, controller, onEvent)
+    } catch (failure: Exception) {
+        controller.throwIfCancelled()
+        val classified = AgentModelFailure.transport(failure)
+        if (classified?.code != "CONTEXT_OVERFLOW") throw failure
+        throw capacityFailure(classified)
+    }
+
+    private fun capacityFailure(cause: AgentModelFailure) = AgentModelFailure("COMPACTION_MODEL_CAPACITY", false,
+        "压缩服务商拒绝了完整历史，可能超出该模型的上下文容量。原历史未改变。", cause)
     private fun invalidSummary() = AgentModelFailure("CONTEXT_SUMMARY_INVALID", false,
         "压缩模型 ${config.model} 未返回完整有效的摘要，原始上下文已保留。")
 

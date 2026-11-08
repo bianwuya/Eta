@@ -56,28 +56,25 @@ class IndependentCompactionTest {
         val expected = "待整理的历史：\n" + history.joinToString("") { AgentConversationCodec.toJsonObject(it).toString() + "\n" }
         assertEquals(listOf(expected), seen)
     }
-    @Test fun smallModelDoesNotSplitHistoryThatWouldPreviouslyFitInSeveralRequests() {
-        var calls = 0
-        val summarizer = AgentContextSummarizer(config.copy(model = "small", contextWindow = 6000), provider {
-            calls++
-            response("not used")
+    @Test fun unicodeHistoryAboveFormerByteBudgetIsSentCompleteInOneRequest() {
+        val history = listOf(AgentModelClient.ConversationMessage("assistant", "证据😀".repeat(20_000)))
+        val body = mutableListOf<String>()
+        val summarizer = AgentContextSummarizer(config.copy(contextWindow = 128_000), provider { request ->
+            body += request.messages.getJSONObject(1).getString("content")
+            response("retained evidence")
         }, AgentRunController(), false)
-        val failure = assertThrows(AgentModelFailure::class.java) {
-            summarizer.summarize((1..3).map { AgentModelClient.ConversationMessage("assistant", "FACT_$it " + "x".repeat(2200)) })
-        }
-        assertEquals("COMPACTION_MODEL_CAPACITY", failure.code)
-        assertTrue(failure.message.orEmpty().contains("一次性"))
-        assertEquals(0, calls)
+        assertEquals("retained evidence", summarizer.summarize(history))
+        val expected = "待整理的历史：\n" + AgentConversationCodec.toJsonObject(history.single()).toString() + "\n"
+        assertEquals(listOf(expected), body)
+        assertTrue(body.single().toByteArray(Charsets.UTF_8).size > 128_000 - 32_000 - 1_024)
     }
-    @Test fun oversizedSingleMessageFailsBeforeSending() {
-        var calls = 0
-        val summarizer = AgentContextSummarizer(config.copy(contextWindow = 4000), provider {
-            calls++; response("not used")
-        }, AgentRunController(), false)
+    @Test fun providerContextOverflowBecomesCompactionCapacityFailure() {
+        val cause = AgentModelFailure("CONTEXT_OVERFLOW", false, "fixture")
         val failure = assertThrows(AgentModelFailure::class.java) {
-            summarizer.summarize(listOf(AgentModelClient.ConversationMessage("assistant", "x".repeat(100_000))))
+            AgentContextSummarizer(config, provider { throw cause }, AgentRunController(), false)
+                .summarize(listOf(AgentModelClient.ConversationMessage("assistant", "complete history")))
         }
         assertEquals("COMPACTION_MODEL_CAPACITY", failure.code)
-        assertEquals(0, calls)
+        assertSame(cause, failure.cause)
     }
 }

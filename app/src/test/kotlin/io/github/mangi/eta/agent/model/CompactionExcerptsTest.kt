@@ -33,14 +33,16 @@ class CompactionExcerptsTest {
         assertEquals(listOf(original), bodies)
         assertEquals("完整证据已保留", result)
     }
-    @Test fun oversizedUnicodeMessageIsNotExcerptedOrSent() {
+    @Test fun oversizedUnicodeMessageIsSentCompleteWithoutExcerpting() {
         var calls = 0
-        val failure = assertThrows(AgentModelFailure::class.java) {
-            AgentContextSummarizer(config, provider { calls++; response("unused") }, AgentRunController(), false)
-                .summarize(listOf(AgentModelClient.ConversationMessage("assistant", "证据😀".repeat(900))))
-        }
-        assertEquals("COMPACTION_MODEL_CAPACITY", failure.code)
-        assertEquals(0, calls)
+        val source = "证据😀".repeat(900)
+        val summary = AgentContextSummarizer(config, provider { request ->
+            calls++
+            assertTrue(request.messages.getJSONObject(1).getString("content").contains(source))
+            response("retained evidence")
+        }, AgentRunController(), false).summarize(listOf(AgentModelClient.ConversationMessage("assistant", source)))
+        assertEquals("retained evidence", summary)
+        assertEquals(1, calls)
     }
     private fun assertSessionFailurePreservesHistory(oversized: Boolean) {
         val messages = JSONArray().put(JSONObject().put("role", "system").put("content", "rules"))
@@ -50,11 +52,12 @@ class CompactionExcerptsTest {
         var commits = 0
         val session = AgentContextSession(config, messages, 1, "fixture", provider {
             calls++
+            if (oversized) throw AgentModelFailure("CONTEXT_OVERFLOW", false, "fixture")
             throw AgentModelFailure("MODEL_TIMEOUT", true, "fixture")
         }, AgentRunController(), { emptySet() }, {}, { commits++ })
         val failure = assertThrows(AgentModelFailure::class.java) { session.compact(force = true) }
         assertEquals(if (oversized) "COMPACTION_MODEL_CAPACITY" else "MODEL_TIMEOUT", failure.code)
-        assertEquals(if (oversized) 0 else 1, calls)
+        assertEquals(1, calls)
         assertEquals(original, messages.toString())
         assertEquals(0, commits)
         assertNull(session.snapshot())
