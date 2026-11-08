@@ -69,7 +69,7 @@ class HistoryStripInteractionTest {
         f.clickContains("先保留现有主题")
         assertTrue(f.clickable(f.nodes().first { it.text().contains("先保留现有主题") })
             .config.getOrNull(SemanticsProperties.Selected) == true)
-        f.clickText("1 · 策略")
+        f.clickContains("1 · 策略")
         assertTrue(f.clickable(f.nodes().first { it.text().contains("保留手动标题") })
             .config.getOrNull(SemanticsProperties.Selected) == true)
         assertFalse(waiter.isDone)
