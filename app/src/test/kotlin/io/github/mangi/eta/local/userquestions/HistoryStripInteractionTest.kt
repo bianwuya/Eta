@@ -21,6 +21,7 @@ import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsNode
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
@@ -55,8 +56,8 @@ class HistoryStripInteractionTest {
         val optionA = f.nodes().first { it.text().contains("保留手动标题") }
         assertEquals(Role.Checkbox, f.clickable(optionA).config.getOrNull(SemanticsProperties.Role))
         f.clickContains("保留手动标题")
-        assertTrue(f.clickable(f.nodes().first { it.text().contains("保留手动标题") })
-            .config.getOrNull(SemanticsProperties.Selected) == true)
+        assertEquals(ToggleableState.On, f.clickable(f.nodes().first { it.text().contains("保留手动标题") })
+            .config.getOrNull(SemanticsProperties.ToggleableState))
         f.clickContains("失败不影响聊天")
         assertEquals(2, UserQuestionStore.forms.value.single { it.id == id }.drafts[0].selected.size)
 
