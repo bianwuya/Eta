@@ -49,26 +49,26 @@ class HistoryStripInteractionTest {
         val (id, waiter) = f.active()
         f.render(fontScale = 1.4f, maxHeight = 520.dp)
         f.awaitText("1 · 策略")
-        f.awaitText("多选，也可以直接填写")
-        assertTrue(f.hasText("选项说明可折行并保留说明层级"))
+        f.awaitText("可多选，也可以直接填写")
+        assertTrue(f.nodes().any { it.text().contains("选项说明可折行并保留说明层级") })
 
-        val optionA = f.nodes().first { it.text() == "保留手动标题" }
+        val optionA = f.nodes().first { it.text().contains("保留手动标题") }
         assertEquals(Role.Checkbox, f.clickable(optionA).config.getOrNull(SemanticsProperties.Role))
-        f.clickText("保留手动标题")
-        assertTrue(f.clickable(f.nodes().first { it.text() == "保留手动标题" })
+        f.clickContains("保留手动标题")
+        assertTrue(f.clickable(f.nodes().first { it.text().contains("保留手动标题") })
             .config.getOrNull(SemanticsProperties.Selected) == true)
-        f.clickText("失败不影响聊天")
+        f.clickContains("失败不影响聊天")
         assertEquals(2, UserQuestionStore.forms.value.single { it.id == id }.drafts[0].selected.size)
 
         f.clickText("2 · 外观")
         f.awaitText("先保留现有主题")
-        val optionB = f.nodes().first { it.text() == "先保留现有主题" }
+        val optionB = f.nodes().first { it.text().contains("先保留现有主题") }
         assertEquals(Role.RadioButton, f.clickable(optionB).config.getOrNull(SemanticsProperties.Role))
-        f.clickText("先保留现有主题")
-        assertTrue(f.clickable(f.nodes().first { it.text() == "先保留现有主题" })
+        f.clickContains("先保留现有主题")
+        assertTrue(f.clickable(f.nodes().first { it.text().contains("先保留现有主题") })
             .config.getOrNull(SemanticsProperties.Selected) == true)
         f.clickText("1 · 策略")
-        assertTrue(f.clickable(f.nodes().first { it.text() == "保留手动标题" })
+        assertTrue(f.clickable(f.nodes().first { it.text().contains("保留手动标题") })
             .config.getOrNull(SemanticsProperties.Selected) == true)
         assertFalse(waiter.isDone)
         assertTrue(UserQuestionStore.setPresentation(id, UserQuestionPresentation.HIDDEN))
@@ -179,6 +179,7 @@ class HistoryStripInteractionTest {
         }
         fun hasText(text: String) = nodes().any { it.text() == text }
         fun clickText(text: String) = click(nodes().first { it.text() == text })
+        fun clickContains(text: String) = click(nodes().first { it.text().contains(text) })
         fun clickDescription(text: String) = click(nodes().first { it.config.getOrNull(SemanticsProperties.ContentDescription)?.contains(text) == true })
         fun clickable(target: SemanticsNode): SemanticsNode {
             var node: SemanticsNode? = target
