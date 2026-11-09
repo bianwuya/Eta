@@ -1,4 +1,4 @@
-package io.github.mangi.eta.ui.pages.providers
+﻿package io.github.mangi.eta.ui.pages.providers
 
 import android.content.ActivityNotFoundException
 import android.content.Context
@@ -23,10 +23,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import io.github.mangi.eta.data.model.AppearanceUiStyle
 import io.github.mangi.eta.data.model.ProviderAuthModes
 import io.github.mangi.eta.data.repository.CodexAccountView
 import io.github.mangi.eta.local.codexusage.CodexUsagePanel
 import io.github.mangi.eta.ui.components.MiuixDialogActions
+import io.github.mangi.eta.ui.app.LocalUiStyle
+import io.github.mangi.eta.ui.components.coui.CouiButton
+import io.github.mangi.eta.ui.components.coui.CouiButtonRole
+import io.github.mangi.eta.ui.components.coui.CouiPreference
 import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.Text
@@ -71,100 +76,170 @@ internal fun ProviderAccountControls(
     var manageId by remember { mutableStateOf<String?>(null) }
     val managed = accounts.firstOrNull { it.accountId == manageId } ?: current
 
-    BasicComponent(
-        title = current?.name?.takeIf { it.isNotBlank() } ?: account?.email?.let(::maskedAccountEmail)
-            ?: account?.displayName ?: "$brand 账号",
-        onClick = { if (multiAccount && enabled && !state.isBusy) showAccounts = true },
-        endActions = {
-            if (multiAccount && current != null && !state.isBusy) {
-                TextButton(
-                    text = "更多",
-                    enabled = enabled,
-                    onClick = { manageId = current.accountId; showMore = true },
-                )
+    val title = current?.name?.takeIf { it.isNotBlank() } ?: account?.email?.let(::maskedAccountEmail)
+        ?: account?.displayName ?: "$brand 账号"
+    val summary = browserError ?: state.message ?: when (state.phase) {
+        ProviderLoginPhase.Loading -> "正在读取登录状态…"
+        ProviderLoginPhase.Saving -> "正在保存配置…"
+        ProviderLoginPhase.Disconnecting -> "正在退出登录…"
+        ProviderLoginPhase.Authorizing -> if (prompt == null) "正在准备授权…" else "请在浏览器中完成授权"
+        ProviderLoginPhase.SyncingModels -> "登录成功，正在拉取最新模型…"
+        ProviderLoginPhase.Idle -> when {
+            account == null && multiAccount -> "当前未选择账号，请选择或登录一个账号"
+            account == null -> if (authMode == ProviderAuthModes.OPENAI_CHATGPT) {
+                "使用 ChatGPT 账号登录 Codex"
+            } else {
+                "登录后使用 Grok 订阅额度"
             }
-        },
-        summary = browserError ?: state.message ?: when (state.phase) {
-            ProviderLoginPhase.Loading -> "正在读取登录状态…"
-            ProviderLoginPhase.Saving -> "正在保存配置…"
-            ProviderLoginPhase.Disconnecting -> "正在处理账号…"
-            ProviderLoginPhase.Authorizing -> if (prompt == null) "正在准备授权…" else "请在浏览器中完成授权"
-            ProviderLoginPhase.SyncingModels -> "登录成功，正在拉取最新模型…"
-            ProviderLoginPhase.Idle -> when {
-                account == null && multiAccount -> "当前未选择账号，请选择或登录一个账号"
-                account == null -> if (authMode == ProviderAuthModes.OPENAI_CHATGPT) {
-                    "使用 ChatGPT 账号登录 Codex"
-                } else {
-                    "登录后使用 Grok 订阅额度"
+            account.needsReauthentication -> "请重新登录"
+            !account.planEnabled -> "账号尚未授予模型调用权限"
+            authMode == ProviderAuthModes.OPENAI_CHATGPT -> "已登录 Codex"
+            else -> "已登录 Grok"
+        }
+    }
+
+    when (LocalUiStyle.current) {
+        AppearanceUiStyle.COUI -> {
+            CouiPreference(
+                title = title,
+                summary = summary,
+                showChevron = false,
+            )
+            Column(modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 16.dp)) {
+                prompt?.userCode?.let { userCode ->
+                    SelectionContainer {
+                        Text(
+                            text = userCode,
+                            style = MiuixTheme.textStyles.headline1,
+                            modifier = Modifier.padding(bottom = 12.dp),
+                        )
+                    }
                 }
-                account.needsReauthentication -> "请重新登录"
-                !account.planEnabled -> "账号尚未授予模型调用权限"
-                authMode == ProviderAuthModes.OPENAI_CHATGPT -> "已登录 Codex"
-                else -> "已登录 Grok"
-            }
-        },
-    )
-    Column(modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 16.dp)) {
-        prompt?.userCode?.let { userCode ->
-            SelectionContainer {
-                Text(
-                    text = userCode,
-                    style = MiuixTheme.textStyles.headline1,
-                    modifier = Modifier.padding(bottom = 12.dp),
-                )
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    if (state.isBusy) {
+                        if (prompt != null) {
+                            CouiButton(
+                                text = "打开浏览器",
+                                onClick = onOpenBrowser,
+                                role = CouiButtonRole.Primary,
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                        if (state.phase in setOf(ProviderLoginPhase.Saving, ProviderLoginPhase.Authorizing, ProviderLoginPhase.SyncingModels)) {
+                            CouiButton(
+                                text = "取消",
+                                onClick = onCancel,
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                    } else {
+                        if (needsLogin) {
+                            CouiButton(
+                                text = if (loggedIn) "重新授权" else "使用 $brand 登录",
+                                enabled = enabled,
+                                onClick = onLogin,
+                                role = CouiButtonRole.Primary,
+                                modifier = Modifier.weight(1f),
+                            )
+                        } else if (authMode == ProviderAuthModes.OPENAI_CHATGPT) {
+                            CouiButton(
+                                text = "管理用量",
+                                enabled = enabled,
+                                onClick = onManageUsage,
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                        if (loggedIn) {
+                            CouiButton(
+                                text = "退出登录",
+                                enabled = enabled,
+                                onClick = onDisconnect,
+                                role = CouiButtonRole.Destructive,
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                    }
+                }
             }
         }
-        if (state.isBusy) {
-            FlowRow(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                if (prompt != null) {
-                    TextButton(text = "打开浏览器", onClick = onOpenBrowser, modifier = Modifier.width(IntrinsicSize.Max))
+        AppearanceUiStyle.MIUIX -> {
+            BasicComponent(
+                title = title,
+                onClick = { if (multiAccount && enabled && !state.isBusy) showAccounts = true },
+                endActions = {
+                    if (multiAccount && current != null && !state.isBusy) {
+                        TextButton(
+                            text = "更多",
+                            enabled = enabled,
+                            onClick = { manageId = current.accountId; showMore = true },
+                        )
+                    }
+                },
+                summary = summary,
+            )
+            Column(modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 16.dp)) {
+                prompt?.userCode?.let { userCode ->
+                    SelectionContainer {
+                        Text(
+                            text = userCode,
+                            style = MiuixTheme.textStyles.headline1,
+                            modifier = Modifier.padding(bottom = 12.dp),
+                        )
+                    }
                 }
-                if (state.phase in setOf(
-                        ProviderLoginPhase.Saving,
-                        ProviderLoginPhase.Authorizing,
-                        ProviderLoginPhase.SyncingModels,
-                        ProviderLoginPhase.Disconnecting,
-                    )
-                ) {
-                    TextButton(text = "取消", onClick = onCancel, modifier = Modifier.width(IntrinsicSize.Max))
-                }
-            }
-            if (multiAccount) {
-                TextButton(text = "切换账号", enabled = false, onClick = { showAccounts = true })
-            }
-        } else if (authMode == ProviderAuthModes.OPENAI_CHATGPT) {
-            FlowRow(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                TextButton(
-                    text = if (accounts.isEmpty()) "使用 $brand 登录" else "添加账号",
-                    enabled = enabled,
-                    onClick = onLogin,
-                    modifier = Modifier.width(IntrinsicSize.Max),
-                )
-                if (multiAccount) {
-                    TextButton(text = "切换账号", enabled = enabled, onClick = { showAccounts = true },
-                        modifier = Modifier.width(IntrinsicSize.Max))
-                }
-            }
-        } else {
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                if (needsLogin) {
-                    TextButton(
-                        text = if (loggedIn) "重新授权" else "使用 $brand 登录",
-                        enabled = enabled,
-                        onClick = onLogin,
-                        modifier = Modifier.weight(1f),
-                    )
-                }
-                if (loggedIn) {
-                    TextButton(text = "退出登录", enabled = enabled, onClick = onDisconnect, modifier = Modifier.weight(1f))
+                if (state.isBusy) {
+                    FlowRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        if (prompt != null) {
+                            TextButton(text = "打开浏览器", onClick = onOpenBrowser, modifier = Modifier.width(IntrinsicSize.Max))
+                        }
+                        if (state.phase in setOf(
+                                ProviderLoginPhase.Saving,
+                                ProviderLoginPhase.Authorizing,
+                                ProviderLoginPhase.SyncingModels,
+                                ProviderLoginPhase.Disconnecting,
+                            )
+                        ) {
+                            TextButton(text = "取消", onClick = onCancel, modifier = Modifier.width(IntrinsicSize.Max))
+                        }
+                    }
+                    if (multiAccount) {
+                        TextButton(text = "切换账号", enabled = false, onClick = { showAccounts = true })
+                    }
+                } else if (authMode == ProviderAuthModes.OPENAI_CHATGPT) {
+                    FlowRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        TextButton(
+                            text = if (accounts.isEmpty()) "使用 $brand 登录" else "添加账号",
+                            enabled = enabled,
+                            onClick = onLogin,
+                            modifier = Modifier.width(IntrinsicSize.Max),
+                        )
+                        if (multiAccount) {
+                            TextButton(text = "切换账号", enabled = enabled, onClick = { showAccounts = true },
+                                modifier = Modifier.width(IntrinsicSize.Max))
+                        }
+                    }
+                } else {
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        if (needsLogin) {
+                            TextButton(
+                                text = if (loggedIn) "重新授权" else "使用 $brand 登录",
+                                enabled = enabled,
+                                onClick = onLogin,
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                        if (loggedIn) {
+                            TextButton(text = "退出登录", enabled = enabled, onClick = onDisconnect, modifier = Modifier.weight(1f))
+                        }
+                    }
                 }
             }
         }
@@ -217,7 +292,6 @@ internal fun ProviderAccountControls(
         }
     }
 }
-
 internal fun maskedAccountEmail(email: String): String = email.substringBefore('@').take(1) + "***@" + email.substringAfter('@', "***")
 
 @Composable

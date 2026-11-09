@@ -1,4 +1,4 @@
-package io.github.mangi.eta.ui.screens.home
+﻿package io.github.mangi.eta.ui.screens.home
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -33,6 +33,7 @@ internal fun AgentHomeScreen(
     conversationLoadFailed: Boolean = false,
     historyLoadState: ConversationHistoryLoadState = ConversationHistoryLoadState.Idle,
     isDrawerOpen: Boolean = false,
+    isBranching: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     // key 内保持完整分支，避免提前返回遗留无法转换为 DEX 的编译器标记。
@@ -57,6 +58,7 @@ internal fun AgentHomeScreen(
                     messages = state.messages,
                     modelPickerState = modelPickerState,
                     isCompacting = state.isCompacting,
+                    isBranching = isBranching,
                     input = state.input,
                     isStreaming = state.isStreaming,
                     reasoningEffort = state.reasoningEffort,
@@ -66,6 +68,7 @@ internal fun AgentHomeScreen(
                     queuedMessages = state.queuedMessages,
                     inputSyncVersion = state.inputSyncVersion,
                     restoredRequestMode = state.draftRequestMode,
+                    focusInputOnSync = state.focusInputOnSync,
                     messageEdit = state.messageEdit,
                     onReasoningEffortChange = { onAction(AgentHomeAction.ReasoningEffortChanged(it)) },
                     onCompactContext = { onAction(AgentHomeAction.CompactContext) },
@@ -96,6 +99,9 @@ internal fun AgentHomeScreen(
                     onCancelMessageEdit = { onAction(AgentHomeAction.CancelMessageEdit) },
                     onDeleteMessage = { id -> onAction(AgentHomeAction.DeleteMessage(id)) },
                     onRegenerateMessage = { id -> onAction(AgentHomeAction.RegenerateMessage(id)) },
+                    onBranchMessage = { id ->
+                        conversationKey?.let { onAction(AgentHomeAction.BranchConversation(it, id)) }
+                    },
                     onSelectReplyCandidate = { id, index -> onAction(AgentHomeAction.SelectReplyCandidate(id, index)) },
                     onSuggestionClick = { prompt ->
                         onAction(AgentHomeAction.SubmitMessage(prompt))

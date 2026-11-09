@@ -136,6 +136,7 @@ internal object AgentModelClient {
                 memoryWritable = roleplayContext == null,
                 capabilities = capabilities,
                 localWebSearch = !config.usesHostedWebSearch,
+                disabledTools = Prefs.disabledTools(),
             )
             for (index in 0 until additionalTools.length()) {
                 tools.put(additionalTools.opt(index))

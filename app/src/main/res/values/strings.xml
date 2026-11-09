@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="UTF-8"?>
+﻿<?xml version="1.0" encoding="UTF-8"?>
 <resources>
     <string name="task_source_assistant">Assistant task</string>
     <string name="task_source_chat">Chat task</string>
@@ -69,6 +69,8 @@
   <string name="action_continue">Continue</string>
   <string name="action_stop">Stop</string>
   <string name="action_edit">Edit</string>
+  <string name="action_pin_conversation">Pin</string>
+  <string name="action_unpin_conversation">Unpin</string>
   <string name="action_rename">Rename</string>
   <string name="action_export">Export</string>
   <string name="action_done">Done</string>
@@ -179,6 +181,9 @@
   <string name="appearance_title">Appearance &amp; Theme</string>
   <string name="appearance_group_color">Colors &amp; Theme</string>
   <string name="appearance_group_interface">Interface &amp; Effects</string>
+  <string name="appearance_ui_style">UI style</string>
+  <string name="appearance_ui_style_coui">COUI</string>
+  <string name="appearance_ui_style_miuix">Miuix</string>
   <string name="appearance_theme_mode">Theme mode</string>
   <string name="appearance_theme_system">Follow system</string>
   <string name="appearance_theme_light">Light</string>
@@ -1484,4 +1489,8 @@
         <item quantity="other">Running for %d minutes</item>
     </plurals>
     <string name="voice_stop_requested">Stop requested; waiting for the task to finish.</string>
+  <string name="conversation_branch">Branch into a new conversation</string>
+  <string name="conversation_branch_title">%1$s · Branch</string>
+  <string name="conversation_branch_unavailable">Cannot branch here: only turns with complete context and finished tool calls are supported.</string>
+  <string name="conversation_branch_failed">Could not create a branch. The original conversation has been kept. Please try again.</string>
 </resources>

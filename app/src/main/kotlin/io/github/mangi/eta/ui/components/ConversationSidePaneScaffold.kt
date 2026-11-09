@@ -1,4 +1,4 @@
-package io.github.mangi.eta.ui.components
+﻿package io.github.mangi.eta.ui.components
 
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
@@ -75,6 +75,7 @@ fun ConversationSidePaneScaffold(
     onDismiss: () -> Unit,
     onSearchChange: (String) -> Unit,
     onConversationSelected: (String) -> Unit,
+    onConversationTogglePin: (ConversationSummaryUi) -> Unit,
     onActiveTaskSelected: (ActiveTaskUi) -> Unit,
     onConversationRename: (ConversationSummaryUi) -> Unit,
     onConversationExport: (ConversationSummaryUi) -> Unit,
@@ -228,6 +229,7 @@ fun ConversationSidePaneScaffold(
                         listState = panelListState,
                         onSearchChange = onSearchChange,
                         onConversationSelected = onConversationSelected,
+                        onConversationTogglePin = onConversationTogglePin,
                         onActiveTaskSelected = onActiveTaskSelected,
                         onConversationRename = onConversationRename,
                         onConversationExport = onConversationExport,

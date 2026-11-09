@@ -1,4 +1,4 @@
-package io.github.mangi.eta.ui.components
+﻿package io.github.mangi.eta.ui.components
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
@@ -46,10 +46,19 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.itos.coui.dialog.CouiDialogAction
+import com.itos.coui.dialog.CouiDialogDefaults
+import com.itos.coui.dialog.CouiDialogPlacement
+import com.itos.coui.dialog.Dialog
+import com.itos.coui.menu.rememberCouiWindowBackdrop
+import com.itos.coui.theme.CouiTheme
 import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.subagent.SubagentActivitySnapshot
 import io.github.mangi.eta.agent.subagent.SubagentStepSnapshot
 import io.github.mangi.eta.local.subagentdisplay.SubagentReadableText
+import io.github.mangi.eta.data.model.AppearanceUiStyle
+import io.github.mangi.eta.ui.app.LocalUiStyle
+import io.github.mangi.eta.ui.components.coui.rememberCouiDialogMaterial
 import io.github.mangi.eta.ui.model.ToolActivityMessageUi
 import io.github.mangi.eta.ui.model.ToolActivityStatusUi
 import top.yukonga.miuix.kmp.basic.Icon
@@ -154,17 +163,44 @@ internal fun SubagentActivityRow(
         }
     }
 
-    OverlayBottomSheet(
-        show = showInspector && !showFullDetails,
-        title = taskTitle,
-        onDismissRequest = { showInspector = false },
-    ) {
-        if (showInspector) SubagentInspectorContent(
-            snapshot = snapshot,
-            running = running,
-            failed = failed,
-            onOpenDetails = { showFullDetails = true },
-        )
+    when (LocalUiStyle.current) {
+        AppearanceUiStyle.COUI -> {
+            val dark = CouiTheme.isDark
+            Dialog(
+                visible = showInspector && !showFullDetails,
+                onDismissRequest = { showInspector = false },
+                dark = dark,
+                title = taskTitle,
+                confirmAction = CouiDialogAction(
+                    text = stringResource(R.string.action_close),
+                    onClick = { showInspector = false },
+                ),
+                placement = CouiDialogPlacement.Bottom,
+                material = rememberCouiDialogMaterial(dark),
+                backdrop = rememberCouiWindowBackdrop(),
+            ) {
+                SubagentInspectorContent(
+                    snapshot = snapshot,
+                    running = running,
+                    failed = failed,
+                    onOpenDetails = { showFullDetails = true },
+                )
+            }
+        }
+        AppearanceUiStyle.MIUIX -> {
+            OverlayBottomSheet(
+                show = showInspector && !showFullDetails,
+                title = taskTitle,
+                onDismissRequest = { showInspector = false },
+            ) {
+                SubagentInspectorContent(
+                    snapshot = snapshot,
+                    running = running,
+                    failed = failed,
+                    onOpenDetails = { showFullDetails = true },
+                )
+            }
+        }
     }
     OverlayBottomSheet(
         show = showFullDetails,
@@ -220,8 +256,7 @@ internal fun SubagentInspectorContent(
     val density = LocalDensity.current
     val maxSheetHeight = with(density) { LocalWindowInfo.current.containerSize.height.toDp() } * 0.76f
     var showInformation by rememberSaveable(snapshot.subagentId) { mutableStateOf(false) }
-    // Stable across the rolling last-12 window, while remaining safe for older snapshots
-    // that may contain repeated IDs. Duplicate occurrences can shift if one is removed.
+    val isCoui = LocalUiStyle.current == AppearanceUiStyle.COUI
     val stepKeys = remember(snapshot.steps) {
         val occurrences = mutableMapOf<String, Int>()
         snapshot.steps.map { step ->
@@ -233,8 +268,15 @@ internal fun SubagentInspectorContent(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .heightIn(max = maxSheetHeight)
-            .navigationBarsPadding(),
+            .then(
+                if (isCoui) {
+                    Modifier.padding(horizontal = CouiDialogDefaults.contentPadding, vertical = 8.dp)
+                } else {
+                    Modifier
+                        .heightIn(max = maxSheetHeight)
+                        .navigationBarsPadding()
+                },
+            ),
     ) {
         // Keep the compact identity visible; only the execution list scrolls.
         Row(verticalAlignment = Alignment.CenterVertically) {

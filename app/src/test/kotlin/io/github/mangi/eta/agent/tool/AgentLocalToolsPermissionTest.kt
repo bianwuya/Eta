@@ -1,4 +1,4 @@
-package io.github.mangi.eta.agent.tool
+﻿package io.github.mangi.eta.agent.tool
 
 import android.content.Context
 import android.content.ClipData
@@ -13,6 +13,7 @@ import io.github.mangi.eta.agent.device.RootShellDeviceController
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.agent.model.AgentScreenObservationContract
 import io.github.mangi.eta.agent.runtime.AgentRunController
+import io.github.mangi.eta.agent.runtime.AgentRunCancelledException
 import io.github.mangi.eta.agent.runtime.GuiControlCoordinator
 import io.github.mangi.eta.core.AgentLogger
 import java.util.concurrent.atomic.AtomicBoolean
@@ -20,6 +21,7 @@ import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertThrows
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -190,6 +192,22 @@ class AgentLocalToolsPermissionTest {
     }
 
     @Test
+    fun cancellationDuringObservationDoesNotPublishOrReturnALateSnapshot() {
+        lateinit var instance: AgentLocalTools
+        instance = tools(
+            screenObservationProvider = {
+                instance.close()
+                observation("late", true)
+            },
+        )
+        instance.use {
+            assertThrows(AgentRunCancelledException::class.java) {
+                it.execute(AgentModelClient.ToolCall("observe", "observe_screen", "{}"))
+            }
+        }
+    }
+
+    @Test
     fun ownerReleaseDuringVisibilityAcknowledgmentCannotReachTheAction() {
         val coordinator = GuiControlCoordinator()
         val control = coordinator.openRun("gui-test", AgentRunController())
@@ -200,6 +218,26 @@ class AgentLocalToolsPermissionTest {
             assertEquals("GUI_PRESENTATION_STALE", JSONObject(tools.execute(
                 AgentModelClient.ToolCall("1", "observe_screen", "{}")).content).getString("code"))
             assertEquals(null, coordinator.state.value.ownerRunId)
+        }
+    }
+
+    @Test
+    fun lostVirtualDisplayDoesNotSilentlyObserveOrOperateTheMainDisplay() {
+        tools(
+            screenObservationProvider = { error("虚拟屏已失效，不应把观察路由到主屏") },
+        ).use { tools ->
+            AgentLocalTools::class.java.getDeclaredField("activeDisplayId").apply {
+                isAccessible = true
+                setInt(tools, 11)
+            }
+            listOf(
+                "observe_screen" to "{}",
+                "press_key" to """{"button":"BACK"}""",
+            ).forEach { (name, arguments) ->
+                val result = JSONObject(tools.execute(AgentModelClient.ToolCall(name, name, arguments)).content)
+                assertFalse(result.getBoolean("ok"))
+                assertEquals("DISPLAY_UNAVAILABLE", result.getString("code"))
+            }
         }
     }
 
@@ -570,6 +608,30 @@ class AgentLocalToolsPermissionTest {
         assertTrue(checkNotNull(received).includeUiTree)
         assertEquals("o-image", JSONObject(result.content).getString("observation_id"))
         assertEquals(listOf(image), result.images)
+        tools.close()
+    }
+
+    @Test
+    fun disabledIndividualToolReturnsToolDisabledErrorCode() {
+        val tools = AgentLocalTools(
+            context = RuntimeEnvironment.getApplication() as Context,
+            logger = NoOpLogger,
+            browserRunId = "test-run",
+            rootAvailable = { true },
+            deviceSensitiveReadToolsEnabled = { true },
+            isToolEnabled = { it != "read_sms_code" },
+        )
+        val result = tools.execute(
+            AgentModelClient.ToolCall(
+                id = "call-disabled",
+                name = "read_sms_code",
+                argumentsJson = "{}",
+            ),
+        )
+        val json = JSONObject(result.content)
+        assertFalse(json.getBoolean("ok"))
+        assertEquals("TOOL_DISABLED", json.getString("code"))
+        assertTrue(result.sensitive)
         tools.close()
     }
 

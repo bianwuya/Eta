@@ -1,4 +1,4 @@
-package io.github.mangi.eta.ui.components
+﻿package io.github.mangi.eta.ui.components
 
 import androidx.activity.compose.BackHandler
 import io.github.mangi.eta.ui.voice.SpeechDictationButton
@@ -8,8 +8,11 @@ import androidx.compose.ui.text.TextRange
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandHorizontally
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
@@ -20,9 +23,9 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -36,7 +39,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -85,9 +90,17 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.itos.coui.menu.CouiMenuItem
+import com.itos.coui.menu.Menu
+import com.itos.coui.menu.couiMenuAnchor
+import com.itos.coui.menu.rememberCouiMenuAnchor
+import com.itos.coui.shape.CouiShape
+import com.itos.coui.theme.CouiTheme
 import io.github.mangi.eta.R
+import io.github.mangi.eta.data.model.AppearanceUiStyle
 import io.github.mangi.eta.data.model.ReasoningEffort
 import io.github.mangi.eta.data.repository.SpeechSettingsRepository
+import io.github.mangi.eta.ui.app.LocalUiStyle
 import io.github.mangi.eta.ui.model.AgentContextUsageUi
 import io.github.mangi.eta.ui.model.AgentModelPickerUiState
 import io.github.mangi.eta.ui.model.PendingFileReferenceUi
@@ -133,6 +146,7 @@ internal fun AgentChatInputBar(
     queuedMessages: List<QueuedMessageUi> = emptyList(),
     conversationId: String? = null,
     inputSyncVersion: Int = 0,
+    focusInputOnSync: Boolean = true,
     isEditingMessage: Boolean,
     editHasLaterTurns: Boolean,
     preserveFollowingMessages: Boolean,
@@ -219,7 +233,7 @@ internal fun AgentChatInputBar(
         }
         if (versionChanged) requestMode = if (onSubmitWithMode != null) normalizedRequestMode(restoredRequestMode) else "normal"
         if (isEditingMessage) requestMode = "normal"
-        if (isEditingMessage || (versionChanged && input.isNotEmpty())) {
+        if (isEditingMessage || (versionChanged && input.isNotEmpty() && focusInputOnSync)) {
             focusRequester.requestFocus()
             keyboard?.show()
         }
@@ -234,7 +248,13 @@ internal fun AgentChatInputBar(
         if (recognitionEnabled) SpeechInputFeedback(dictation)
         AnimatedVisibility(
             visible = queuedMessages.isNotEmpty(),
-            enter = fadeIn(tween(160)),
+            enter = fadeIn(tween(160)) + expandVertically(
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioNoBouncy,
+                    stiffness = Spring.StiffnessMediumLow,
+                ),
+                expandFrom = Alignment.Bottom,
+            ),
             exit = fadeOut(tween(100)) + shrinkVertically(tween(150)),
         ) {
             AgentChatQueueStrip(
@@ -252,8 +272,20 @@ internal fun AgentChatInputBar(
         }
         AnimatedVisibility(
             visible = pendingFileReferences.isNotEmpty(),
-            enter = fadeIn(tween(160)),
-            exit = fadeOut(tween(100)) + shrinkVertically(tween(160)),
+            enter = fadeIn(tween(180)) + expandVertically(
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioNoBouncy,
+                    stiffness = Spring.StiffnessMediumLow,
+                ),
+                expandFrom = Alignment.Bottom,
+            ),
+            exit = fadeOut(tween(120)) + shrinkVertically(
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioNoBouncy,
+                    stiffness = Spring.StiffnessMedium,
+                ),
+                shrinkTowards = Alignment.Bottom,
+            ),
         ) {
             PendingFileReferenceStrip(
                 references = pendingFileReferences,
@@ -264,8 +296,20 @@ internal fun AgentChatInputBar(
 
         AnimatedVisibility(
             visible = pendingImages.isNotEmpty(),
-            enter = fadeIn(tween(160)),
-            exit = fadeOut(tween(100)) + shrinkVertically(tween(160)),
+            enter = fadeIn(tween(180)) + expandVertically(
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioNoBouncy,
+                    stiffness = Spring.StiffnessMediumLow,
+                ),
+                expandFrom = Alignment.Bottom,
+            ),
+            exit = fadeOut(tween(120)) + shrinkVertically(
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioNoBouncy,
+                    stiffness = Spring.StiffnessMedium,
+                ),
+                shrinkTowards = Alignment.Bottom,
+            ),
         ) {
             PendingImageStrip(
                 images = pendingImages,
@@ -294,6 +338,9 @@ internal fun AgentChatInputBar(
             )
         }
 
+        val isCoui = LocalUiStyle.current == AppearanceUiStyle.COUI
+        val couiDark = CouiTheme.isDark
+        val couiInputShape = remember { CouiShape(24.dp, 2.4f) }
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -304,22 +351,47 @@ internal fun AgentChatInputBar(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .dropShadow(
-                        shape = InputContainerShape,
-                        shadow = Shadow(
-                            radius = 8.dp,
-                            color = Color.Black,
-                            alpha = 0.08f,
-                        ),
-                    )
-                    .squircleSurface(
-                        color = MiuixTheme.colorScheme.surfaceContainer,
-                        cornerRadius = 20.dp,
-                    )
-                    .squircleBorder(
-                        width = 0.5.dp,
-                        color = MiuixTheme.colorScheme.outline.copy(alpha = 0.55f),
-                        cornerRadius = 20.dp,
+                    .then(
+                        if (isCoui) {
+                            Modifier
+                                .dropShadow(
+                                    shape = couiInputShape,
+                                    shadow = Shadow(
+                                        radius = 14.dp,
+                                        color = Color.Black,
+                                        alpha = if (couiDark) 0.24f else 0.05f,
+                                    ),
+                                )
+                                .clip(couiInputShape)
+                                .background(
+                                    if (couiDark) Color(0xFF1E2024) else Color(0xFFF5F6F8),
+                                    couiInputShape,
+                                )
+                                .border(
+                                    width = 0.5.dp,
+                                    color = if (couiDark) Color(0x22FFFFFF) else Color(0x10000000),
+                                    shape = couiInputShape,
+                                )
+                        } else {
+                            Modifier
+                                .dropShadow(
+                                    shape = InputContainerShape,
+                                    shadow = Shadow(
+                                        radius = 8.dp,
+                                        color = Color.Black,
+                                        alpha = 0.08f,
+                                    ),
+                                )
+                                .squircleSurface(
+                                    color = MiuixTheme.colorScheme.surfaceContainer,
+                                    cornerRadius = 20.dp,
+                                )
+                                .squircleBorder(
+                                    width = 0.5.dp,
+                                    color = MiuixTheme.colorScheme.outline.copy(alpha = 0.55f),
+                                    cornerRadius = 20.dp,
+                                )
+                        },
                     )
                     .padding(horizontal = 10.dp, vertical = 8.dp),
             ) {
@@ -502,10 +574,12 @@ internal fun AgentChatInputBar(
                         }
 
                         val showPrimaryStop = isStreaming && !showStreamingSend
+                        val sendCircleSize = if (isCoui) 32.dp else SendButtonVisualSize
                         val sendButtonColor by animateColorAsState(
                             targetValue = when {
                                 showPrimaryStop -> MiuixTheme.colorScheme.onSurface
                                 canSend -> MiuixTheme.colorScheme.primary
+                                isCoui -> if (couiDark) Color(0xFF2E3136) else Color(0xFFE1E4E9)
                                 else -> MiuixTheme.colorScheme.surfaceContainerHigh
                             },
                             animationSpec = tween(durationMillis = 160),
@@ -535,10 +609,9 @@ internal fun AgentChatInputBar(
                                 ),
                             contentAlignment = Alignment.Center,
                         ) {
-                            // 保留统一的点击区域，仅让可见圆形与相邻操作图标保持同一尺寸。
                             Box(
                                 modifier = Modifier
-                                    .size(SendButtonVisualSize)
+                                    .size(sendCircleSize)
                                     .clip(CircleShape)
                                     .background(sendButtonColor),
                                 contentAlignment = Alignment.Center,
@@ -566,7 +639,7 @@ internal fun AgentChatInputBar(
                                             else -> stringResource(R.string.chat_send)
                                         },
                                         modifier = Modifier.size(
-                                            if (stopIcon) StopIconSize else SendIconSize
+                                            if (stopIcon) StopIconSize else if (isCoui) 18.dp else SendIconSize,
                                         ),
                                         tint = when {
                                             stopIcon -> MiuixTheme.colorScheme.surface
@@ -636,6 +709,7 @@ private fun ThinkingEffortChip(
     var showPopup by remember { mutableStateOf(false) }
     val active = effort != ReasoningEffort.OFF
     val menuEnabled = enabled && options.size > 1
+    val anchor = rememberCouiMenuAnchor()
     LaunchedEffect(menuEnabled) {
         if (!menuEnabled) showPopup = false
     }
@@ -653,10 +727,11 @@ private fun ThinkingEffortChip(
     )
     Box(modifier = modifier) {
         IconButton(
-            onClick = { showPopup = true },
+            onClick = { anchor.open { showPopup = true } },
             enabled = menuEnabled,
             minWidth = ChatInputActionSize,
             minHeight = ChatInputActionSize,
+            modifier = Modifier.couiMenuAnchor(anchor),
         ) {
             Icon(
                 imageVector = ImageVector.vectorResource(R.drawable.ic_atom),
@@ -665,26 +740,51 @@ private fun ThinkingEffortChip(
                 tint = contentColor,
             )
         }
-        WindowListPopup(
-            show = showPopup && menuEnabled && popupAnchorTopPx > 0,
-            popupPositionProvider = popupPositionProvider,
-            alignment = PopupPositionProvider.Align.TopStart,
-            onDismissRequest = { showPopup = false },
-            maxHeight = popupMaxHeight,
-        ) {
-            val dismiss = LocalDismissState.current
-            ListPopupColumn {
-                options.forEachIndexed { index, option ->
-                    DropdownImpl(
-                        text = option.displayName,
-                        optionSize = options.size,
-                        isSelected = option == effort,
-                        index = index,
-                        onSelectedIndexChange = {
-                            onEffortChange(option)
-                            dismiss?.invoke()
-                        },
-                    )
+        when (LocalUiStyle.current) {
+            AppearanceUiStyle.COUI -> {
+                val menuItems = remember(options, effort) {
+                    options.map { option ->
+                        CouiMenuItem(
+                            value = option,
+                            text = option.displayName,
+                            selected = option == effort,
+                        )
+                    }
+                }
+                Menu(
+                    expanded = showPopup && menuEnabled,
+                    onDismissRequest = { showPopup = false },
+                    items = menuItems,
+                    onItemClick = { item ->
+                        showPopup = false
+                        onEffortChange(item.value)
+                    },
+                    anchor = anchor,
+                )
+            }
+            AppearanceUiStyle.MIUIX -> {
+                WindowListPopup(
+                    show = showPopup && menuEnabled && popupAnchorTopPx > 0,
+                    popupPositionProvider = popupPositionProvider,
+                    alignment = PopupPositionProvider.Align.TopStart,
+                    onDismissRequest = { showPopup = false },
+                    maxHeight = popupMaxHeight,
+                ) {
+                    val dismiss = LocalDismissState.current
+                    ListPopupColumn {
+                        options.forEachIndexed { index, option ->
+                            DropdownImpl(
+                                text = option.displayName,
+                                optionSize = options.size,
+                                isSelected = option == effort,
+                                index = index,
+                                onSelectedIndexChange = {
+                                    onEffortChange(option)
+                                    dismiss?.invoke()
+                                },
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -701,16 +801,35 @@ private fun PendingImageStrip(
     modifier: Modifier = Modifier,
 ) {
     var viewedImage by remember { mutableStateOf<String?>(null) }
-    Row(
-        modifier = modifier
-            .fillMaxWidth()
-            .horizontalScroll(rememberScrollState()),
+    val listState = rememberLazyListState()
+    var previousCount by remember { mutableIntStateOf(images.size) }
+    LaunchedEffect(images.size) {
+        if (images.size > previousCount && images.isNotEmpty()) {
+            listState.animateScrollToItem(images.lastIndex)
+        }
+        previousCount = images.size
+    }
+    LazyRow(
+        state = listState,
+        modifier = modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        images.forEach { image ->
+        items(
+            items = images,
+            key = { it.id },
+        ) { image ->
             Box(
                 modifier = Modifier
+                    .animateItem(
+                        fadeInSpec = null,
+                        placementSpec = spring(
+                            dampingRatio = Spring.DampingRatioNoBouncy,
+                            stiffness = Spring.StiffnessMediumLow,
+                        ),
+                        fadeOutSpec = tween(durationMillis = 120),
+                    )
+                    .attachmentItemEntrance()
                     .size(60.dp)
                     .clip(RoundedCornerShape(12.dp))
                     .background(MiuixTheme.colorScheme.surfaceContainer)

@@ -24,6 +24,7 @@ internal data class ConversationEntity(
     @ColumnInfo(name = "updated_at") val updatedAt: Long,
     /** 会话最近使用的本地 Model.id；null 表示跟随默认模型。 */
     @ColumnInfo(name = "model_id") val modelId: String? = null,
+    @ColumnInfo(name = "is_pinned", defaultValue = "0") val isPinned: Boolean = false,
 )
 
 internal data class ConversationMetadata(
@@ -37,6 +38,7 @@ internal data class ConversationMetadata(
     @ColumnInfo(name = "created_at") val createdAt: Long,
     @ColumnInfo(name = "updated_at") val updatedAt: Long,
     @ColumnInfo(name = "model_id") val modelId: String? = null,
+    @ColumnInfo(name = "is_pinned") val isPinned: Boolean = false,
 )
 
 /** 会话侧栏只读取定长预览，不读取上下文、角色卡与修订正文。 */
@@ -52,6 +54,7 @@ internal data class ConversationIndexRow(
     @ColumnInfo(name = "message_preview") val messagePreview: String?,
     @ColumnInfo(name = "tool_name") val toolName: String?,
     @ColumnInfo(name = "has_roleplay") val hasRoleplay: Boolean,
+    @ColumnInfo(name = "is_pinned") val isPinned: Boolean = false,
 )
 
 internal data class ConversationIdentity(
@@ -59,6 +62,7 @@ internal data class ConversationIdentity(
     val title: String,
     @ColumnInfo(name = "created_at") val createdAt: Long,
     @ColumnInfo(name = "updated_at") val updatedAt: Long,
+    @ColumnInfo(name = "is_pinned") val isPinned: Boolean = false,
 )
 
 internal data class ConversationMessageContent(val id: String, val content: String)
@@ -123,6 +127,13 @@ internal data class ConversationMessageEntity(
     @ColumnInfo(name = "output_tokens") val outputTokens: Int? = null,
     @ColumnInfo(name = "reasoning_tokens") val reasoningTokens: Int? = null,
     @ColumnInfo(name = "cached_tokens") val cachedTokens: Int? = null,
+    @ColumnInfo(name = "step_count") val stepCount: Int? = null,
+    @ColumnInfo(name = "llm_ms") val llmMs: Long? = null,
+    @ColumnInfo(name = "tool_ms") val toolMs: Long? = null,
+    @ColumnInfo(name = "ttft_ms") val ttftMs: Long? = null,
+    @ColumnInfo(name = "ttft_steps") val ttftSteps: Int? = null,
+    @ColumnInfo(name = "decode_ms") val decodeMs: Long? = null,
+    @ColumnInfo(name = "decode_tokens") val decodeTokens: Int? = null,
     @ColumnInfo(name = "elapsed_seconds") val elapsedSeconds: Int? = null,
     @ColumnInfo(name = "tool_name") val toolName: String? = null,
     @ColumnInfo(name = "tool_status") val toolStatus: String? = null,

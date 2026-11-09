@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="UTF-8"?>
+﻿<?xml version="1.0" encoding="UTF-8"?>
 <resources>
     <string name="task_source_assistant">助理任務</string>
     <string name="task_source_chat">聊天任務</string>
@@ -72,6 +72,8 @@
   <string name="action_continue">繼續</string>
   <string name="action_stop">停止</string>
   <string name="action_edit">編輯</string>
+  <string name="action_pin_conversation">釘選對話</string>
+  <string name="action_unpin_conversation">取消釘選</string>
   <string name="action_rename">重新命名</string>
   <string name="action_done">完成</string>
   <string name="action_add">新增</string>
@@ -179,6 +181,9 @@
   <string name="appearance_title">外觀與主題</string>
   <string name="appearance_group_color">顏色與主題</string>
   <string name="appearance_group_interface">介面與效果</string>
+  <string name="appearance_ui_style">介面樣式</string>
+  <string name="appearance_ui_style_coui">COUI</string>
+  <string name="appearance_ui_style_miuix">Miuix</string>
   <string name="appearance_theme_mode">主題模式</string>
   <string name="appearance_theme_system">跟隨系統</string>
   <string name="appearance_theme_light">淺色</string>
@@ -1396,4 +1401,8 @@
         <item quantity="other">已執行 %d 分鐘</item>
     </plurals>
     <string name="voice_stop_requested">已請求停止，正在等待任務結束。</string>
+  <string name="conversation_branch">在新對話中分支</string>
+  <string name="conversation_branch_title">%1$s · 分支</string>
+  <string name="conversation_branch_unavailable">無法從此處分支：僅支援上下文完整且工具呼叫已結束的輪次。</string>
+  <string name="conversation_branch_failed">建立分支失敗，原對話已保留，請重試。</string>
 </resources>

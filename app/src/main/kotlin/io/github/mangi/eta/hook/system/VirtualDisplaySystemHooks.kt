@@ -3,6 +3,7 @@ package io.github.mangi.eta.hook.system
 import android.hardware.display.VirtualDisplayConfig
 import android.os.Binder
 import android.os.Build
+import android.view.Display
 import androidx.annotation.RequiresApi
 import io.github.libxposed.api.XposedModule
 import io.github.mangi.eta.agent.virtualdisplay.CanvasRoutingPolicy
@@ -12,9 +13,11 @@ import io.github.mangi.eta.core.HookRegistrar
 import io.github.mangi.eta.core.HookSupport
 import io.github.mangi.eta.core.ModuleConfig
 import io.github.mangi.eta.core.ModuleLogger
+import java.util.concurrent.ConcurrentHashMap
 
 /**
- * 在 system_server 为 Eta 自身的后台虚拟屏授予受信任显示标志与任务迁移权限。
+ * 在 system_server 为 Eta 自身的后台虚拟屏授予 SYSTEM_UID 所有权、受信任显示标志、
+ * 隐藏软键盘策略（DISPLAY_IME_POLICY_HIDE）与跨应用 Activity 启动放行。
  *
  * 严格限制调用方包名与虚拟屏名称（EtaAgentVirtualDisplay），不对其他应用开放权限。
  */
@@ -23,8 +26,10 @@ internal object VirtualDisplaySystemHooks {
     private const val DMS_CLASS = "com.android.server.display.DisplayManagerService"
     private const val DMS_BINDER_CLASS = "com.android.server.display.DisplayManagerService\$BinderService"
     private const val ATMS_CLASS = "com.android.server.wm.ActivityTaskManagerService"
+    private const val ATS_CLASS = "com.android.server.wm.ActivityTaskSupervisor"
 
     private val activeEtaDisplayCreation = ThreadLocal.withInitial { false }
+    private val activeEtaDisplayIds = ConcurrentHashMap.newKeySet<Int>()
 
     fun install(
         module: XposedModule,
@@ -33,12 +38,13 @@ internal object VirtualDisplaySystemHooks {
     ): HookInstallation {
         val hooks = HookRegistrar(module, rootLogger, "VirtualDisplay")
         return hooks.install {
-            installDisplayManagerHooks(hooks, classLoader)
+            installDisplayManagerHooks(module, hooks, classLoader)
+            installCrossAppLaunchHooks(hooks, classLoader)
             installTaskMoveHooks(hooks, classLoader)
         }
     }
 
-    private fun installDisplayManagerHooks(hooks: HookRegistrar, classLoader: ClassLoader) {
+    private fun installDisplayManagerHooks(module: XposedModule, hooks: HookRegistrar, classLoader: ClassLoader) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             return
         }
@@ -52,7 +58,7 @@ internal object VirtualDisplaySystemHooks {
                     method.parameterTypes[3] == String::class.java
             }.firstOrNull()
         }
-        if (dmsClass == null || createMethod == null) {
+        if (dmsClass == null || binderClass == null || createMethod == null) {
             hooks.missing(
                 id = "system.virtual-display-create",
                 description = "DisplayManagerService.createVirtualDisplay",
@@ -60,6 +66,19 @@ internal object VirtualDisplaySystemHooks {
             )
             return
         }
+        val releaseMethod = HookSupport.findDeclaredMethods(binderClass, makeAccessible = true) { method ->
+            method.name == "releaseVirtualDisplay" && method.parameterCount == 1 &&
+                method.parameterTypes[0] == createMethod.parameterTypes[1]
+        }.firstOrNull()
+        if (releaseMethod == null) {
+            hooks.missing(
+                id = "system.virtual-display-release",
+                description = "DisplayManagerService.releaseVirtualDisplay",
+                detail = "未找到虚拟屏创建失败后的回收入口",
+            )
+            return
+        }
+        val releaseInvoker = module.getInvoker(releaseMethod)
 
         hooks.intercept(
             id = "system.virtual-display-create",
@@ -74,16 +93,34 @@ internal object VirtualDisplaySystemHooks {
             val args = chain.args.toMutableList()
             val config = args.getOrNull(0) as? VirtualDisplayConfig
             val packageName = args.getOrNull(3) as? String
-            val upgraded = if (packageName == ModuleConfig.ETA_PACKAGE && config != null) {
-                upgradeVirtualDisplayConfig(config)
-            } else {
-                null
-            } ?: return@intercept chain.proceed()
+            val isEta = (packageName == ModuleConfig.ETA_PACKAGE || packageName == "android") &&
+                config != null &&
+                config.name == CanvasRoutingPolicy.VIRTUAL_DISPLAY_NAME
+            if (!isEta) {
+                return@intercept chain.proceed()
+            }
+            val upgraded = upgradeVirtualDisplayConfig(config) ?: config
             args[0] = upgraded
+            args[3] = "android"
             activeEtaDisplayCreation.set(true)
+            val identityToken = Binder.clearCallingIdentity()
             try {
-                chain.proceed(args.toTypedArray())
+                val result = chain.proceed(args.toTypedArray())
+                if (result is Int && CanvasRoutingPolicy.isVirtualDisplay(result)) {
+                    if (!applyDisplayImePolicyHide(result)) {
+                        try {
+                            releaseInvoker.invoke(chain.thisObject, args[1])
+                        } catch (exception: Exception) {
+                            hooks.logger.warn("Virtual display cleanup failed: type=${exception.javaClass.simpleName}")
+                        }
+                        hooks.logger.warn("Virtual display rejected: code=DISPLAY_IME_ISOLATION_UNAVAILABLE")
+                        return@intercept Display.INVALID_DISPLAY
+                    }
+                    activeEtaDisplayIds.add(result)
+                }
+                result
             } finally {
+                Binder.restoreCallingIdentity(identityToken)
                 activeEtaDisplayCreation.set(false)
             }
         }
@@ -108,6 +145,50 @@ internal object VirtualDisplaySystemHooks {
                     chain.proceed()
                 }
             }
+        }
+    }
+
+    /**
+     * 放行虚拟屏内部的跨应用 Activity 启动（App A -> App B），避免 ActivityTaskSupervisor 因跨 UID 拦截导致崩溃。
+     */
+    private fun installCrossAppLaunchHooks(hooks: HookRegistrar, classLoader: ClassLoader) {
+        val atsClass = HookSupport.findClassOrNull(classLoader, ATS_CLASS) ?: return
+        val canPlaceMethods = HookSupport.findDeclaredMethods(atsClass, makeAccessible = true) { method ->
+            method.name == "canPlaceEntityOnDisplay" &&
+                method.parameterCount >= 3 &&
+                method.parameterTypes[0] == Int::class.javaPrimitiveType &&
+                method.returnType == Boolean::class.javaPrimitiveType
+        }
+        canPlaceMethods.forEachIndexed { index, method ->
+            hooks.intercept(
+                id = if (index == 0) "system.virtual-display-can-place" else "system.virtual-display-can-place-$index",
+                executable = method,
+                description = "ActivityTaskSupervisor.canPlaceEntityOnDisplay#$index",
+            ) { chain ->
+                val displayId = chain.args.getOrNull(0) as? Int ?: Display.DEFAULT_DISPLAY
+                if (displayId in activeEtaDisplayIds) {
+                    true
+                } else {
+                    chain.proceed()
+                }
+            }
+        }
+    }
+
+    private fun applyDisplayImePolicyHide(displayId: Int): Boolean {
+        return try {
+            val wmgClass = Class.forName("android.view.WindowManagerGlobal")
+            val wms = wmgClass.getMethod("getWindowManagerService").invoke(null) ?: return false
+            val setPolicy = wms.javaClass.methods.firstOrNull {
+                it.name == "setDisplayImePolicy" && it.parameterCount == 2
+            } ?: return false
+            val getPolicy = wms.javaClass.methods.firstOrNull {
+                it.name == "getDisplayImePolicy" && it.parameterCount == 1
+            } ?: return false
+            setPolicy.invoke(wms, displayId, CanvasRoutingPolicy.DISPLAY_IME_POLICY_HIDE)
+            getPolicy.invoke(wms, displayId) == CanvasRoutingPolicy.DISPLAY_IME_POLICY_HIDE
+        } catch (_: Exception) {
+            false
         }
     }
 

@@ -1,4 +1,4 @@
-package io.github.mangi.eta.ui.app
+﻿package io.github.mangi.eta.ui.app
 
 import io.github.mangi.eta.agent.model.AgentContextSnapshot
 
@@ -27,6 +27,7 @@ import io.github.mangi.eta.agent.roleplay.CharacterMacros
 import io.github.mangi.eta.agent.roleplay.CharacterCardCodec
 import io.github.mangi.eta.agent.roleplay.RoleplayMessageLink
 import io.github.mangi.eta.agent.roleplay.RoleplayMessageState
+import io.github.mangi.eta.data.repository.ConversationBranchUnavailable
 import io.github.mangi.eta.data.repository.CharacterRepository
 import io.github.mangi.eta.agent.runtime.AgentEvent
 import io.github.mangi.eta.agent.runtime.GuiControlStatus
@@ -51,6 +52,7 @@ import io.github.mangi.eta.data.repository.EtaBackupRepository
 import io.github.mangi.eta.data.repository.EtaBackupSummary
 import io.github.mangi.eta.data.repository.ProviderRepository
 import io.github.mangi.eta.data.repository.RuntimeConfigRepository
+import io.github.mangi.eta.ui.IncomingShareRequest
 import io.github.mangi.eta.ui.model.AgentChatHomeUiState
 import io.github.mangi.eta.ui.model.AgentChatMessageUi
 import io.github.mangi.eta.ui.model.AgentMessageUi
@@ -147,6 +149,10 @@ internal class AgentAppState(
     private var conversationSearchJob: Job? = null
     private var persistedSearchMatches: Set<String> = emptySet()
 
+    private var branchingConversationId by mutableStateOf<String?>(null)
+    val isBranchingCurrentConversation: Boolean
+        get() = branchingConversationId != null && branchingConversationId == selectedConversationId
+
     var isLoadingConversation by mutableStateOf(false)
         private set
     var conversationLoadFailed by mutableStateOf(false)
@@ -159,6 +165,7 @@ internal class AgentAppState(
     private var conversationsById: Map<String, AgentChatHomeUiState> = initialConversations.conversationsById
     private var conversationTitles: Map<String, String> = initialConversations.titles
     private var conversationUpdatedAt: Map<String, Long> = initialConversations.updatedAt
+    private var conversationPinnedIds: Set<String> = initialConversations.pinnedIds
 
     var homeState by mutableStateOf(
         selectedConversationId?.let(conversationsById::get) ?: emptyChatState(defaultThinkingEnabled)
@@ -339,7 +346,7 @@ internal class AgentAppState(
 
     suspend fun importBackup(input: InputStream): EtaBackupSummary {
         val locallyBusy = withContext(Dispatchers.Main.immediate) {
-            runStore.hasActiveRuns || conversationsById.values.any { it.isStreaming }
+            branchingConversationId != null || runStore.hasActiveRuns || conversationsById.values.any { it.isStreaming }
         }
         if (locallyBusy) {
             throw IllegalStateException("请先停止正在运行的 Agent 任务")
@@ -360,7 +367,7 @@ internal class AgentAppState(
         }
 
         val pendingPersistence = synchronized(persistenceLock) {
-            check(!persistencePaused) { "备份正在导入" }
+            check(!persistencePaused && branchingConversationId == null) { "请等待会话保存完成" }
             persistencePaused = true
             persistenceJob
         }
@@ -413,6 +420,7 @@ internal class AgentAppState(
             conversationsById = snapshot.conversationsById
             conversationTitles = snapshot.titles
             conversationUpdatedAt = snapshot.updatedAt
+            conversationPinnedIds = snapshot.pinnedIds
             conversationPersistence = AgentConversationPersistence(snapshot)
             fileAttachmentOwnerVersion += 1
             homeState = selectedConversationId
@@ -1161,6 +1169,7 @@ internal class AgentAppState(
                 conversationPersistence.adoptConversation(
                     conversationId, restored, conversationTitles[conversationId].orEmpty(),
                     conversationUpdatedAt[conversationId] ?: 0L,
+                    conversationId in conversationPinnedIds,
                 )
                 val latest = conversationsById[conversationId] ?: return@withLock false
                 updateConversation(conversationId, restored.copy(
@@ -1239,6 +1248,7 @@ internal class AgentAppState(
                     ))
                     conversationPersistence.adoptConversation(
                         conversationId, window, title, updatedAt,
+                        conversationId in conversationPinnedIds,
                     )
                     val latest = conversationsById[conversationId] ?: return@withLock
                     if (!latest.canReplaceMessageWindowOf(state)) return@withLock
@@ -1314,6 +1324,61 @@ internal class AgentAppState(
         persistConversations()
     }
 
+    fun branchConversation(conversationId: String, messageId: String, draftText: String = homeState.input) {
+        if (selectedConversationId != conversationId || branchingConversationId != null || persistencePaused ||
+            !homeState.isConversationLoaded || homeState.isStreaming || homeState.isCompacting ||
+            homeState.messageEdit != null || homeState.roleplayMessages.pendingRewrites.isNotEmpty() ||
+            runStore.activeRunId(conversationId) != null || conversationId in pendingConversationDeletes) return
+        val selectionVersion = conversationSelectionVersion
+        val branchId = newConversationId()
+        val baseTitle = appContext.getString(R.string.conversation_branch_title,
+            conversationTitles[conversationId].orEmpty().ifBlank { appContext.getString(R.string.conversation_unnamed) })
+        val taken = conversationTitles.values.toSet()
+        var title = baseTitle
+        var number = 2
+        while (title in taken) title = "$baseTitle ${number++}"
+        branchingConversationId = conversationId
+        updateCurrentConversation(homeState.copy(input = draftText), updateTimestamp = false)
+        val sourceSaved = persistConversations()
+        scope.launch {
+            try {
+                check(sourceSaved.await()) { "conversation_branch_source_save_failed" }
+                // 事务提交后必须完成保存基线和 Main 状态的登记；页面销毁不能留下会被旧快照删除的分支。
+                withContext(NonCancellable) {
+                    val now = System.currentTimeMillis()
+                    val created = synchronized(persistenceLock) {
+                        check(!persistencePaused) { "conversation_branch_persistence_paused" }
+                        val previous = persistenceJob
+                        val persistence = conversationPersistence
+                        async(Dispatchers.IO) {
+                            previous?.join()
+                            persistence.branch(appContext, conversationId, messageId, branchId, title, now)
+                        }.also { persistenceJob = it }
+                    }.await()
+                    withContext(Dispatchers.Main.immediate) {
+                        conversationTitles = conversationTitles + (branchId to title)
+                        conversationUpdatedAt = conversationUpdatedAt + (branchId to now)
+                        updateConversation(branchId, created, updateTimestamp = false)
+                        refreshConversationSummaries()
+                        if (selectedConversationId == conversationId && conversationSelectionVersion == selectionVersion && !homeState.isStreaming) {
+                            selectConversation(branchId)
+                        }
+                        persistConversations()
+                    }
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: ConversationBranchUnavailable) {
+                Toast.makeText(appContext, R.string.conversation_branch_unavailable, Toast.LENGTH_LONG).show()
+            } catch (failure: Exception) {
+                AndroidAgentLogger.error("Conversation branch failed: type=${failure.safeLogType()}")
+                Toast.makeText(appContext, R.string.conversation_branch_failed, Toast.LENGTH_LONG).show()
+            } finally {
+                branchingConversationId = null
+            }
+        }
+    }
+
     fun startCharacterConversation(binding: RoleplayBinding, greeting: String) {
         createConversation()
         val id = newConversationId()
@@ -1343,7 +1408,7 @@ internal class AgentAppState(
     }
 
     fun selectReplyCandidate(messageId: String, index: Int) {
-        if (homeState.isStreaming || homeState.messageEdit != null) return
+        if (homeState.isStreaming || homeState.messageEdit != null || isBranchingCurrentConversation) return
         val updated = RoleplayConversationReducer.select(homeState, messageId, index) ?: return
         updateCurrentConversation(updated)
         refreshConversationSummaries()
@@ -1369,6 +1434,7 @@ internal class AgentAppState(
         conversationsById = conversationsById - conversationId
         conversationTitles = conversationTitles - conversationId
         conversationUpdatedAt = conversationUpdatedAt - conversationId
+        conversationPinnedIds = conversationPinnedIds - conversationId
         if (wasSelected) {
             conversationSelectionVersion += 1
             cancelHistoryPageLoad()
@@ -1404,6 +1470,17 @@ internal class AgentAppState(
         titleJobs.remove(conversationId)?.cancel()
         conversationTitles = conversationTitles + (conversationId to trimmed)
         conversationUpdatedAt = conversationUpdatedAt + (conversationId to System.currentTimeMillis())
+        refreshConversationSummaries()
+        persistConversations()
+    }
+
+    fun toggleConversationPin(conversationId: String) {
+        if (conversationId !in conversationsById) return
+        conversationPinnedIds = if (conversationId in conversationPinnedIds) {
+            conversationPinnedIds - conversationId
+        } else {
+            conversationPinnedIds + conversationId
+        }
         refreshConversationSummaries()
         persistConversations()
     }
@@ -1591,7 +1668,8 @@ internal class AgentAppState(
         if (
             !AgentFileReferencePolicy.canSend(
                 references = fileReferences,
-                terminalToolsEnabled = agentBooleanForUi(Prefs.Keys.AGENT_TERMINAL_TOOLS),
+                terminalToolsEnabled = agentBooleanForUi(Prefs.Keys.AGENT_TERMINAL_TOOLS) &&
+                    (Prefs.isToolEnabled("read_file") || Prefs.isToolEnabled("terminal")),
             )
         ) {
             Toast.makeText(
@@ -1660,7 +1738,8 @@ internal class AgentAppState(
         if (
             !AgentFileReferencePolicy.canSend(
                 references = fileReferences,
-                terminalToolsEnabled = agentBooleanForUi(Prefs.Keys.AGENT_TERMINAL_TOOLS),
+                terminalToolsEnabled = agentBooleanForUi(Prefs.Keys.AGENT_TERMINAL_TOOLS) &&
+                    (Prefs.isToolEnabled("read_file") || Prefs.isToolEnabled("terminal")),
             )
         ) {
             Toast.makeText(
@@ -1759,7 +1838,7 @@ internal class AgentAppState(
     }
 
     fun beginMessageEdit(messageId: String) {
-        if (homeState.isStreaming || homeState.messageEdit != null) return
+        if (homeState.isStreaming || homeState.messageEdit != null || isBranchingCurrentConversation) return
         if (homeState.roleplay != null) {
             if (messageId !in homeState.roleplayMessages.links) return
             val content = when (val message = homeState.messages.firstOrNull { it.id == messageId }) {
@@ -1833,7 +1912,7 @@ internal class AgentAppState(
         }
 
     fun deleteMessageTurn(messageId: String) {
-        if (homeState.isStreaming || homeState.messageEdit != null) return
+        if (homeState.isStreaming || homeState.messageEdit != null || isBranchingCurrentConversation) return
         val conversationId = selectedConversationId ?: return
         if (homeState.roleplay != null && messageId.startsWith("greeting-")) {
             val originalId = homeState.roleplayMessages.links[messageId]?.transcriptMessageId ?: return
@@ -1880,7 +1959,7 @@ internal class AgentAppState(
     }
 
     fun regenerateMessage(messageId: String) {
-        if (homeState.isStreaming || homeState.messageEdit != null) return
+        if (homeState.isStreaming || homeState.messageEdit != null || isBranchingCurrentConversation) return
         val conversationId = selectedConversationId ?: return
         if (homeState.roleplay != null) {
             val target = homeState.messages.filterIsInstance<AgentMessageUi>().firstOrNull { it.id == messageId } ?: return
@@ -1925,7 +2004,7 @@ internal class AgentAppState(
 
     fun compactCurrentContext() {
         val conversationId = selectedConversationId ?: return
-        if (runStore.activeRunId(conversationId) != null || !homeState.canCompactContext || modelPickerState.isChanging) return
+        if (isBranchingCurrentConversation || runStore.activeRunId(conversationId) != null || !homeState.canCompactContext || modelPickerState.isChanging) return
         launchConversationRun(
             conversationId = conversationId,
             runId = java.util.UUID.randomUUID().toString(),
@@ -2257,6 +2336,149 @@ internal class AgentAppState(
             homeState.copy(
                 pendingFileReferences = homeState.pendingFileReferences.filterNot { it.id == id }
             )
+        )
+    }
+
+    fun acceptSharedContent(request: IncomingShareRequest) {
+        val canReuseCurrentDraft = homeState.isConversationLoaded &&
+            homeState.roleplay == null &&
+            selectedConversationId?.isReadOnlyExternalArchiveConversation() != true &&
+            homeState.messages.isEmpty() &&
+            !homeState.hasEarlierMessages &&
+            !homeState.isStreaming &&
+            !homeState.isCompacting &&
+            homeState.messageEdit == null &&
+            homeState.input.isBlank() &&
+            homeState.pendingImages.isEmpty() &&
+            homeState.pendingFileReferences.isEmpty() &&
+            homeState.queuedMessages.isEmpty()
+        if (!canReuseCurrentDraft) {
+            createConversation()
+        }
+        request.text?.takeIf(String::isNotBlank)?.let { sharedText ->
+            val mergedInput = when {
+                homeState.input.isBlank() -> sharedText
+                else -> homeState.input.trimEnd() + "\n" + sharedText
+            }
+            updateCurrentConversation(
+                homeState.copy(
+                    input = mergedInput,
+                    inputSyncVersion = homeState.inputSyncVersion + 1,
+                    focusInputOnSync = false,
+                ),
+                updateTimestamp = false,
+            )
+        }
+        if (request.uris.isEmpty()) return
+        val ownerVersion = fileAttachmentOwnerVersion
+        scope.launch(Dispatchers.IO) {
+            val gateway = AgentFileReferenceGateway(appContext, AndroidAgentLogger)
+            val resolvedImages = mutableListOf<PendingImageUi>()
+            val resolvedFileReferences = mutableListOf<AgentFileReference>()
+            val failures = mutableListOf<AgentFileReferenceGateway.Error>()
+            request.uris.forEach { rawUri ->
+                val uri = Uri.parse(rawUri)
+                if (isSharedImageCandidate(uri, request.mimeType, isSingleUri = request.uris.size == 1)) {
+                    val image = AgentImageCodec.fromReference(
+                        context = appContext,
+                        value = rawUri,
+                        source = "user_attach",
+                    )
+                    if (image != null) {
+                        val preview = AgentImageCodec.previewFromReference(appContext, image) ?: image
+                        resolvedImages += PendingImageUi(
+                            id = "img-${UUID.randomUUID()}",
+                            uri = image.reference,
+                            dataUrl = preview.reference,
+                            mimeType = image.mimeType,
+                        )
+                        return@forEach
+                    }
+                }
+                when (val resolution = resolveSharedFileUri(gateway, uri)) {
+                    is AgentFileReferenceGateway.Resolution.Success -> resolvedFileReferences += resolution.reference
+                    is AgentFileReferenceGateway.Resolution.Failure -> failures += resolution.error
+                }
+            }
+            withContext(Dispatchers.Main) {
+                if (ownerVersion != fileAttachmentOwnerVersion) {
+                    Toast.makeText(
+                        appContext,
+                        appContext.getString(R.string.state_ui_conversation_switched_selected_path_not_added_5bf91e),
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                    return@withContext
+                }
+                val existingPaths = homeState.pendingFileReferences
+                    .mapTo(mutableSetOf()) { it.reference.absolutePath }
+                val fileAdditions = resolvedFileReferences
+                    .distinctBy { it.absolutePath }
+                    .filter { existingPaths.add(it.absolutePath) }
+                    .map { reference ->
+                        PendingFileReferenceUi(
+                            id = "file-${UUID.randomUUID()}",
+                            reference = reference,
+                        )
+                    }
+                if (resolvedImages.isNotEmpty() || fileAdditions.isNotEmpty()) {
+                    updateCurrentConversation(
+                        homeState.copy(
+                            pendingImages = homeState.pendingImages + resolvedImages,
+                            pendingFileReferences = homeState.pendingFileReferences + fileAdditions,
+                        ),
+                        updateTimestamp = false,
+                    )
+                }
+                val addedCount = resolvedImages.size + fileAdditions.size
+                val message = when {
+                    failures.size == 1 && addedCount == 0 -> failures.single().userMessage
+                    failures.isNotEmpty() -> appContext.resources.getQuantityString(
+                        R.plurals.file_references_added_with_failures,
+                        failures.size,
+                        addedCount,
+                        failures.size,
+                    )
+                    addedCount == 0 && resolvedFileReferences.isNotEmpty() ->
+                        appContext.getString(R.string.state_ui_the_selected_path_has_been_added_42b432)
+                    else -> null
+                }
+                if (message != null) {
+                    Toast.makeText(appContext, message, Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    private fun isSharedImageCandidate(
+        uri: Uri,
+        intentMimeType: String?,
+        isSingleUri: Boolean,
+    ): Boolean {
+        val resolverType = if (uri.scheme == ContentResolver.SCHEME_CONTENT) {
+            runCatching { appContext.contentResolver.getType(uri) }.getOrNull()
+        } else {
+            null
+        }
+        if (resolverType != null && resolverType != "*/*" && resolverType != "application/octet-stream") {
+            return resolverType.startsWith("image/", ignoreCase = true)
+        }
+        val path = uri.lastPathSegment ?: uri.path.orEmpty()
+        val extension = path.substringAfterLast('.', "").lowercase()
+        if (extension in SHARED_IMAGE_EXTENSIONS) return true
+        return isSingleUri && intentMimeType?.startsWith("image/", ignoreCase = true) == true
+    }
+
+    private fun resolveSharedFileUri(
+        gateway: AgentFileReferenceGateway,
+        uri: Uri,
+    ): AgentFileReferenceGateway.Resolution = when (uri.scheme) {
+        ContentResolver.SCHEME_FILE -> gateway.resolveAbsolutePath(
+            rawPath = uri.path.orEmpty(),
+            expectedKind = AgentFileReferenceKind.File,
+        )
+        else -> gateway.resolveDocumentUri(
+            uri = uri,
+            expectedKind = AgentFileReferenceKind.File,
         )
     }
 
@@ -2754,9 +2976,13 @@ internal class AgentAppState(
         val activeConversationIds = activeRunSnapshots.mapTo(hashSetOf()) { it.conversationId }
         val summaries = conversationsById.entries
             .filterNot { it.key in activeConversationIds }
-            .sortedByDescending { (id, _) ->
-                conversationUpdatedAt[id] ?: 0L
-            }
+            .sortedWith(
+                compareByDescending<Map.Entry<String, AgentChatHomeUiState>> { (id, _) ->
+                    id in conversationPinnedIds
+                }.thenByDescending { (id, _) ->
+                    conversationUpdatedAt[id] ?: 0L
+                }
+            )
             .map { (id, state) ->
                 val lastMessage = state.messages.lastOrNull()
                 ConversationSummaryUi(
@@ -2799,6 +3025,7 @@ internal class AgentAppState(
                     },
                     updatedAtMillis = conversationUpdatedAt[id] ?: 0L,
                     mode = ConversationModeUi.Chat,
+                    isPinned = id in conversationPinnedIds,
                     characterName = state.roleplay?.characterName ?: state.conversationCharacterName,
                     characterAvatarPath = state.roleplay?.avatarPath ?: state.conversationCharacterAvatarPath,
                     isActiveRun = state.isStreaming,
@@ -2847,6 +3074,7 @@ internal class AgentAppState(
         val conversations = conversationsById
         val titles = conversationTitles
         val timestamps = conversationUpdatedAt
+        val pinned = conversationPinnedIds
         return synchronized(persistenceLock) {
             // 未保存会阻止结果回执和 write-ahead 运行，由导入后的重载或失败后的补写收尾。
             if (persistencePaused) return CompletableDeferred(false)
@@ -2856,7 +3084,7 @@ internal class AgentAppState(
                 try {
                     previous?.join()
                     persistence.save(appContext,
-                        AgentConversationStore.Snapshot(selected, conversations, titles, timestamps))
+                        AgentConversationStore.Snapshot(selected, conversations, titles, timestamps, pinned))
                     onSaved?.invoke()
                     scope.launch(Dispatchers.Main.immediate) { releaseInactiveConversations(conversations) }
                     true
@@ -2877,6 +3105,9 @@ internal class AgentAppState(
         const val MAX_PREVIEW_CHARS = 48
         const val LEGACY_STOPPED_ERROR = "已停止"
         const val SYNTHETIC_STATUS_STOPPED = "eta_status:stopped"
+        private val SHARED_IMAGE_EXTENSIONS = setOf(
+            "jpg", "jpeg", "png", "webp", "gif", "bmp", "heic", "heif",
+        )
 
         fun emptyChatState(thinkingEnabled: Boolean): AgentChatHomeUiState =
             AgentChatHomeUiState(
