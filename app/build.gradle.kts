@@ -126,11 +126,9 @@ android {
         // Robolectric 在高版本 JDK 下需要访问内部 API，参数只作用于测试 JVM。
         unitTests.all {
             if (System.getProperty("os.name").startsWith("Windows")) {
-                // Keep large Robolectric sandboxes and SDKs on the workspace volume.
-                val asciiSource = rootProject.projectDir.parentFile.resolve("projects/eta-dev")
-                val testTemp = if (asciiSource.isDirectory && asciiSource.canonicalFile == rootProject.projectDir.canonicalFile) {
-                    asciiSource.resolve(it.temporaryDir.relativeTo(rootProject.projectDir))
-                } else it.temporaryDir
+                // Native SQLite does not accept long Windows paths even when the filesystem does.
+                val testTemp = rootProject.file(".tmp/t")
+                testTemp.mkdirs()
                 it.systemProperty("java.io.tmpdir", testTemp.absolutePath)
                 it.systemProperty("maven.repo.local", layout.buildDirectory.dir("test-host-maven").get().asFile.absolutePath)
             }

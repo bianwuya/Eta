@@ -1,4 +1,4 @@
-﻿package io.github.mangi.eta.ui.components
+package io.github.mangi.eta.ui.components
 
 import android.content.Intent
 import androidx.activity.compose.rememberLauncherForActivityResult

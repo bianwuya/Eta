@@ -184,6 +184,12 @@ internal class AgentAppState(
     )
         private set
 
+    val currentConversationTitle: String?
+        get() {
+            if (homeState.messages.isEmpty() && !homeState.hasEarlierMessages) return null
+            return conversationPaneState.selectedConversationId?.let(conversationTitles::get)?.takeIf(String::isNotBlank)
+        }
+
     private var activeRunSnapshots by mutableStateOf<List<AgentRuntimeWire.ActiveRunSnapshot>>(emptyList())
 
     init {

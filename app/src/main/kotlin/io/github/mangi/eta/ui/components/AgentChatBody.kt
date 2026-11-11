@@ -1,4 +1,4 @@
-﻿package io.github.mangi.eta.ui.components
+package io.github.mangi.eta.ui.components
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Spring
@@ -198,6 +198,7 @@ internal fun AgentChatBody(
     onLoadEarlierMessages: () -> Unit = {},
     onHistoryViewportChanged: (Boolean) -> Unit = {},
     isDrawerOpen: Boolean = false,
+    topInset: Dp = 0.dp,
     modifier: Modifier = Modifier,
     onSubmitWithMode: ((String, String) -> Unit)? = null,
     onInterruptAndSubmitWithMode: ((String, String) -> Unit)? = null,
@@ -338,6 +339,7 @@ internal fun AgentChatBody(
             historyLoadState = historyLoadState,
             onLoadEarlierMessages = onLoadEarlierMessages,
             onHistoryViewportChanged = onHistoryViewportChanged,
+            topInset = topInset,
             modifier = modifier,
         )
     }
@@ -398,6 +400,7 @@ private fun AgentChatScaffold(
     historyLoadState: ConversationHistoryLoadState,
     onLoadEarlierMessages: () -> Unit,
     onHistoryViewportChanged: (Boolean) -> Unit,
+    topInset: Dp = 0.dp,
     modifier: Modifier = Modifier,
     onSubmitWithMode: ((String, String) -> Unit)? = null,
     onInterruptAndSubmitWithMode: ((String, String) -> Unit)? = null,
@@ -489,7 +492,7 @@ private fun AgentChatScaffold(
                     onSuggestionClick = onSuggestionClick,
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(bottom = bottomPadding),
+                        .padding(top = topInset, bottom = bottomPadding),
                 )
             } else {
                 AgentConversationMessages(
@@ -513,6 +516,7 @@ private fun AgentChatScaffold(
                     currentBrowserMessageId = currentBrowserMessageId,
                     hasEarlierMessages = hasEarlierMessages,
                     messageStartIndex = messageStartIndex,
+                    topInset = topInset,
                     historyLoadState = historyLoadState,
                     onLoadEarlierMessages = onLoadEarlierMessages,
                     onHistoryViewportChanged = onHistoryViewportChanged,
@@ -544,6 +548,7 @@ internal fun AgentConversationMessages(
     keepBottomAnchored: Boolean,
     onBottomAnchorChanged: (Boolean) -> Unit,
     assistantOverlay: Boolean = false,
+    topInset: Dp = 0.dp,
     onSuggestionClick: (String) -> Unit = {},
     onRunTraceClick: () -> Unit = {},
     onOpenBrowser: () -> Unit = {},
@@ -824,8 +829,8 @@ internal fun AgentConversationMessages(
                 .nestedScroll(historyPaging.scrollConnection)
                 .overScrollVertical(),
             contentPadding = PaddingValues(
-                top = 16.dp,
-                bottom = bottomInset + 16.dp,
+                top = topInset + if (assistantOverlay) 8.dp else 10.dp,
+                bottom = bottomInset + 14.dp,
             ),
             overscrollEffect = null,
         ) {
@@ -1219,7 +1224,6 @@ private fun AgentChatBottomBar(
             AgentChatInputBar(
                 conversationId = conversationId,
                 input = input,
-                modelPickerState = modelPickerState,
                 isCompacting = isCompacting,
                 contextUsage = contextUsage,
                 showContextUsage = showContextUsage,
@@ -1246,7 +1250,6 @@ private fun AgentChatBottomBar(
                 onReasoningEffortChange = onReasoningEffortChange,
                 onCompactContext = onCompactContext,
                 canCompactContext = canCompactContext,
-                onModelSelected = onModelSelected,
                 onStop = onStop,
                 onAttachImage = onAttachImage,
                 onRemoveImage = onRemoveImage,

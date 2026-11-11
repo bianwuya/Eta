@@ -189,6 +189,7 @@ class ImageViewerDialogTest {
             val imageUrl = "data:image/png;base64," + Base64.encodeToString(bytes, Base64.NO_WRAP)
             fixture.setContent {
                 AgentAppTheme(appearance = AppearanceSettings(uiStyle = style), applyInterfaceScale = false) {
+                    ChatImagePreviewHost {
                     ChatMessageItem(
                         message = UserMessageUi(id = "image-entry", content = "", images = listOf(imageUrl)),
                         onSuggestionClick = {},
@@ -197,22 +198,28 @@ class ImageViewerDialogTest {
                         showBrowserShortcut = false,
                         assistantOverlay = overlay,
                     )
+                    }
                 }
             }
+            fixture.advance(12)
             val root = fixture.mainRoot()
             val thumbnail = requireNotNull(findDescription(root.semanticsOwner.unmergedRootSemanticsNode,
-                activity.getString(R.string.chat_image_attachment)))
+                activity.getString(R.string.chat_view_image)))
             assertTrue(fixture.showingDialogs().isEmpty())
             fixture.tap(root, thumbnail)
-            val dialog = fixture.awaitDialog()
-            val dialogRoot = fixture.dialogRoot(dialog)
-            assertNotNull(findDescription(dialogRoot.semanticsOwner.unmergedRootSemanticsNode,
-                activity.getString(R.string.chat_image_attachment)))
-            val close = requireNotNull(findDescription(dialogRoot.semanticsOwner.rootSemanticsNode,
-                activity.getString(android.R.string.cancel)))
-            assertTrue(close.config[SemanticsActions.OnClick].action?.invoke() == true)
-            fixture.advance(4)
-            assertFalse(dialog.isShowing)
+            fixture.advance(60)
+            val images = allDescriptions(root.semanticsOwner.unmergedRootSemanticsNode,
+                activity.getString(R.string.chat_image_attachment))
+            assertEquals("one full-screen canvas must exist", 1, images.size)
+            // Force the covering Canvas through measure/layout before hit testing its window bounds.
+            root.measureAndLayoutForTest()
+            fixture.tap(root, requireNotNull(findDescription(root.semanticsOwner.unmergedRootSemanticsNode,
+                activity.getString(R.string.chat_image_attachment))))
+            fixture.advance(ViewConfiguration.getDoubleTapTimeout() / 16 + 80)
+            assertEquals(0, allDescriptions(root.semanticsOwner.unmergedRootSemanticsNode,
+                activity.getString(R.string.chat_image_attachment)).size)
+            assertNotNull(findDescription(root.semanticsOwner.unmergedRootSemanticsNode,
+                activity.getString(R.string.chat_view_image)))
         } finally {
             bitmap.recycle()
             try { fixture.close() } finally { controller.pause().stop().destroy() }
@@ -446,7 +453,7 @@ class ImageViewerDialogTest {
 
         fun tap(root: ViewRootForTest, node: SemanticsNode) {
             val bounds = node.boundsInRoot
-            assertTrue(bounds.width > 0 && bounds.height > 0)
+            assertTrue("empty image bounds: $bounds", bounds.width > 0 && bounds.height > 0)
             val location = IntArray(2).also { root.view.getLocationOnScreen(it) }
             val downTime = SystemClock.uptimeMillis()
             for (action in listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP)) {
@@ -486,6 +493,10 @@ class ImageViewerDialogTest {
             return null
         }
     }
+
+    private fun allDescriptions(node: SemanticsNode, description: String): List<SemanticsNode> =
+        (if (node.config.getOrNull(SemanticsProperties.ContentDescription)?.contains(description) == true) listOf(node) else emptyList()) +
+            node.children.flatMap { allDescriptions(it, description) }
 
     private fun findDescription(node: SemanticsNode, description: String): SemanticsNode? {
         if (node.config.getOrNull(SemanticsProperties.ContentDescription)?.contains(description) == true) return node

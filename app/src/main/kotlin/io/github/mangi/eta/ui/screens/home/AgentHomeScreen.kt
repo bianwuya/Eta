@@ -1,10 +1,12 @@
-﻿package io.github.mangi.eta.ui.screens.home
+package io.github.mangi.eta.ui.screens.home
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.ui.components.AgentChatBody
 import io.github.mangi.eta.ui.components.AgentConversationLoadState
 import io.github.mangi.eta.ui.components.LocalRoleplayChat
@@ -34,6 +36,7 @@ internal fun AgentHomeScreen(
     historyLoadState: ConversationHistoryLoadState = ConversationHistoryLoadState.Idle,
     isDrawerOpen: Boolean = false,
     isBranching: Boolean = false,
+    topInset: Dp = 0.dp,
     modifier: Modifier = Modifier,
 ) {
     val readDraft = io.github.mangi.eta.local.incoming.incomingDraftReader()
@@ -58,6 +61,7 @@ internal fun AgentHomeScreen(
                     conversationId = conversationKey,
                     messages = state.messages,
                     modelPickerState = modelPickerState,
+                    topInset = topInset,
                     isCompacting = state.isCompacting,
                     isBranching = isBranching,
                     input = state.input,
