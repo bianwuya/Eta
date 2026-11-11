@@ -81,7 +81,7 @@ internal class AgentRuntimeSession(
 
     fun sealPersistence() = lock.withLock { checkpointRecorder?.seal() }
 
-    private var state = State.RUNNING
+    @Volatile private var state = State.RUNNING
     private var stopRequested = false
     private val replayEvents = mutableListOf<AgentEvent>()
     private val searchSuggestionsBudget = SearchSuggestionsBudget()
@@ -102,11 +102,12 @@ internal class AgentRuntimeSession(
         }
     }
 
+    // UI/registry projections must not wait for a checkpoint write holding the session lock.
     val isTerminal: Boolean
-        get() = lock.withLock { state == State.TERMINAL }
+        get() = state == State.TERMINAL
 
     val isCommitting: Boolean
-        get() = lock.withLock { state == State.COMMITTING }
+        get() = state == State.COMMITTING
 
     /** Checkpoint and publication share the stop/terminal admission boundary. */
     fun emit(event: AgentEvent, beforePublish: () -> Unit = {}): Boolean =

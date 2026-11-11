@@ -51,6 +51,12 @@ class RuntimeSteeringOffMainThreadTest {
             assertTrue("main ingest blocked for $elapsed ms", elapsed < 150)
             shadowOf(Looper.getMainLooper()).idle()
             assertTrue("ACK must wait for the blocked durable path", replies.isEmpty())
+            val queryStarted = System.nanoTime()
+            handler.handleMessage(Message.obtain(null, AgentRuntimeWire.MSG_QUERY_ACTIVE_RUNS).apply {
+                sendingUid = Process.myUid()
+                replyTo = Messenger(Handler(Looper.getMainLooper()))
+            })
+            assertTrue("follow-up main IPC waited for the durable lock", (System.nanoTime() - queryStarted) / 1_000_000 < 150)
             release.countDown(); worker.join(2_000)
             val deadline = System.nanoTime() + 5_000_000_000
             while (replies.isEmpty() && System.nanoTime() < deadline) { shadowOf(Looper.getMainLooper()).idle(); Thread.sleep(5) }
