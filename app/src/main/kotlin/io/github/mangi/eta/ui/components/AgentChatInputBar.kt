@@ -198,7 +198,6 @@ internal fun AgentChatInputBar(
             }
     }
     BackHandler(enabled = slashTrigger != null) { slashTrigger = null; slashTracker.clear() }
-    io.github.mangi.eta.local.incoming.BindIncomingDraft(textFieldState)
     val speechSettings by remember { SpeechSettingsRepository.settingsFlow() }.collectAsState(initial = null)
     val recognitionEnabled = speechSettings?.recognitionEnabled == true
     val dictation = rememberSpeechInput { recognized ->
@@ -240,6 +239,13 @@ internal fun AgentChatInputBar(
         wasEditingMessage = isEditingMessage
         syncedVersion = inputSyncVersion
     }
+
+    io.github.mangi.eta.local.incoming.BindIncomingDraft(
+        textFieldState, conversationId,
+        synchronized = isEditingMessage == wasEditingMessage && inputSyncVersion == syncedVersion,
+        editing = isEditingMessage,
+        inputSyncVersion = inputSyncVersion,
+    )
 
     Column(
         modifier = modifier

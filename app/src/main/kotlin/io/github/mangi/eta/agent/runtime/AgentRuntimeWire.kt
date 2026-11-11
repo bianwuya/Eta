@@ -107,6 +107,8 @@ internal object AgentRuntimeWire {
     const val MSG_QUERY_RUN_PRESENTATION = 24
     const val MSG_QUERY_RUN_PRESENTATION_RESPONSE = 25
     const val MSG_PREFER_RUN = 26
+    const val MSG_QUERY_STEERING = 27
+    const val MSG_QUERY_STEERING_RESPONSE = 28
 
     private const val MODULE_PACKAGE = "io.github.mangi.eta"
     private const val SERVICE_CLASS = "io.github.mangi.eta.agent.runtime.AgentRuntimeService"

@@ -4,6 +4,7 @@ import android.app.Activity
 import android.app.Application
 import android.content.Context
 import android.content.ContextWrapper
+import android.os.Looper
 import android.view.DragAndDropPermissions
 import android.widget.Toast
 import androidx.compose.foundation.background
@@ -51,18 +52,48 @@ import top.yukonga.miuix.kmp.basic.Text
 /** Only the main chat provides this bridge. Overlay/voice input bars remain unchanged. */
 private class IncomingDraftBridge {
     var field by mutableStateOf<TextFieldState?>(null)
+    var conversationId by mutableStateOf<String?>(null)
+    var editing by mutableStateOf(false)
+    var inputSyncVersion by mutableStateOf(0)
+
+    fun read(conversationId: String): String? {
+        check(Looper.myLooper() == Looper.getMainLooper())
+        return field?.takeIf { this.conversationId == conversationId }?.text?.toString()
+    }
 }
 
 private val LocalIncomingDraft = staticCompositionLocalOf<IncomingDraftBridge?> { null }
 
 /** Bind the actual local input state instead of overwriting the upstream, possibly stale draft. */
 @Composable
-internal fun BindIncomingDraft(field: TextFieldState) {
+internal fun BindIncomingDraft(
+    field: TextFieldState,
+    conversationId: String?,
+    synchronized: Boolean,
+    editing: Boolean,
+    inputSyncVersion: Int,
+) {
     val bridge = LocalIncomingDraft.current
-    DisposableEffect(bridge, field) {
-        bridge?.field = field
-        onDispose { bridge?.let { if (it.field === field) it.field = null } }
+    DisposableEffect(bridge, field, conversationId, synchronized, editing, inputSyncVersion) {
+        bridge?.editing = editing
+        bridge?.inputSyncVersion = inputSyncVersion
+        bridge?.conversationId = conversationId
+        bridge?.field = field.takeIf { synchronized }
+        onDispose {
+            bridge?.let {
+                if (it.field === field && it.conversationId == conversationId) {
+                    it.field = null
+                    it.conversationId = null
+                }
+            }
+        }
     }
+}
+
+@Composable
+internal fun incomingDraftReader(): (String) -> String? {
+    val bridge = LocalIncomingDraft.current
+    return remember(bridge) { { conversationId -> bridge?.read(conversationId) } }
 }
 
 internal fun appendIncomingText(existing: String, incoming: String): String = when {
@@ -99,10 +130,11 @@ internal fun IncomingContentHost(
             }
         }
     }
-    LaunchedEffect(item?.id, ready, bridge.field) {
+    LaunchedEffect(item?.id, ready, bridge.field, bridge.conversationId, bridge.editing, bridge.inputSyncVersion) {
         val incoming = item ?: return@LaunchedEffect
         val field = bridge.field ?: return@LaunchedEffect
-        if (!ready) return@LaunchedEffect
+        if (!ready || bridge.editing || bridge.inputSyncVersion != agentState.homeState.inputSyncVersion) return@LaunchedEffect
+        if (bridge.conversationId != agentState.conversationPaneState.selectedConversationId) return@LaunchedEffect
         if (!agentState.attachIncomingContent(incoming.images, incoming.files)) return@LaunchedEffect
         if (incoming.text.isNotBlank()) {
             field.edit {

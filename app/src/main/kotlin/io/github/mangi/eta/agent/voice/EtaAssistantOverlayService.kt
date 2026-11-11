@@ -101,6 +101,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
         Thread(runnable, "EtaAssistantRuntimeCancel")
     }
     private val runtimeClient = AgentRuntimeClient(this, AndroidAgentLogger)
+    private val steeringCoordinator by lazy { EtaAssistantSteeringCoordinator(this, runtimeClient) }
     private val runMessageProjector = AgentRunMessageProjector()
     private val eventCoalescer = AgentRunEventCoalescer()
     private var deltaFlushJob: Job? = null
@@ -156,6 +157,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
     private var handoffInProgress by mutableStateOf(false)
     private var handoffExitRequested by mutableStateOf(false)
     private var inputText by mutableStateOf("")
+    private var steeringPersistencePending = false
     private var inputFocusRequestKey by mutableIntStateOf(-1)
     private var uiState by mutableStateOf(EtaVoiceUiState())
 
@@ -525,7 +527,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
     private fun showKeyboard(status: EtaVoiceStatus = EtaVoiceStatus.InputRequest) {
         entryInputPending = false
         uiState = uiState.copy(
-            phase = EtaVoicePhase.READY,
+            phase = if (activeRunId == null) EtaVoicePhase.READY else EtaVoicePhase.PROCESSING,
             status = status,
         )
         updateSoftInput(visible = true)
@@ -534,7 +536,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
 
     private fun submitInput() {
         val prompt = inputText.trim()
-        if (prompt.isBlank() || activeRunId != null) return
+        if (prompt.isBlank()) return
         submitPrompt(prompt)
     }
 
@@ -542,7 +544,48 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
 
     private fun submitPromptInternal(prompt: String, fromSpeech: Boolean) {
         val normalized = prompt.trim()
-        if (normalized.isBlank() || activeRunId != null || choicePending) return
+        if (normalized.isBlank() || choicePending) return
+        val currentRunId = activeRunId
+        if (currentRunId != null) {
+            if (steeringPersistencePending) return
+            steeringPersistencePending = true
+            entryInputPending = false
+            inputFocusRequestKey = -1
+            speechInput.cancel()
+            speechState = EtaSpeechState()
+            playback.stop()
+            updateSoftInput(visible = false)
+            steeringCoordinator.submitSteering(
+                runId = currentRunId,
+                conversationKey = conversationKey,
+                prompt = normalized,
+                onPersisted = {
+                    steeringPersistencePending = false
+                    if (!destroyed) {
+                        if (inputText.trim() == normalized) inputText = ""
+                    }
+                },
+                onFailure = {
+                    steeringPersistencePending = false
+                    if (!destroyed) {
+                        speechState = EtaSpeechState(
+                            message = getString(R.string.voice_tasks_unavailable),
+                            feedbackIsError = true
+                        )
+                    }
+                },
+                restoreInput = { rejectedText ->
+                    if (!destroyed && rejectedText.isNotBlank()) {
+                        if (inputText.isBlank()) {
+                            inputText = rejectedText
+                        } else if (inputText != rejectedText) {
+                            inputText = "$rejectedText\n$inputText"
+                        }
+                    }
+                }
+            )
+            return
+        }
         entryInputPending = false
         inputFocusRequestKey = -1
         speechInput.cancel()
@@ -710,7 +753,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
             is AgentEvent.UserSupplementReceived -> {
                 val id = "user-$runId-supplement-${event.index}"
                 if (messages.none { it.id == id }) {
-                    messages = messages + UserMessageUi(id = id, content = event.text)
+                    messages = messages + UserMessageUi(id = id, content = event.text, images = event.images)
                 }
             }
             is AgentEvent.ToolStarted -> status = EtaVoiceStatus.RunningTool(event.name)
@@ -819,6 +862,22 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
         val observer = ++observerGeneration
         runStopRequested = AtomicBoolean(false)
         uiState = EtaVoiceUiState(phase = EtaVoicePhase.PROCESSING, status = EtaVoiceStatus.Reasoning)
+        scope.launch {
+          try {
+            steeringCoordinator.reconcileUnconfirmed(run.runId, run.conversationKey) { restoredText ->
+                if (!destroyed && restoredText.isNotBlank()) {
+                    if (inputText.isBlank()) {
+                        inputText = restoredText
+                    } else if (inputText != restoredText) {
+                        inputText = "$restoredText\n$inputText"
+                    }
+                }
+            }
+          } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+          catch (_: Exception) {
+            speechState = EtaSpeechState(message = getString(R.string.voice_tasks_unavailable), feedbackIsError = true)
+          }
+        }
         attachObserverJob = scope.launch {
             val outcome = kotlinx.coroutines.runInterruptible {
                 runtimeClient.preferRun(run.runId)

@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.Intent
 import android.content.pm.PackageManager
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertEquals
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -20,6 +21,7 @@ class IncomingShareTargetTest {
                 val intent = Intent(action).setType(mime).setPackage(context.packageName)
                 @Suppress("DEPRECATION")
                 val matches = context.packageManager.queryIntentActivities(intent, PackageManager.MATCH_DEFAULT_ONLY)
+                assertEquals("$action $mime: ${matches.map { it.activityInfo.name }}", 1, matches.size)
                 assertTrue("$action $mime should offer Eta", matches.any {
                     it.activityInfo.name == IncomingShareActivity::class.java.name && it.activityInfo.exported
                 })

@@ -138,6 +138,12 @@ internal interface ConversationDao : ChunkedTextDao {
     suspend fun messagesBefore(conversationId: String, before: Int, limit: Int): List<ConversationMessageEntity> =
         messageRowsBefore(conversationId, before, limit).asReversed().map { restoreMessage(it) }
 
+    /** Only usage columns: history text and image payloads never enter the prefix cursor. */
+    @Query("SELECT context_tokens, input_tokens, output_tokens, reasoning_tokens, cached_tokens, step_count, " +
+        "llm_ms, tool_ms, ttft_ms, ttft_steps, decode_ms, decode_tokens FROM conversation_messages " +
+        "WHERE conversation_id = :conversationId AND type = 'assistant' AND sort_index < :before ORDER BY sort_index ASC")
+    fun assistantUsageBefore(conversationId: String, before: Int): Cursor
+
     @Query("SELECT EXISTS(SELECT 1 FROM conversation_messages WHERE conversation_id = :conversationId AND sort_index < :before)")
     suspend fun hasMessagesBefore(conversationId: String, before: Int): Boolean
 

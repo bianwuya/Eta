@@ -24,10 +24,13 @@ import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [33], application = Application::class)
+@Config(sdk = [33], application = Application::class,
+    instrumentedPackages = ["androidx.core.content"],
+    shadows = [io.github.mangi.eta.testing.HostFileProviderPathShadow::class])
 class ExternalHtmlPreviewTest {
     private val context get() = RuntimeEnvironment.getApplication()
     private val uri get() = Uri.parse("content://${externalHtmlAuthority(context)}/html/preview.html")
+    private fun reference(file: File) = Uri.encode(file.absolutePath, "/\\")
 
     private fun provider(): ExternalHtmlPreviewProvider =
         Robolectric.buildContentProvider(ExternalHtmlPreviewProvider::class.java).create(
@@ -88,7 +91,7 @@ class ExternalHtmlPreviewTest {
         val html = "<!doctype html><meta http-equiv='Content-Security-Policy' content=\"default-src 'self'\"><script>window.x=1</script>"
         val original = LocalPreviewFiles.saveCode(context, html)
         val adjacent = File(original.parentFile, "asset.js").apply { writeText("private asset") }
-        val shared = copyExternalHtmlPreview(context, original.path)
+        val shared = copyExternalHtmlPreview(context, reference(original))
         assertEquals("content", shared.scheme)
         assertEquals(externalHtmlAuthority(context), shared.authority)
         val provider = provider()
@@ -108,7 +111,7 @@ class ExternalHtmlPreviewTest {
     }
 
     @Test fun providerRejectsAllWriteModesAndDelete() {
-        val shared = copyExternalHtmlPreview(context, LocalPreviewFiles.saveCode(context, "<p>one</p>").path)
+        val shared = copyExternalHtmlPreview(context, reference(LocalPreviewFiles.saveCode(context, "<p>one</p>")))
         val provider = provider()
         listOf("w", "wt", "wa", "rw", "rwt").forEach { mode ->
             assertThrows(FileNotFoundException::class.java) { provider.openFile(shared, mode) }
@@ -118,7 +121,7 @@ class ExternalHtmlPreviewTest {
 
     @Test fun cacheIsBoundedAndSourceIsUnmodified() {
         val original = LocalPreviewFiles.saveCode(context, "<p>same</p>")
-        repeat(12) { copyExternalHtmlPreview(context, original.path) }
+        repeat(12) { copyExternalHtmlPreview(context, reference(original)) }
         val files = File(context.cacheDir, "external-html-preview").listFiles()!!
         assertEquals(8, files.size)
         assertTrue(files.all { it.extension == "html" })

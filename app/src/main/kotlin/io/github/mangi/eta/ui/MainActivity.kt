@@ -15,6 +15,7 @@ import androidx.compose.runtime.setValue
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.lifecycleScope
 import io.github.mangi.eta.agent.runtime.AgentRuntimeService
+import io.github.mangi.eta.agent.terminal.TerminalRuntime
 import io.github.mangi.eta.agent.voice.EtaAssistantOverlayService
 import io.github.mangi.eta.core.AndroidAgentLogger
 import io.github.mangi.eta.data.model.AppearanceThemeMode
@@ -86,11 +87,6 @@ class MainActivity : ComponentActivity() {
                             launchRequests = launchRequests.copy(archivedConversation = null)
                             intent?.action = null
                         },
-                        sharedContent = launchRequests.sharedContent,
-                        onSharedContentAccepted = {
-                            launchRequests = launchRequests.copy(sharedContent = null)
-                            intent?.action = null
-                        },
                         openSpeechSettings = launchRequests.speechSettings,
                         openTerminal = launchRequests.terminal,
                         onTerminalOpened = {
@@ -118,6 +114,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
+        TerminalRuntime.refreshPersistentServices()
         startedInstances.add(this)
         isInForeground = true
         AgentRuntimeService.onEtaUiVisibilityChanged()

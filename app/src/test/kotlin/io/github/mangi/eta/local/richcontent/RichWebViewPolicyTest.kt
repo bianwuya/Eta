@@ -57,7 +57,7 @@ class RichWebViewPolicyTest {
     @Test fun codePreviewRoundTripsThroughPrivateCacheAndRejectsOutsideFiles() {
         val context = RuntimeEnvironment.getApplication()
         val file = LocalPreviewFiles.saveCode(context, "<h1>页面</h1>")
-        assertEquals("<h1>页面</h1>", LocalPreviewFiles.text(context, file.path))
+        assertEquals("<h1>页面</h1>", LocalPreviewFiles.text(context, Uri.encode(file.absolutePath, "/\\")))
         assertThrows(IllegalArgumentException::class.java) { LocalPreviewFiles.file(context, "/data/local/tmp/secret.html") }
     }
     @Test fun documentLoadsDirectlyWithPrivateBaseAndDoesNotReloadOnRecomposition() {

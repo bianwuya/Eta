@@ -342,6 +342,10 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                     ingestSteering(data, msg.replyTo, msg.sendingUid == Process.myUid())
                 }
 
+                AgentRuntimeWire.MSG_QUERY_STEERING -> {
+                    if (msg.sendingUid == Process.myUid()) querySteering(msg.data, msg.replyTo)
+                }
+
                 AgentRuntimeWire.MSG_CANCEL -> {
                     val runId = msg.data?.let(AgentRuntimeWire::runIdFromBundle).orEmpty()
                     if (runId.isNotBlank()) cancelRun(runId)
@@ -417,40 +421,96 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     }
 
     /** Decode image FDs away from main; acknowledge only after actual enqueue, never on preparation alone. */
+    private val pendingSteeringInputs = mutableMapOf<Pair<String, String>, Int>()
+
+    private fun querySteering(data: Bundle, replyTo: Messenger?) {
+        val runId = AgentRuntimeWire.runIdFromBundle(data)
+        val queueId = data.getString("queue_message_id").orEmpty()
+        if ((runId to queueId) in pendingSteeringInputs) return // Input is still being materialized.
+        dispatchResultIo {
+            val outcome = runCatching {
+                val active = runs.get(runId)
+                val event = active?.acceptedSupplement(queueId)
+                    ?: AgentRunCheckpointStore.list(this, runId).firstOrNull()?.events
+                        ?.filterIsInstance<AgentEvent.UserSupplementReceived>()?.firstOrNull { it.queueMessageId == queueId }
+                    ?: AgentRunArchiveStore.list(this).firstOrNull { it.result.runId == runId }?.events
+                        ?.filterIsInstance<AgentEvent.UserSupplementReceived>()?.firstOrNull { it.queueMessageId == queueId }
+                // Absence is authoritative only while this run is owned or durably retained.
+                val known = active != null || event != null || AgentRunCheckpointStore.list(this, runId).isNotEmpty() ||
+                    AgentRunArchiveStore.list(this).any { it.result.runId == runId } ||
+                    AgentRuntimeResultStore.list(this).any { it.result.runId == runId }
+                known to event
+            }
+            outcome.onSuccess { (known, event) ->
+                val reply = AgentRuntimeWire.ackBundle(runId).apply {
+                    putString("queue_message_id", queueId)
+                    putBoolean("known", known)
+                    putBoolean("accepted", event != null)
+                    event?.let { AgentWireText.put(this, "accepted_event", AgentEventJsonCodec.encode(it), cacheDir) }
+                }
+                runCatching { AgentWireText.send(replyTo, Message.obtain(null, AgentRuntimeWire.MSG_QUERY_STEERING_RESPONSE).apply { this.data = reply }) }
+            }
+        }
+    }
+
     private fun ingestSteering(data: Bundle, replyTo: Messenger?, sameUid: Boolean) {
         val runId = AgentRuntimeWire.runIdFromBundle(data)
         val queueId = data.getString("queue_message_id").orEmpty()
-        fun acknowledge(accepted: Boolean, invalid: Boolean = false) {
+        fun acknowledge(accepted: Boolean, invalid: Boolean = false, reason: String = "") {
             runCatching { replyTo?.send(Message.obtain(null, AgentRuntimeWire.MSG_STEER_RUN_RESPONSE).apply {
                 this.data = AgentRuntimeWire.ackBundle(runId).apply {
                     putString("queue_message_id", queueId)
                     putBoolean("accepted", accepted)
                     putBoolean("invalid_input", invalid)
+                    putString("rejection_reason", reason)
                 }
             }) }
         }
         val active = runs.get(runId)
-        if (!sameUid || queueId.isBlank() || active?.request?.handoff?.source != AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE) {
+        val source = active?.request?.handoff?.source
+        val reason = when {
+            !sameUid -> "unauthorized"
+            queueId.isBlank() -> "invalid_input"
+            active == null -> "ended"
+            source != AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE &&
+                (source != AgentRuntimeWire.ETA_VOICE_HANDOFF_SOURCE || AgentExternalArchivePayload.from(active.request.handoff!!.payload) == null) -> "unsupported"
+            active.request.operation != AgentRuntimeWire.OP_CHAT || active.request.requestMode == "plan" -> "unsupported"
+            active.preparing -> "preparing"
+            else -> ""
+        }
+        if (reason.isNotEmpty()) {
             AgentRuntimeWire.closeImageDescriptors(data)
-            acknowledge(false)
+            acknowledge(false, reason == "invalid_input", reason)
             return
         }
+        requireNotNull(active)
         val wireImages = try { AgentRuntimeWire.incomingImages(data) } catch (_: Exception) {
             acknowledge(false, true); return
         }
         fun accept(text: String, images: List<AgentModelClient.ModelImage>, previews: List<String>) {
-            val event = if (!destroyed && runs.contains(active)) active.supplement(text, queueId, images, previews) else null
+            if (text.isBlank() && images.isEmpty()) { acknowledge(false, true, "invalid_input"); return }
+            val event = try {
+                if (!destroyed && runs.contains(active)) {
+                    // Initialize under Session once; Executor reuses this recorder instead of
+                    // replacing its checkpoint if steering wins the preparation/worker race.
+                    active.session.initializePersistence(this, active.request)
+                    active.supplement(text, queueId, images, previews)
+                } else null
+            } catch (_: Exception) {
+                active.acceptedSupplement(queueId) ?: run { acknowledge(false, reason = "storage_failed"); return }
+            }
             if (event != null) {
                 active.overlayState = active.overlayState.applyEvent(event)
                 if (displayedRun?.runId == runId) state.value = active.overlayState
             }
-            acknowledge(event != null)
+            acknowledge(event != null, reason = if (event == null) "ended" else "")
         }
         if (wireImages.isEmpty()) {
             try { accept(AgentWireText.read(data, "steering_text").orEmpty().trim(), emptyList(), emptyList()) }
             catch (_: Exception) { acknowledge(false, true) }
             finally { AgentRuntimeWire.closeImageDescriptors(data) }
         } else {
+            pendingSteeringInputs[runId to queueId] = (pendingSteeringInputs[runId to queueId] ?: 0) + 1
             thread(name = "agent-runtime-steering-images") {
                 val prepared = runCatching {
                     val text = AgentWireText.read(data, "steering_text").orEmpty().trim()
@@ -461,6 +521,9 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                 }
                 AgentRuntimeWire.closeImageDescriptors(data)
                 mainHandler.post {
+                    val pendingCount = (pendingSteeringInputs[runId to queueId] ?: 1) - 1
+                    if (pendingCount == 0) pendingSteeringInputs.remove(runId to queueId)
+                    else pendingSteeringInputs[runId to queueId] = pendingCount
                     prepared.fold(onSuccess = { (text, images, previews) -> accept(text, images, previews) },
                         onFailure = { acknowledge(false, true) })
                 }
@@ -855,8 +918,13 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         events: List<AgentEvent>,
     ) {
         // outbox 是终态与在途 checkpoint 之间的提交点；失败时保留 checkpoint 供下次恢复。
+        // Capture before outbox publication: an entry may ACK it and remove the checkpoint.
+        val durableEvents = runCatching {
+            AgentRunCheckpointStore.list(this, result.runId).firstOrNull()?.events ?: events
+        }.onFailure { AndroidAgentLogger.error("Runtime archive checkpoint read failed: type=${it.safeLogType()}") }
+            .getOrDefault(events)
         persistCompletedRun(request, result)
-        runCatching { persistArchivedRun(request, result, events) }
+        runCatching { persistArchivedRun(request, result, durableEvents) }
             .onFailure { throwable ->
                 AndroidAgentLogger.error(
                     "Agent runtime archive persistence failed: type=${throwable.safeLogType()}"

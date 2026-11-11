@@ -20,7 +20,7 @@ import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [36], application = Application::class)
+@Config(sdk = [36], application = Application::class, shadows = [io.github.mangi.eta.testing.WindowsAtomicFileShadow::class])
 class IncomingContentInboxTest {
     private val app: Context get() = RuntimeEnvironment.getApplication()
 
@@ -56,7 +56,7 @@ class IncomingContentInboxTest {
         assertEquals(1, imported.files.size)
         val copied = java.io.File(imported.files.single().reference.absolutePath)
         assertEquals("shared file", copied.readText())
-        assertTrue(copied.canonicalPath.startsWith(TerminalPrivateStorage.workspace(app.filesDir).canonicalPath + "/imports/"))
+        assertTrue(copied.toPath().startsWith(TerminalPrivateStorage.workspace(app.filesDir).resolve("imports").toPath()))
         assertEquals(imported, IncomingContentInbox.list(app).single())
         IncomingContentInbox.remove(app, imported.id)
         assertTrue(copied.isFile)

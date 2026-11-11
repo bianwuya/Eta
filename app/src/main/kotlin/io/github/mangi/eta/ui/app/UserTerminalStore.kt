@@ -48,6 +48,7 @@ internal data class DaemonTaskUi(
     val startedAt: Long,
     val description: String = "",
     val status: String = "",
+    val restartOnBoot: Boolean = false,
 )
 
 @Immutable
@@ -159,7 +160,8 @@ internal class UserTerminalStore(
 
     fun stopDaemonTask(id: String) {
         scope.launch {
-            withContext(Dispatchers.IO) { daemonSupervisor.stop(id) }
+            val stopped = withContext(Dispatchers.IO) { daemonSupervisor.stop(id) }
+            if (stopped) TerminalRuntime.refreshPersistentServices()
             refreshDaemonTasks()
         }
     }
@@ -576,6 +578,7 @@ internal class UserTerminalStore(
         startedAt = status.task.startedAt,
         description = status.task.description,
         status = if (status.task.commandTask) status.task.commandStatus else "",
+        restartOnBoot = status.task.restartOnBoot,
     )
 
     private class SessionOutput {

@@ -132,7 +132,7 @@ import top.yukonga.miuix.kmp.squircle.squircleBorder
 import top.yukonga.miuix.kmp.squircle.squircleSurface
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
-/** Decode thumbnails at reduced resolution; viewer calls maxPixels=0 for its 1600px display copy. */
+/** Decode thumbnails at reduced resolution; the viewer decodes the full-resolution source. */
 internal const val CHAT_THUMBNAIL_MAX_PIXELS = 400_000L
 
 @Composable
@@ -359,24 +359,7 @@ private fun UserMessageBubble(
     val uiStyle = LocalUiStyle.current
     val bubbleContent: @Composable () -> Unit = {
         if (message.images.isNotEmpty()) {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                modifier = Modifier.padding(bottom = 8.dp),
-            ) {
-                message.images.forEach { dataUrl ->
-                    val bitmap = rememberDataUrlBitmap(dataUrl)
-                    if (bitmap != null) {
-                        Image(
-                            bitmap = bitmap,
-                            contentDescription = stringResource(R.string.chat_image_attachment),
-                            modifier = Modifier
-                                .size(100.dp)
-                                .clip(RoundedCornerShape(12.dp)),
-                            contentScale = ContentScale.Crop,
-                        )
-                    }
-                }
-            }
+            MessageImageRow(message.images)
         }
         if (visiblePrompt.references.isNotEmpty()) {
             SentFileReferenceFlow(

@@ -46,4 +46,50 @@ class CodexUsageCacheIsolationTest {
         assertEquals(3_000L, third.updatedAt)
         assertNull(CodexUsageRepository.cached(context, "provider", "account"))
     }
+
+    @Test fun cachedResetCreditsStayWithTheirProviderAndAccount() {
+        val context = RuntimeEnvironment.getApplication()
+        val preferences = context.getSharedPreferences("codex_usage_cache_v1", Context.MODE_PRIVATE)
+        fun key(provider: String, account: String) = Uri.encode(provider) + ":" + Uri.encode(account)
+        fun snapshotWithCredits(remaining: Double, credits: Int?) = JSONObject()
+            .put("updated_at", 1_000L)
+            .put("windows", JSONArray().put(JSONObject().put("name", "codex")
+                .put("remaining", remaining).put("seconds", 18_000L).put("reset_at", 10_000L)))
+            .apply { if (credits != null) put("reset_credits_available", credits) }
+            .toString()
+
+        preferences.edit().clear()
+            .putString(key("provider:a", "account1"), snapshotWithCredits(80.0, 3))
+            .putString(key("provider:a", "account2"), snapshotWithCredits(40.0, 0))
+            .putString(key("provider:b", "account1"), snapshotWithCredits(60.0, null))
+            .commit()
+
+        val first = CodexUsageRepository.cached(context, "provider:a", "account1")!!
+        val second = CodexUsageRepository.cached(context, "provider:a", "account2")!!
+        val third = CodexUsageRepository.cached(context, "provider:b", "account1")!!
+
+        assertEquals(3, first.resetCreditsAvailable)
+        assertEquals(0, second.resetCreditsAvailable)
+        assertNull(third.resetCreditsAvailable)
+    }
+
+    @Test fun legacyCacheWithoutResetCreditsParsesSafelyAsNull() {
+        val context = RuntimeEnvironment.getApplication()
+        val preferences = context.getSharedPreferences("codex_usage_cache_v1", Context.MODE_PRIVATE)
+        fun key(provider: String, account: String) = Uri.encode(provider) + ":" + Uri.encode(account)
+        val legacyJson = JSONObject()
+            .put("updated_at", 5_000L)
+            .put("windows", JSONArray().put(JSONObject().put("name", "codex")
+                .put("remaining", 95.0).put("seconds", 3600L).put("reset_at", 12_000L)))
+            .toString()
+
+        preferences.edit().clear()
+            .putString(key("provider:legacy", "user"), legacyJson)
+            .commit()
+
+        val cached = CodexUsageRepository.cached(context, "provider:legacy", "user")
+        org.junit.Assert.assertNotNull(cached)
+        assertEquals(95.0, cached!!.windows.single().remaining!!, 0.0)
+        assertNull(cached.resetCreditsAvailable)
+    }
 }

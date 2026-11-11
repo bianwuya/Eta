@@ -188,7 +188,15 @@ internal interface RuntimeRunDao : ChunkedTextDao {
     suspend fun inFlightRunRows(): List<RuntimeInFlightRunWithEvents>
 
     @Transaction
-    suspend fun inFlightRuns(): List<RuntimeInFlightRunWithEvents> = inFlightRunRows().map { it.copy(run = restoreInFlightRun(it.run)) }
+    @Query("SELECT * FROM runtime_inflight_runs WHERE run_id = :runId")
+    suspend fun inFlightRunRows(runId: String): List<RuntimeInFlightRunWithEvents>
+
+    @Transaction
+    suspend fun inFlightRuns(runId: String? = null): List<RuntimeInFlightRunWithEvents> = (if (runId == null) inFlightRunRows() else inFlightRunRows(runId)).map { stored -> stored.copy(
+        run = restoreInFlightRun(stored.run), events = stored.events.map { event ->
+            event.copy(eventJson = restoreText("runtime_inflight_runs", event.runId, "event:${event.sortIndex}", event.eventJson))
+        },
+    ) }
 
     @Upsert
     suspend fun upsertInFlightRunRow(run: RuntimeInFlightRunEntity)
@@ -235,7 +243,9 @@ internal interface RuntimeRunDao : ChunkedTextDao {
 
     @Transaction
     suspend fun appendInFlightEvent(event: RuntimeInFlightEventEntity, updatedAt: Long) {
-        insertInFlightEvent(event)
+        insertInFlightEvent(event.copy(eventJson = storeText(
+            "runtime_inflight_runs", event.runId, "event:${event.sortIndex}", event.eventJson,
+        )))
         touchInFlightRun(event.runId, updatedAt)
     }
 }

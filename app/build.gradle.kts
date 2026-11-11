@@ -125,6 +125,15 @@ android {
         unitTests.isIncludeAndroidResources = true
         // Robolectric 在高版本 JDK 下需要访问内部 API，参数只作用于测试 JVM。
         unitTests.all {
+            if (System.getProperty("os.name").startsWith("Windows")) {
+                // Keep large Robolectric sandboxes and SDKs on the workspace volume.
+                val asciiSource = rootProject.projectDir.parentFile.resolve("projects/eta-dev")
+                val testTemp = if (asciiSource.isDirectory && asciiSource.canonicalFile == rootProject.projectDir.canonicalFile) {
+                    asciiSource.resolve(it.temporaryDir.relativeTo(rootProject.projectDir))
+                } else it.temporaryDir
+                it.systemProperty("java.io.tmpdir", testTemp.absolutePath)
+                it.systemProperty("maven.repo.local", layout.buildDirectory.dir("test-host-maven").get().asFile.absolutePath)
+            }
             // Robolectric downloads Android SDK jars outside Gradle's repository configuration.
             // Use Maven Central's canonical endpoint; repo1 returned HTTP 429 on Actions.
             it.systemProperty("robolectric.dependency.repo.url", "https://repo.maven.apache.org/maven2")

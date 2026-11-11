@@ -71,7 +71,7 @@ internal object AgentImageCodec {
         image: AgentModelClient.ModelImage,
     ): AgentModelClient.ModelImage? = AgentModelImageEncoder.preview(context, image)
 
-    /** Bounded higher-quality copy for local full-screen viewing; never sent to model requests. */
+    /** Stable full-resolution viewer copy; thumbnails and model input remain independent. */
     fun displayFromReference(
         context: Context,
         image: AgentModelClient.ModelImage,

@@ -13,6 +13,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.MoreHoriz
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -21,8 +24,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import io.github.mangi.eta.R
 import io.github.mangi.eta.data.model.AppearanceUiStyle
 import io.github.mangi.eta.data.model.ProviderAuthModes
 import io.github.mangi.eta.data.repository.CodexAccountView
@@ -31,12 +36,18 @@ import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.app.LocalUiStyle
 import io.github.mangi.eta.ui.components.coui.CouiButton
 import io.github.mangi.eta.ui.components.coui.CouiButtonRole
+import io.github.mangi.eta.ui.components.coui.CouiConfirmDialog
+import io.github.mangi.eta.ui.components.coui.CouiInputDialog
+import io.github.mangi.eta.ui.components.coui.CouiNoticeDialog
 import io.github.mangi.eta.ui.components.coui.CouiPreference
 import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.Card
+import top.yukonga.miuix.kmp.basic.Icon
+import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TextField
+import top.yukonga.miuix.kmp.basic.TooltipBox
 import top.yukonga.miuix.kmp.overlay.OverlayDialog
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
@@ -103,7 +114,15 @@ internal fun ProviderAccountControls(
             CouiPreference(
                 title = title,
                 summary = summary,
-                showChevron = false,
+                enabled = enabled,
+                onClick = if (multiAccount && enabled && !state.isBusy) { { showAccounts = true } } else null,
+                showChevron = multiAccount && enabled && !state.isBusy,
+                trailing = if (multiAccount) {
+                    {
+                        AccountHeaderActions(enabled && !state.isBusy, current != null, onLogin,
+                            onMore = { manageId = current?.accountId; showMore = true })
+                    }
+                } else null,
             )
             Column(modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 16.dp)) {
                 prompt?.userCode?.let { userCode ->
@@ -115,37 +134,64 @@ internal fun ProviderAccountControls(
                         )
                     }
                 }
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    if (state.isBusy) {
+                if (state.isBusy) {
+                    FlowRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
                         if (prompt != null) {
                             CouiButton(
                                 text = "打开浏览器",
                                 onClick = onOpenBrowser,
                                 role = CouiButtonRole.Primary,
-                                modifier = Modifier.weight(1f),
+                                modifier = Modifier.width(IntrinsicSize.Max),
                             )
                         }
-                        if (state.phase in setOf(ProviderLoginPhase.Saving, ProviderLoginPhase.Authorizing, ProviderLoginPhase.SyncingModels)) {
+                        if (state.phase in setOf(
+                                ProviderLoginPhase.Saving,
+                                ProviderLoginPhase.Authorizing,
+                                ProviderLoginPhase.SyncingModels,
+                                ProviderLoginPhase.Disconnecting,
+                            )
+                        ) {
                             CouiButton(
                                 text = "取消",
                                 onClick = onCancel,
-                                modifier = Modifier.weight(1f),
+                                modifier = Modifier.width(IntrinsicSize.Max),
                             )
                         }
-                    } else {
+                        if (multiAccount) {
+                            CouiButton(
+                                text = "切换账号",
+                                enabled = false,
+                                onClick = { showAccounts = true },
+                                modifier = Modifier.width(IntrinsicSize.Max),
+                            )
+                        }
+                    }
+                } else if (authMode == ProviderAuthModes.OPENAI_CHATGPT && accounts.isEmpty()) {
+                    FlowRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        CouiButton(
+                            text = if (accounts.isEmpty()) "使用 $brand 登录" else "添加账号",
+                            enabled = enabled,
+                            onClick = onLogin,
+                            role = if (accounts.isEmpty()) CouiButtonRole.Primary else CouiButtonRole.Secondary,
+                            modifier = Modifier.width(IntrinsicSize.Max),
+                        )
+                    }
+                } else if (authMode != ProviderAuthModes.OPENAI_CHATGPT) {
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         if (needsLogin) {
                             CouiButton(
                                 text = if (loggedIn) "重新授权" else "使用 $brand 登录",
                                 enabled = enabled,
                                 onClick = onLogin,
                                 role = CouiButtonRole.Primary,
-                                modifier = Modifier.weight(1f),
-                            )
-                        } else if (authMode == ProviderAuthModes.OPENAI_CHATGPT) {
-                            CouiButton(
-                                text = "管理用量",
-                                enabled = enabled,
-                                onClick = onManageUsage,
                                 modifier = Modifier.weight(1f),
                             )
                         }
@@ -167,12 +213,9 @@ internal fun ProviderAccountControls(
                 title = title,
                 onClick = { if (multiAccount && enabled && !state.isBusy) showAccounts = true },
                 endActions = {
-                    if (multiAccount && current != null && !state.isBusy) {
-                        TextButton(
-                            text = "更多",
-                            enabled = enabled,
-                            onClick = { manageId = current.accountId; showMore = true },
-                        )
+                    if (multiAccount) {
+                        AccountHeaderActions(enabled && !state.isBusy, current != null, onLogin,
+                            onMore = { manageId = current?.accountId; showMore = true })
                     }
                 },
                 summary = summary,
@@ -209,7 +252,7 @@ internal fun ProviderAccountControls(
                     if (multiAccount) {
                         TextButton(text = "切换账号", enabled = false, onClick = { showAccounts = true })
                     }
-                } else if (authMode == ProviderAuthModes.OPENAI_CHATGPT) {
+                } else if (authMode == ProviderAuthModes.OPENAI_CHATGPT && accounts.isEmpty()) {
                     FlowRow(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -221,12 +264,8 @@ internal fun ProviderAccountControls(
                             onClick = onLogin,
                             modifier = Modifier.width(IntrinsicSize.Max),
                         )
-                        if (multiAccount) {
-                            TextButton(text = "切换账号", enabled = enabled, onClick = { showAccounts = true },
-                                modifier = Modifier.width(IntrinsicSize.Max))
-                        }
                     }
-                } else {
+                } else if (authMode != ProviderAuthModes.OPENAI_CHATGPT) {
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         if (needsLogin) {
                             TextButton(
@@ -255,40 +294,154 @@ internal fun ProviderAccountControls(
                 canManage = loggedIn,
                 enabled = enabled && !state.isBusy,
                 onManageUsage = onManageUsage,
+                accountName = title,
             )
         }
     } else if (authMode == ProviderAuthModes.OPENAI_CHATGPT && loggedIn) {
-        BasicComponent(
-            title = "剩余额度",
-            summary = "尚未获取额度",
-            endActions = { TextButton(text = "管理用量", enabled = enabled && !state.isBusy, onClick = onManageUsage) },
-        )
+        when (LocalUiStyle.current) {
+            AppearanceUiStyle.COUI -> {
+                CouiPreference(
+                    title = "剩余额度",
+                    summary = "尚未获取额度",
+                    showChevron = false,
+                    trailing = { TextButton(text = "管理用量", enabled = enabled && !state.isBusy, onClick = onManageUsage) },
+                )
+            }
+            AppearanceUiStyle.MIUIX -> {
+                BasicComponent(
+                    title = "剩余额度",
+                    summary = "尚未获取额度",
+                    endActions = { TextButton(text = "管理用量", enabled = enabled && !state.isBusy, onClick = onManageUsage) },
+                )
+            }
+        }
     }
 
     if (multiAccount) {
-        top.yukonga.miuix.kmp.overlay.OverlayBottomSheet(show = showAccounts, title = "选择 Codex 账号",
-            onDismissRequest = { showAccounts = false }) {
-            Column {
-                accounts.forEach { item ->
-                    BasicComponent(title = item.name.ifBlank { item.email?.let(::maskedAccountEmail) ?: item.displayName ?: "Codex账号" },
-                        summary = when { item.selected -> "当前账号"; item.usable -> "已登录"; else -> "需要重新登录" },
-                        enabled = enabled && !state.isBusy,
-                        endActions = { TextButton(text = "管理", onClick = { manageId = item.accountId; showAccounts = false; showMore = true }) },
-                        onClick = {
-                            if (item.usable) onSelectAccount(item.accountId)
-                            else { manageId = item.accountId; showMore = true }
-                            showAccounts = false
-                        })
+        when (LocalUiStyle.current) {
+            AppearanceUiStyle.COUI -> {
+                CouiNoticeDialog(
+                    visible = showAccounts,
+                    title = "选择 Codex 账号",
+                    message = null,
+                    confirmText = stringResource(R.string.action_close),
+                    onDismissRequest = { showAccounts = false },
+                ) {
+                    Column {
+                        accounts.forEach { item ->
+                            CouiPreference(
+                                title = item.name.ifBlank { item.email?.let(::maskedAccountEmail) ?: item.displayName ?: "Codex账号" },
+                                summary = when { item.selected -> "当前账号"; item.usable -> "已登录"; else -> "需要重新登录" },
+                                enabled = enabled && !state.isBusy,
+                                trailing = {
+                                    TextButton(
+                                        text = "管理",
+                                        enabled = enabled && !state.isBusy,
+                                        onClick = {
+                                            manageId = item.accountId
+                                            showAccounts = false
+                                            showMore = true
+                                        },
+                                    )
+                                },
+                                onClick = {
+                                    if (item.usable) onSelectAccount(item.accountId)
+                                    else {
+                                        manageId = item.accountId
+                                        showMore = true
+                                    }
+                                    showAccounts = false
+                                },
+                            )
+                        }
+                    }
+                }
+                if (managed != null) {
+                    CouiNoticeDialog(
+                        visible = showMore,
+                        title = "账号操作",
+                        message = null,
+                        confirmText = stringResource(R.string.action_close),
+                        onDismissRequest = { showMore = false },
+                    ) {
+                        CodexAccountRow(
+                            account = managed,
+                            enabled = enabled && !state.isBusy,
+                            busy = state.isBusy && state.activeAccountId == managed.accountId,
+                            brand = brand,
+                            onSelect = { onSelectAccount(managed.accountId); showMore = false },
+                            onRelogin = { onReloginAccount(managed.accountId); showMore = false },
+                            onRename = { onRenameAccount(managed.accountId, it); showMore = false },
+                            onRemove = { onRemoveAccount(managed.accountId); showMore = false },
+                        )
+                    }
+                }
+            }
+            AppearanceUiStyle.MIUIX -> {
+                top.yukonga.miuix.kmp.overlay.OverlayBottomSheet(
+                    show = showAccounts,
+                    title = "选择 Codex 账号",
+                    onDismissRequest = { showAccounts = false },
+                ) {
+                    Column {
+                        accounts.forEach { item ->
+                            BasicComponent(
+                                title = item.name.ifBlank { item.email?.let(::maskedAccountEmail) ?: item.displayName ?: "Codex账号" },
+                                summary = when { item.selected -> "当前账号"; item.usable -> "已登录"; else -> "需要重新登录" },
+                                enabled = enabled && !state.isBusy,
+                                endActions = {
+                                    TextButton(
+                                        text = "管理",
+                                        onClick = {
+                                            manageId = item.accountId
+                                            showAccounts = false
+                                            showMore = true
+                                        },
+                                    )
+                                },
+                                onClick = {
+                                    if (item.usable) onSelectAccount(item.accountId)
+                                    else {
+                                        manageId = item.accountId
+                                        showMore = true
+                                    }
+                                    showAccounts = false
+                                },
+                            )
+                        }
+                    }
+                }
+                if (managed != null) {
+                    top.yukonga.miuix.kmp.overlay.OverlayBottomSheet(
+                        show = showMore,
+                        title = "账号操作",
+                        onDismissRequest = { showMore = false },
+                    ) {
+                        CodexAccountRow(
+                            account = managed,
+                            enabled = enabled && !state.isBusy,
+                            busy = state.isBusy && state.activeAccountId == managed.accountId,
+                            brand = brand,
+                            onSelect = { onSelectAccount(managed.accountId); showMore = false },
+                            onRelogin = { onReloginAccount(managed.accountId); showMore = false },
+                            onRename = { onRenameAccount(managed.accountId, it); showMore = false },
+                            onRemove = { onRemoveAccount(managed.accountId); showMore = false },
+                        )
+                    }
                 }
             }
         }
-        if (managed != null) top.yukonga.miuix.kmp.overlay.OverlayBottomSheet(show = showMore, title = "账号操作",
-            onDismissRequest = { showMore = false }) {
-            CodexAccountRow(managed, enabled && !state.isBusy, state.isBusy && state.activeAccountId == managed.accountId,
-                brand, onSelect = { onSelectAccount(managed.accountId); showMore = false },
-                onRelogin = { onReloginAccount(managed.accountId); showMore = false },
-                onRename = { onRenameAccount(managed.accountId, it); showMore = false },
-                onRemove = { onRemoveAccount(managed.accountId); showMore = false })
+    }
+}
+
+@Composable
+private fun AccountHeaderActions(enabled: Boolean, canManage: Boolean, onAdd: () -> Unit, onMore: () -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        TooltipBox(text = "添加账号", enabled = enabled) {
+            IconButton(onClick = onAdd, enabled = enabled) { Icon(Icons.Rounded.Add, contentDescription = "添加账号") }
+        }
+        if (canManage) TooltipBox(text = "更多", enabled = enabled) {
+            IconButton(onClick = onMore, enabled = enabled) { Icon(Icons.Rounded.MoreHoriz, contentDescription = "更多") }
         }
     }
 }
@@ -317,14 +470,14 @@ private fun CodexAccountRow(
         .joinToString(" · ")
         .ifBlank { null }
 
-    Card(modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)) {
-        Column(modifier = Modifier.padding(vertical = 10.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(text = account.name.ifBlank { account.email?.let(::maskedAccountEmail) ?: account.displayName ?: "Codex账号" }, style = MiuixTheme.textStyles.headline1)
+    when (LocalUiStyle.current) {
+        AppearanceUiStyle.COUI -> {
+            Column(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 6.dp)) {
+                    Text(
+                        text = account.name.ifBlank { account.email?.let(::maskedAccountEmail) ?: account.displayName ?: "Codex账号" },
+                        style = MiuixTheme.textStyles.headline1,
+                    )
                     Text(
                         text = listOfNotNull(status, detail).joinToString(" · "),
                         style = MiuixTheme.textStyles.footnote2,
@@ -333,88 +486,171 @@ private fun CodexAccountRow(
                         } else {
                             MiuixTheme.colorScheme.error
                         },
+                        modifier = Modifier.padding(top = 2.dp),
                     )
                 }
-            }
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp),
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                if (busy) {
-                    TextButton(text = "处理中…", enabled = false, onClick = {}, modifier = Modifier.weight(1f))
-                } else {
-                    if (!account.selected && account.usable) {
-                        TextButton(text = "使用此账号", enabled = enabled, onClick = onSelect, modifier = Modifier.weight(1f))
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    if (busy) {
+                        CouiButton(text = "处理中…", enabled = false, onClick = {}, modifier = Modifier.weight(1f))
+                    } else {
+                        if (!account.selected && account.usable) {
+                            CouiButton(text = "使用此账号", enabled = enabled, onClick = onSelect, role = CouiButtonRole.Primary, modifier = Modifier.weight(1f))
+                        }
+                        CouiButton(text = "重命名", enabled = enabled, onClick = { showRename = true }, modifier = Modifier.weight(1f))
                     }
-                    TextButton(text = "重命名", enabled = enabled, onClick = { showRename = true }, modifier = Modifier.weight(1f))
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    CouiButton(text = "重新登录", enabled = enabled, onClick = onRelogin, modifier = Modifier.weight(1f))
+                    CouiButton(text = "删除", enabled = enabled, onClick = { showRemove = true }, role = CouiButtonRole.Destructive, modifier = Modifier.weight(1f))
                 }
             }
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                TextButton(text = "重新登录", enabled = enabled, onClick = onRelogin, modifier = Modifier.weight(1f))
-                TextButton(text = "删除", enabled = enabled, onClick = { showRemove = true }, modifier = Modifier.weight(1f))
+        }
+        AppearanceUiStyle.MIUIX -> {
+            Card(modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)) {
+                Column(modifier = Modifier.padding(vertical = 10.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(text = account.name.ifBlank { account.email?.let(::maskedAccountEmail) ?: account.displayName ?: "Codex账号" }, style = MiuixTheme.textStyles.headline1)
+                            Text(
+                                text = listOfNotNull(status, detail).joinToString(" · "),
+                                style = MiuixTheme.textStyles.footnote2,
+                                color = if (account.loggedIn) {
+                                    MiuixTheme.colorScheme.onSurfaceVariantSummary
+                                } else {
+                                    MiuixTheme.colorScheme.error
+                                },
+                            )
+                        }
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        if (busy) {
+                            TextButton(text = "处理中…", enabled = false, onClick = {}, modifier = Modifier.weight(1f))
+                        } else {
+                            if (!account.selected && account.usable) {
+                                TextButton(text = "使用此账号", enabled = enabled, onClick = onSelect, modifier = Modifier.weight(1f))
+                            }
+                            TextButton(text = "重命名", enabled = enabled, onClick = { showRename = true }, modifier = Modifier.weight(1f))
+                        }
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        TextButton(text = "重新登录", enabled = enabled, onClick = onRelogin, modifier = Modifier.weight(1f))
+                        TextButton(text = "删除", enabled = enabled, onClick = { showRemove = true }, modifier = Modifier.weight(1f))
+                    }
+                }
             }
         }
     }
 
     if (showRename) {
         var name by remember { mutableStateOf(account.name) }
-        OverlayDialog(
-            show = true,
-            title = "账号备注",
-            summary = "备注只保存在本机，用于区分账号；不会修改账号本身。",
-            onDismissRequest = { showRename = false },
-        ) {
-            Column {
-                TextField(
+        when (LocalUiStyle.current) {
+            AppearanceUiStyle.COUI -> {
+                CouiInputDialog(
+                    visible = true,
+                    title = "账号备注",
+                    message = "备注只保存在本机，用于区分账号；不会修改账号本身。",
                     value = name,
                     onValueChange = { name = it.take(40) },
-                    label = "备注名称",
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Text(
-                    text = "留空时显示邮箱或序号",
-                    style = MiuixTheme.textStyles.footnote2,
-                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                    textAlign = TextAlign.Start,
-                    modifier = Modifier.padding(top = 8.dp, bottom = 12.dp),
-                )
-                MiuixDialogActions(
+                    placeholder = "备注名称",
                     confirmText = "保存",
-                    onCancel = { showRename = false },
                     onConfirm = {
                         showRename = false
                         onRename(name)
                     },
+                    onDismissRequest = { showRename = false },
                 )
+            }
+            AppearanceUiStyle.MIUIX -> {
+                OverlayDialog(
+                    show = true,
+                    title = "账号备注",
+                    summary = "备注只保存在本机，用于区分账号；不会修改账号本身。",
+                    onDismissRequest = { showRename = false },
+                ) {
+                    Column {
+                        TextField(
+                            value = name,
+                            onValueChange = { name = it.take(40) },
+                            label = "备注名称",
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Text(
+                            text = "留空时显示邮箱或序号",
+                            style = MiuixTheme.textStyles.footnote2,
+                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                            textAlign = TextAlign.Start,
+                            modifier = Modifier.padding(top = 8.dp, bottom = 12.dp),
+                        )
+                        MiuixDialogActions(
+                            confirmText = "保存",
+                            onCancel = { showRename = false },
+                            onConfirm = {
+                                showRename = false
+                                onRename(name)
+                            },
+                        )
+                    }
+                }
             }
         }
     }
 
     if (showRemove) {
         val current = account.selected
-        OverlayDialog(
-            show = true,
-            title = "删除账号",
-            summary = if (current) {
-                "删除「${account.label}」后当前不会自动改用其他账号，需要手动选择或重新登录。"
-            } else {
-                "将从 $brand 连接中移除「${account.label}」，不影响其他账号与对话记录。"
-            },
-            onDismissRequest = { showRemove = false },
-        ) {
-            MiuixDialogActions(
-                confirmText = "删除",
-                destructive = true,
-                onCancel = { showRemove = false },
-                onConfirm = {
-                    showRemove = false
-                    onRemove()
-                },
-            )
+        val summary = if (current) {
+            "删除「${account.label}」后当前不会自动改用其他账号，需要手动选择或重新登录。"
+        } else {
+            "将从 $brand 连接中移除「${account.label}」，不影响其他账号与对话记录。"
+        }
+        when (LocalUiStyle.current) {
+            AppearanceUiStyle.COUI -> {
+                CouiConfirmDialog(
+                    visible = true,
+                    title = "删除账号",
+                    message = summary,
+                    confirmText = "删除",
+                    destructive = true,
+                    onConfirm = {
+                        showRemove = false
+                        onRemove()
+                    },
+                    onDismissRequest = { showRemove = false },
+                )
+            }
+            AppearanceUiStyle.MIUIX -> {
+                OverlayDialog(
+                    show = true,
+                    title = "删除账号",
+                    summary = summary,
+                    onDismissRequest = { showRemove = false },
+                ) {
+                    MiuixDialogActions(
+                        confirmText = "删除",
+                        destructive = true,
+                        onCancel = { showRemove = false },
+                        onConfirm = {
+                            showRemove = false
+                            onRemove()
+                        },
+                    )
+                }
+            }
         }
     }
 }

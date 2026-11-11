@@ -81,8 +81,9 @@ internal class AgentRunController {
     /**
      * 将补充指令排入下一个 turn。steering 不取消当前模型请求或工具批次。
      */
-    fun steer(text: String, images: List<io.github.mangi.eta.agent.model.AgentModelClient.ModelImage> = emptyList()): Boolean =
-        enqueueSteering(text, images, SteeringOrigin.USER)
+    fun steer(text: String, images: List<io.github.mangi.eta.agent.model.AgentModelClient.ModelImage> = emptyList(),
+        beforeEnqueue: () -> Unit = {}): Boolean =
+        enqueueSteering(text, images, SteeringOrigin.USER, beforeEnqueue)
 
     /** Parent-agent directives are distinct from end-user steering and never imply user authorization. */
     fun steerFromParent(text: String): Boolean = enqueueSteering(text, emptyList(), SteeringOrigin.PARENT_AGENT)
@@ -91,11 +92,13 @@ internal class AgentRunController {
         text: String,
         images: List<io.github.mangi.eta.agent.model.AgentModelClient.ModelImage>,
         origin: SteeringOrigin,
+        beforeEnqueue: () -> Unit = {},
     ): Boolean {
         val prompt = text.trim()
         if (prompt.isBlank() && images.isEmpty()) return false
         lock.withLock {
             if (cancelled || !acceptingSteering) return false
+            beforeEnqueue()
             pendingSteering = true
             steeringCounter += 1
             steeringMessages.addLast(SteeringInput(prompt, images.toList(), origin, steeringCounter))

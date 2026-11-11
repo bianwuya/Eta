@@ -48,12 +48,14 @@ internal object AgentTerminalToolCatalog {
                 name = "terminal_daemon",
                 description = "管理需要跨 Agent 运行保留的后台服务，例如 Web 服务。start 启动并返回 task_id，" +
                     "list 查看任务，logs 读取日志，stop 停止任务。服务不会随当前运行结束自动回收，" +
-                    "但仍可能因进程退出、系统回收、权限变化或设备重启而终止。",
+                    "默认不在设备重启后恢复；只有用户明确要求常驻时设置 restart_on_boot=true。" +
+                    "configure 可修改该选项；stop 停止并删除恢复记录。恢复仍需要环境和权限可用。",
                 parameters = parameters(
                     executionProperties()
-                        .put("action", action("start", "list", "logs", "stop"))
+                        .put("action", action("start", "list", "logs", "stop", "configure"))
                         .put("command", text("start 要执行的命令，使用实际环境支持的 Shell 语法。"))
-                        .put("task_id", text("start 或 list 返回的任务 ID；logs、stop 使用。")),
+                        .put("task_id", text("start 或 list 返回的任务 ID；logs、stop、configure 使用。"))
+                        .put("restart_on_boot", bool("仅用户明确要求常驻时开启；start/configure 保存该选项，默认 false。")),
                     "action",
                 ),
             ),

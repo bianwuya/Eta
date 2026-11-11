@@ -60,6 +60,27 @@ internal class AgentRuntimeSession(
     fun commitContext(snapshot: AgentContextSnapshot, persist: () -> Unit) = lock.withLock {
         if (state == State.RUNNING) { persist(); latestContext = snapshot }
     }
+    private var checkpointRecorder: AgentRunCheckpointRecorder? = null
+
+    // Lock order: Session -> Controller -> recorder/DB. Persistence never calls back into
+    // Executor or subscribers; the worker cannot consume input before its durable commit.
+    fun initializePersistence(context: android.content.Context, request: AgentRuntimeWire.RunRequest): AgentRunCheckpointRecorder? = lock.withLock {
+        if (checkpointRecorder == null && state == State.RUNNING) {
+            checkpointRecorder = AgentRunCheckpointRecorder.create(context, request)
+        }
+        checkpointRecorder
+    }
+
+    fun persistSteering(event: AgentEvent.UserSupplementReceived) = lock.withLock {
+        checkpointRecorder?.accept(event)
+    }
+
+    fun acceptedSupplementEvents(): List<AgentEvent.UserSupplementReceived> = lock.withLock {
+        replayEvents.filterIsInstance<AgentEvent.UserSupplementReceived>()
+    }
+
+    fun sealPersistence() = lock.withLock { checkpointRecorder?.seal() }
+
     private var state = State.RUNNING
     private var stopRequested = false
     private val replayEvents = mutableListOf<AgentEvent>()
@@ -136,8 +157,12 @@ internal class AgentRuntimeSession(
         eventFactory: () -> T,
     ): T? =
         lock.withLock {
-            if (state != State.RUNNING || operation != AgentRuntimeWire.OP_CHAT || !controller.steer(text, images)) return null
-            eventFactory().also { event ->
+            if (state != State.RUNNING || stopRequested || operation != AgentRuntimeWire.OP_CHAT) return null
+            var accepted: T? = null
+            if (!controller.steer(text, images) {
+                accepted = eventFactory()
+            }) return null
+            requireNotNull(accepted).also { event ->
                 recordForReplay(event)
                 subscribers.forEach { it.eventSink(event) }
             }

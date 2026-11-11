@@ -128,6 +128,7 @@
   <string name="terminal_daemon_empty">No background tasks</string>
   <string name="terminal_daemon_running">Running</string>
   <string name="terminal_daemon_exited">Exited</string>
+  <string name="terminal_daemon_restart_enabled">Restore after restart</string>
   <string name="terminal_daemon_view_logs">Logs</string>
   <string name="terminal_daemon_hide_logs">Hide logs</string>
   <string name="terminal_daemon_logs_empty">No log output yet</string>
@@ -1479,6 +1480,7 @@
   <string name="web_tools_credentials_lost">网页工具凭据无法解密，请重新填写并保存</string>
   <string name="chat_queue_status">排队中</string>
   <string name="chat_queue_status_count">排队中 · %1$d</string>
+  <string name="chat_queue_confirming">等待接收确认</string>
   <string name="chat_queue_interrupting">插话中</string>
   <string name="chat_queue_steer_now">立即插话发送</string>
   <string name="chat_queue_remove">移除排队消息</string>

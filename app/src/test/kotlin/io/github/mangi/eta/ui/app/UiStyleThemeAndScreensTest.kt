@@ -239,7 +239,7 @@ class UiStyleThemeAndScreensTest {
                         4 -> AgentToolsScreen(state = toolsState, onAction = {})
                         5 -> WebToolsSettingsScreen(onBack = { backPressedCount++ })
                         6 -> AgentSkillsScreen(state = skillsState, onAction = {})
-                        7 -> SubagentSettingsScreen(onBack = { backPressedCount++ })
+                        7 -> SubagentSettingsScreen(onBack = { backPressedCount++ }, onOpenCompaction = {}, onOpenRequestStats = {})
                         8 -> McpServersScreen(onNavigate = {}, onBack = { backPressedCount++ })
                         9 -> PermissionHealthScreen(state = permissionsState, onAction = {})
                         10 -> SystemEnhanceScreen(onAction = {})

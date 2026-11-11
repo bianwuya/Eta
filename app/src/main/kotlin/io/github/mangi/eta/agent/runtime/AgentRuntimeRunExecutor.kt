@@ -107,7 +107,7 @@ internal class AgentRuntimeRunExecutor(
 
         val result = try {
             val contextWindow = request.config.knownContextWindow
-            checkpointRecorder = AgentRunCheckpointRecorder.create(appContext, request)
+            checkpointRecorder = session.initializePersistence(appContext, request)
             entrySurfaceGuard = EntrySurfaceGuard.from(
                 handoff = request.handoff,
                 logger = AndroidAgentLogger,
@@ -615,13 +615,17 @@ internal class AgentRuntimeRunExecutor(
         val committed = session.complete(result) { resolved ->
             committedResult = resolved
             endPlan(completedRun = resolved.ok)
-            runCatching { synchronized(this) { checkpointRecorder?.seal() } }
+            runCatching { session.sealPersistence() }
                 .onFailure { throwable ->
                     AndroidAgentLogger.error(
                         "Agent runtime checkpoint seal failed: type=${throwable.safeLogType()}"
                     )
                 }
-            runCatching { persistArtifacts(completedRequest, resolved, archivedEvents.orEmpty()) }
+            runCatching { persistArtifacts(snapshotRequest(request), resolved, archivedEvents.orEmpty().let { events ->
+                events + session.acceptedSupplementEvents().filter { supplement ->
+                    events.none { it is AgentEvent.UserSupplementReceived && it.queueMessageId == supplement.queueMessageId }
+                }
+            }) }
                 .onFailure { throwable ->
                     AndroidAgentLogger.error(
                         "Agent runtime artifact persistence failed: type=${throwable.safeLogType()}"

@@ -57,13 +57,6 @@ internal object AgentModelImageEncoder {
         mimeType = "image/jpeg",
         quality = PREVIEW_JPEG_QUALITY,
     )
-    private val displayProfile = EncodingProfile(
-        maxLongEdge = 1600,
-        maxPixels = 2_000_000L,
-        format = Bitmap.CompressFormat.JPEG,
-        mimeType = "image/jpeg",
-        quality = 88,
-    )
     private val toolVisionProfile = EncodingProfile(
         format = Bitmap.CompressFormat.JPEG,
         mimeType = "image/jpeg",
@@ -117,7 +110,23 @@ internal object AgentModelImageEncoder {
     fun display(
         context: Context,
         image: AgentModelClient.ModelImage,
-    ): AgentModelClient.ModelImage? = rescale(context, image, displayProfile)
+    ): AgentModelClient.ModelImage? = runCatching {
+        // Full-screen zoom must keep the source pixels. Only chat thumbnails are sampled.
+        if (image.reference.startsWith("data:image/", ignoreCase = true)) return@runCatching image
+        val open = referenceStreamFactory(context, image.reference) ?: return@runCatching null
+        val bytes = open().use { input ->
+            val output = ByteArrayOutputStream()
+            val buffer = ByteArray(8192)
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                require(output.size().toLong() + count <= MAX_AGENT_IMAGE_BYTES) { "图片数据过大" }
+                output.write(buffer, 0, count)
+            }
+            output.toByteArray()
+        }
+        AgentImageCodec.fromBytes(bytes, image.source, image.mimeType)
+    }.getOrNull()
 
     private fun rescale(
         context: Context,
@@ -304,6 +313,9 @@ internal object AgentModelImageEncoder {
             if (decoded.isEmpty() || decoded.size > MAX_AGENT_IMAGE_BYTES) return null
             return { ByteArrayInputStream(decoded) }
         }
+        // A filesystem path is literal; Windows drive prefixes are not URI schemes.
+        val literalFile = File(trimmed)
+        if (literalFile.isAbsolute) return literalFile.takeIf(File::isFile)?.let { { it.inputStream() } }
         val uri = Uri.parse(trimmed)
         if (uri.scheme == "content") {
             return {

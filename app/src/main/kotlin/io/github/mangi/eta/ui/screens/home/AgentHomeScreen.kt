@@ -36,6 +36,7 @@ internal fun AgentHomeScreen(
     isBranching: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
+    val readDraft = io.github.mangi.eta.local.incoming.incomingDraftReader()
     // key 内保持完整分支，避免提前返回遗留无法转换为 DEX 的编译器标记。
     key(chatConversationCompositionKey(conversationKey)) {
         if (!state.isConversationLoaded) {
@@ -100,7 +101,11 @@ internal fun AgentHomeScreen(
                     onDeleteMessage = { id -> onAction(AgentHomeAction.DeleteMessage(id)) },
                     onRegenerateMessage = { id -> onAction(AgentHomeAction.RegenerateMessage(id)) },
                     onBranchMessage = { id ->
-                        conversationKey?.let { onAction(AgentHomeAction.BranchConversation(it, id)) }
+                        conversationKey?.let { conversationId ->
+                            readDraft(conversationId)?.let { draft ->
+                                onAction(AgentHomeAction.BranchConversation(conversationId, id, draft))
+                            }
+                        }
                     },
                     onSelectReplyCandidate = { id, index -> onAction(AgentHomeAction.SelectReplyCandidate(id, index)) },
                     onSuggestionClick = { prompt ->
@@ -110,6 +115,7 @@ internal fun AgentHomeScreen(
                     onOpenBrowser = { onAction(AgentHomeAction.OpenBrowser) },
                     hasEarlierMessages = state.hasEarlierMessages,
                     messageStartIndex = state.messageStartIndex,
+                    sessionStatsPrefix = state.sessionStatsPrefix,
                     historyLoadState = historyLoadState,
                     onLoadEarlierMessages = { onAction(AgentHomeAction.LoadEarlierMessages) },
                     onHistoryViewportChanged = { onAction(AgentHomeAction.HistoryViewportChanged(it)) },

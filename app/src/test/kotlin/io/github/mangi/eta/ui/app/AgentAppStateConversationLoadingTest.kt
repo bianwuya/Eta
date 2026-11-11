@@ -103,6 +103,41 @@ class AgentAppStateConversationLoadingTest {
     }
 
     @Test
+    fun pagingAndReleasingKeepUsageTotalsAndDeletionOnlyRemovesTheCurrentTurn() {
+        val messages = (0 until 300).flatMap { index -> listOf(
+            UserMessageUi("usage-user-$index", "question"),
+            io.github.mangi.eta.ui.model.AgentMessageUi("usage-answer-$index", "answer",
+                usage = io.github.mangi.eta.ui.model.TokenUsageUi(inputTokens = 100, outputTokens = 10)),
+        ) }
+        seed("first" to conversation("first").copy(messages = messages))
+        val state = AgentAppState(context, scope)
+        fun assertTotals(turns: Int) {
+            val stats = io.github.mangi.eta.ui.model.latestContextUsage(state.homeState.messages, null,
+                state.homeState.sessionStatsPrefix).sessionStats
+            assertEquals(turns, stats.turns)
+            assertEquals(turns * 100, stats.promptTokens)
+        }
+        assertEquals(128, state.homeState.messages.size)
+        assertTotals(300)
+        repeat(3) {
+            state.loadEarlierMessages()
+            awaitCondition { !state.isLoadingEarlierMessages }
+            assertTotals(300)
+        }
+        assertEquals(512, state.homeState.messages.size)
+        state.updateHistoryViewport(atLatest = true)
+        awaitCondition { !state.isLoadingEarlierMessages }
+        assertEquals(128, state.homeState.messages.size)
+        assertTotals(300)
+        state.deleteMessageTurn("usage-user-299")
+        assertTotals(299)
+        awaitCondition { runBlocking { EtaDatabase.get(context).conversationDao().messageCount("first") == 598 } }
+        state.selectConversation("first")
+        awaitLoaded(state, "first")
+        assertTotals(299)
+    }
+
+    @Test
     fun loadingAnEarlierPageThenDeletingATurnPreservesTheEarlierPrefix() {
         seed("first" to conversation("first", count = 150))
         val state = AgentAppState(context, scope)

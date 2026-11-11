@@ -113,6 +113,11 @@ internal fun ProviderConnectionFields(
                     onLogin = onLogin,
                     onDisconnect = onDisconnect,
                     onCancel = onCancel,
+                    onSelectAccount = onSelectAccount,
+                    onReloginAccount = onReloginAccount,
+                    onRenameAccount = onRenameAccount,
+                    onRemoveAccount = onRemoveAccount,
+                    providerId = provider.id,
                 )
             } else {
                 Divider()
@@ -239,6 +244,11 @@ internal fun ProviderConnectionFields(
                     onLogin = onLogin,
                     onDisconnect = onDisconnect,
                     onCancel = onCancel,
+                    onSelectAccount = onSelectAccount,
+                    onReloginAccount = onReloginAccount,
+                    onRenameAccount = onRenameAccount,
+                    onRemoveAccount = onRemoveAccount,
+                    providerId = provider.id,
                 )
             } else {
                 Column(modifier = Modifier.padding(16.dp)) {

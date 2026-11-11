@@ -23,7 +23,11 @@ import top.yukonga.miuix.kmp.basic.*
 internal val LocalRichPreview = staticCompositionLocalOf<(String) -> Unit> { {} }
 
 @Composable
-internal fun RichPreviewScreen(reference: String, onBack: () -> Unit) {
+internal fun RichPreviewScreen(reference: String, onBack: () -> Unit, attachmentName: String? = null) {
+    if (attachmentName != null) {
+        AttachmentPreviewScreen(reference, attachmentName, onBack)
+        return
+    }
     val context = LocalContext.current
     var generation by rememberSaveable(reference) { mutableIntStateOf(0) }
     var launchError by remember(reference, generation) { mutableStateOf<String?>(null) }
@@ -63,13 +67,13 @@ internal fun RichPreviewScreen(reference: String, onBack: () -> Unit) {
     }
 }
 
-internal fun decodePreviewImage(context: android.content.Context, reference: String, maxPixels: Int = 2048): ImageBitmap {
+internal fun decodePreviewImage(context: android.content.Context, reference: String, maxPixels: Int = 0): ImageBitmap {
     val bytes = LocalPreviewFiles.open(context, reference).use { it.readBytesBounded(LocalPreviewFiles.MAX_IMAGE_BYTES) }
     val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
     BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
     require(options.outWidth > 0 && options.outHeight > 0) { "不支持的图片或文件损坏" }
     options.inJustDecodeBounds = false
     options.inSampleSize = 1
-    while (maxOf(options.outWidth, options.outHeight) / options.inSampleSize > maxPixels) options.inSampleSize *= 2
+    while (maxPixels > 0 && maxOf(options.outWidth, options.outHeight) / options.inSampleSize > maxPixels) options.inSampleSize *= 2
     return (BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options) ?: error("图片解码失败")).asImageBitmap()
 }

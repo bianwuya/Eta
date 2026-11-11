@@ -28,6 +28,9 @@ import io.github.mangi.eta.agent.subagent.SubagentHistoryEntry
 import io.github.mangi.eta.agent.subagent.SubagentStepSnapshot
 import io.github.mangi.eta.data.db.AgentTextChunkEntity
 import io.github.mangi.eta.data.db.EtaDatabase
+import io.github.mangi.eta.data.model.AppearanceSettings
+import io.github.mangi.eta.data.model.AppearanceUiStyle
+import io.github.mangi.eta.ui.app.AgentAppTheme
 import java.time.Duration
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -43,16 +46,20 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.Robolectric
-import org.robolectric.RobolectricTestRunner
+import org.robolectric.ParameterizedRobolectricTestRunner
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
-import top.yukonga.miuix.kmp.theme.MiuixTheme
+import org.robolectric.ParameterizedRobolectricTestRunner.Parameters
 
-@RunWith(RobolectricTestRunner::class)
+@RunWith(ParameterizedRobolectricTestRunner::class)
 @Config(sdk = [36], application = Application::class, qualifiers = "w411dp-h896dp-xhdpi")
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
-class SubagentInspectorInteractionTest {
+class SubagentInspectorInteractionTest(private val uiStyle: AppearanceUiStyle) {
+    companion object {
+        @JvmStatic @Parameters(name = "{0}")
+        fun themes(): List<Array<AppearanceUiStyle>> = AppearanceUiStyle.entries.map { arrayOf(it) }
+    }
     @Test
     fun informationTogglesVisiblyAfterScrollAndStreamingDoesNotMoveSteps() = withFixture { fixture ->
         val steps = (0..11).map { index ->
@@ -238,7 +245,7 @@ class SubagentInspectorInteractionTest {
 
     private fun withFixture(block: (Fixture) -> Unit) {
         val controller = Robolectric.buildActivity(ComponentActivity::class.java).setup().visible()
-        val fixture = Fixture(controller.get())
+        val fixture = Fixture(controller.get(), uiStyle)
         try {
             block(fixture)
         } finally {
@@ -250,7 +257,7 @@ class SubagentInspectorInteractionTest {
         }
     }
 
-    private class Fixture(val activity: ComponentActivity) {
+    private class Fixture(val activity: ComponentActivity, private val uiStyle: AppearanceUiStyle) {
         private val frameClock = BroadcastFrameClock()
         private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate + frameClock)
         private val recomposer = Recomposer(scope.coroutineContext)
@@ -259,7 +266,11 @@ class SubagentInspectorInteractionTest {
         fun setContent(content: @Composable () -> Unit) {
             scope.launch { recomposer.runRecomposeAndApplyChanges() }
             host.setParentCompositionContext(recomposer)
-            host.setContent { MiuixTheme { content() } }
+            host.setContent {
+                AgentAppTheme(AppearanceSettings(uiStyle = uiStyle, blurEnabled = false), applyInterfaceScale = false) {
+                    content()
+                }
+            }
             activity.setContentView(host)
         }
 

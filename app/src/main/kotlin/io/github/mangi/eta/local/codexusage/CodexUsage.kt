@@ -12,10 +12,16 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 internal data class UsageWindow(val name: String, val remaining: Double?, val seconds: Long?, val resetAt: Long?)
-internal data class CodexUsage(val windows: List<UsageWindow>, val updatedAt: Long)
+internal data class CodexUsage(
+    val windows: List<UsageWindow>,
+    val updatedAt: Long,
+    val resetCreditsAvailable: Int? = null,
+)
 
 /** Passive official usage reader. Never consumes reset credits, selects an account or calls a model. */
 internal object CodexUsageRepository {
+    internal var httpClientProvider: () -> okhttp3.OkHttpClient = { AgentHttpClient.client }
+
     fun parse(body: JSONObject, timestamp: Long): CodexUsage {
         val windows = mutableListOf<UsageWindow>()
         fun append(name: String, limits: JSONObject?) {
@@ -33,25 +39,34 @@ internal object CodexUsageRepository {
             val entry = extra?.optJSONObject(i) ?: continue
             append(entry.optString("limit_name").ifBlank { entry.optString("metered_feature", "附加额度") }, entry.optJSONObject("rate_limit"))
         }
-        return CodexUsage(windows, timestamp)
+        val resetCredits = body.optJSONObject("rate_limit_reset_credits")
+        val availableCount = resetCredits?.opt("available_count").let { value ->
+            (value as? Number)?.toLong()?.takeIf {
+                it in 0..Int.MAX_VALUE.toLong() && value.toDouble() == it.toDouble()
+            }?.toInt()
+        }
+        return CodexUsage(windows, timestamp, availableCount)
     }
     private fun prefs(context: Context) = context.applicationContext.getSharedPreferences("codex_usage_cache_v1", Context.MODE_PRIVATE)
-    private fun key(provider: String, account: String): String = android.net.Uri.encode(provider) + ":" + android.net.Uri.encode(account)
+    internal fun key(provider: String, account: String): String = android.net.Uri.encode(provider) + ":" + android.net.Uri.encode(account)
     fun cached(context: Context, provider: String, account: String): CodexUsage? = runCatching {
         prefs(context).getString(key(provider, account), null)?.let { raw ->
             val json = JSONObject(raw)
             val list = json.getJSONArray("windows")
+            val available = if (json.has("reset_credits_available") && !json.isNull("reset_credits_available")) {
+                json.getInt("reset_credits_available").takeIf { it >= 0 }
+            } else null
             CodexUsage((0 until list.length()).map { i -> list.getJSONObject(i).let { item ->
                 UsageWindow(item.getString("name"), if (item.isNull("remaining")) null else item.getDouble("remaining"),
                     item.optLong("seconds").takeIf { it > 0 }, item.optLong("reset_at").takeIf { it > 0 })
-            } }, json.getLong("updated_at"))
+            } }, json.getLong("updated_at"), available)
         }
     }.getOrNull()
 
     fun refresh(context: Context, provider: String, account: String, controller: AgentRunController): CodexUsage {
         val binding = ProviderCredentialRepository.codexAccountBinding(provider, account)
         val request = Request.Builder().url(requireNotNull(ProviderConnectionProfile.OPENAI_CODEX.usageUrl)).get().build()
-        val snapshot = AuthorizedProviderHttp.execute(AgentHttpClient.client, provider, ProviderAuthModes.OPENAI_CHATGPT,
+        val snapshot = AuthorizedProviderHttp.execute(httpClientProvider(), provider, ProviderAuthModes.OPENAI_CHATGPT,
             request, controller, binding) { response ->
             check(response.isSuccessful) { "额度读取失败（HTTP ${response.code}）" }
             val body = requireNotNull(response.body)
@@ -66,6 +81,9 @@ internal object CodexUsageRepository {
                 .put("remaining", item.remaining ?: JSONObject.NULL).put("seconds", item.seconds ?: JSONObject.NULL)
                 .put("reset_at", item.resetAt ?: JSONObject.NULL)) }
         })
+        if (snapshot.resetCreditsAvailable != null) {
+            json.put("reset_credits_available", snapshot.resetCreditsAvailable)
+        }
         val preferences = prefs(context)
         val editor = preferences.edit()
         val cacheKey = key(provider, account)

@@ -17,7 +17,7 @@ import org.json.JSONObject
  * setsid 自立会话脱离这张回收网；输出重定向到工作区日志文件而非内存，任务记录落盘，
  * App 重启后按 pid + ownership token 认领仍存活的进程。
  *
- * 手机重启后任务全部失效；App 被强制停止时 user identity 任务会被系统连带终止，
+ * 手机重启后只有明确 restartOnBoot 的服务会重新启动；App 被强制停止时 user identity 任务会被系统连带终止，
  * root identity 任务不受影响。
  */
 internal class DetachedTaskSupervisor(
@@ -41,6 +41,7 @@ internal class DetachedTaskSupervisor(
 
         // 进程内允许 AI 侧与 UI 侧各持一个实例；记录文件的读-改-写必须经同一把锁串行。
         private val RECORDS_LOCK = Any()
+        private val LIFECYCLE_LOCK = Any()
         private val COMMAND_PROCESSES = java.util.concurrent.ConcurrentHashMap<String, CommandProcess>()
         private val USER_WAITERS = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
@@ -59,7 +60,17 @@ internal class DetachedTaskSupervisor(
         commandTask: Boolean = false,
         description: String = "",
         timeoutMs: Long = 0,
+        restartOnBoot: Boolean = false,
+    ): DaemonStartResult = synchronized(LIFECYCLE_LOCK) {
+        startInternal(command, cwd, identity, environment, commandTask, description, timeoutMs, restartOnBoot)
+    }
+
+    private fun startInternal(
+        command: String, cwd: String, identity: String, environment: TerminalEnvironment,
+        commandTask: Boolean = false, description: String = "", timeoutMs: Long = 0,
+        restartOnBoot: Boolean = false, existingId: String? = null,
     ): DaemonStartResult {
+        if (restartOnBoot && commandTask) return DaemonStartResult.Failed("INVALID_ARGUMENT", "后台命令不能自动重放")
         if (identity != "root" && identity != "user") return DaemonStartResult.Failed("INVALID_ARGUMENT", "执行身份无效")
         if (identity == "root" && !rootAvailable()) return DaemonStartResult.Failed("ROOT_REQUIRED", "Root 授权不可用")
         if (identity == "user" && environment.isLinux && LinuxEnvironmentPaths.backendOf(rootfsPath(environment)) != LinuxExecutionBackend.PROOT) {
@@ -71,10 +82,10 @@ internal class DetachedTaskSupervisor(
         if (list().count { it.running } >= MAX_TASKS) {
             return DaemonStartResult.Failed("MAX_TASKS_REACHED", "守护任务数量已达上限 $MAX_TASKS，请先停止不用的任务")
         }
-        val id = (if (commandTask) "job_" else "dm_") + UUID.randomUUID().toString().take(8)
+        val id = existingId ?: ((if (commandTask) "job_" else "dm_") + UUID.randomUUID().toString().take(8))
         val token = UUID.randomUUID().toString().replace("-", "")
         if (commandTask) return startCommand(id, command, cwd, identity, environment, description, timeoutMs)
-        if (identity == "user") return startUserDaemon(id, token, command, cwd, environment)
+        if (identity == "user") return startUserDaemon(id, token, command, cwd, environment, restartOnBoot)
         val wireDir = wireDaemonDir(environment)
         val wirePidFile = "$wireDir/$id.pid"
         val wireLogFile = "$wireDir/$id.log"
@@ -125,8 +136,9 @@ internal class DetachedTaskSupervisor(
             commandTask = commandTask,
             description = description,
             timeoutMs = timeoutMs,
+            restartOnBoot = restartOnBoot,
         )
-        if (!synchronized(RECORDS_LOCK) { saveTasksLocked(loadTasksLocked() + task) }) {
+        if (!synchronized(RECORDS_LOCK) { saveTasksLocked(loadTasksLocked().filterNot { it.id == id } + task) }) {
             stopTaskProcess(task)
             return DaemonStartResult.Failed("RECORDS_WRITE_FAILED", "无法保存后台任务，请检查内部存储")
         }
@@ -135,6 +147,46 @@ internal class DetachedTaskSupervisor(
                 "environment=${environment.wireName} identity=$identity commandChars=${command.length}"
         )
         return DaemonStartResult.Started(task)
+    }
+
+    fun configureRestart(id: String, enabled: Boolean): Boolean = synchronized(LIFECYCLE_LOCK) {
+        synchronized(RECORDS_LOCK) {
+            val tasks = loadTasksLocked()
+            val index = tasks.indexOfFirst { it.id == id && !it.commandTask }
+            if (index < 0) false else {
+                tasks[index] = tasks[index].copy(restartOnBoot = enabled)
+                saveTasksLocked(tasks)
+            }
+        }
+    }
+
+    fun restoreServices(): List<DaemonStartResult> = synchronized(LIFECYCLE_LOCK) {
+        servicesToRestore(list()).map { task ->
+            if (task.identity == "user") {
+                USER_WAITERS.remove(task.id)
+                releaseUserLease("daemon:${task.id}")
+            }
+            val result = startInternal(task.command, task.cwd, task.identity, task.environment,
+                description = task.description, restartOnBoot = true, existingId = task.id)
+            if (result is DaemonStartResult.Failed) {
+                logger.warn("Terminal service restore failed: task=${task.id} code=${result.code}")
+            }
+            result
+        }
+    }
+
+    fun hasRestartServices(): Boolean = synchronized(RECORDS_LOCK) {
+        loadTasksLocked().any { it.restartOnBoot && !it.commandTask }
+    }
+
+    fun suspendRestartServices() = synchronized(LIFECYCLE_LOCK) {
+        val tasks = synchronized(RECORDS_LOCK) { loadTasksLocked().filter { it.restartOnBoot && !it.commandTask } }
+        tasks.forEach { task ->
+            if (!stopTaskProcess(task, removeFiles = false)) {
+                logger.warn("Terminal service suspend failed: task=${task.id}")
+            }
+            if (task.identity == "user") releaseUserLease("daemon:${task.id}")
+        }
     }
 
     /** 巡检全部记录：活着的重新认领，死掉的保留记录供查看日志，并清理超额的已退出记录。 */
@@ -305,20 +357,32 @@ internal class DetachedTaskSupervisor(
     }
 
     /** 停止并删除记录与日志；进程已退出时等价于清理记录。 */
-    fun stop(id: String): Boolean {
+    fun stop(id: String): Boolean = synchronized(LIFECYCLE_LOCK) { stopInternal(id) }
+
+    private fun stopForLease(id: String, token: String): Boolean = synchronized(LIFECYCLE_LOCK) {
+        val task = findTask(id) ?: return@synchronized true
+        if (task.token != token) return@synchronized true
+        if (task.restartOnBoot) stopTaskProcess(task, removeFiles = false) else stopInternal(id)
+    }
+
+    private fun stopInternal(id: String): Boolean {
         val tasks = synchronized(RECORDS_LOCK) { loadTasksLocked() }
         val task = tasks.firstOrNull { it.id == id } ?: return false
         if (task.commandTask && task.completedAt == null) return stopCommand(id)
         if (task.identity == "root" && !rootAvailable()) return false
         if (!stopTaskProcess(task)) return false
-        synchronized(RECORDS_LOCK) {
+        val removed = synchronized(RECORDS_LOCK) {
             saveTasksLocked(loadTasksLocked().filterNot { it.id == id })
         }
+        if (!removed) return false
         logger.info(
             "Agent terminal daemon action=stop outcome=stopped taskId=$id " +
                 "environment=${task.environment.wireName}"
         )
-        if (task.identity == "user") releaseUserLease("daemon:$id")
+        if (task.identity == "user") {
+            USER_WAITERS.remove(id)
+            releaseUserLease("daemon:$id")
+        }
         return true
     }
 
@@ -366,12 +430,16 @@ internal class DetachedTaskSupervisor(
     private fun ownerProof(task: DetachedTask): String = "$ETA_PROCESS_OWNER_ENV=${task.token}"
 
     /** 普通守护任务保留完整宿主壳和 tracer；guest 内不能再次脱离 PRoot 的生命周期。 */
-    private fun startUserDaemon(id: String, token: String, command: String, cwd: String, environment: TerminalEnvironment): DaemonStartResult {
+    private fun startUserDaemon(id: String, token: String, command: String, cwd: String, environment: TerminalEnvironment,
+        restartOnBoot: Boolean): DaemonStartResult {
         val workspace = if (environment.isLinux || daemonDir == DEFAULT_DAEMON_DIR) TerminalRuntime.userWorkspacePath else File(daemonDir).parent!!
         val hostDir = if (environment.isLinux || daemonDir == DEFAULT_DAEMON_DIR) File(workspace, "daemon") else File(daemonDir)
         if (!hostDir.mkdirs() && !hostDir.isDirectory) return DaemonStartResult.Failed("WORKSPACE_UNAVAILABLE", "工作目录不可访问")
         val pidFile = File(hostDir, "$id.pid")
         val logFile = File(hostDir, "$id.log")
+        if (pidFile.exists() && !pidFile.delete()) {
+            return DaemonStartResult.Failed("WORKSPACE_UNAVAILABLE", "无法清理旧服务进程记录")
+        }
         val commandBody = "exec sh -c ${shellQuote(command)}"
         val payload = if (environment.isLinux) {
             val rootfs = rootfsPath(environment)
@@ -386,7 +454,7 @@ internal class DetachedTaskSupervisor(
         return synchronized(launchLock) {
             if (!acquireUserLease(lease) {
                     stopped.set(true)
-                    synchronized(launchLock) { stop(id) }
+                    stopForLease(id, token)
                 }) return@synchronized DaemonStartResult.Failed("BACKGROUND_START_NOT_ALLOWED", "请返回 Eta 后重新启动后台任务")
             if (stopped.get()) {
                 releaseUserLease(lease)
@@ -416,9 +484,10 @@ internal class DetachedTaskSupervisor(
             }
             val task = DetachedTask(id, pid, token, command, cwd, "user", environment,
                 if (environment.isLinux) "$LINUX_DAEMON_DIR/$id.log" else logFile.absolutePath,
-                System.currentTimeMillis(), if (environment.isLinux) LinuxExecutionBackend.PROOT else LinuxExecutionBackend.CHROOT, workspace)
+                System.currentTimeMillis(), if (environment.isLinux) LinuxExecutionBackend.PROOT else LinuxExecutionBackend.CHROOT, workspace,
+                restartOnBoot = restartOnBoot)
             USER_WAITERS.add(id)
-            if (!synchronized(RECORDS_LOCK) { saveTasksLocked(loadTasksLocked() + task) }) {
+            if (!synchronized(RECORDS_LOCK) { saveTasksLocked(loadTasksLocked().filterNot { it.id == id } + task) }) {
                 USER_WAITERS.remove(id)
                 stopTaskProcess(task)
                 process.destroyForcibly()
@@ -427,12 +496,16 @@ internal class DetachedTaskSupervisor(
             }
             thread(name = "eta-daemon-wait", isDaemon = true) {
                 try { process.waitFor() } finally {
-                    USER_WAITERS.remove(id)
-                    releaseUserLease(lease)
+                    synchronized(LIFECYCLE_LOCK) {
+                        if (findTask(id)?.token == token) {
+                            USER_WAITERS.remove(id)
+                            releaseUserLease(lease)
+                        }
+                    }
                 }
             }
             if (stopped.get()) {
-                stop(id)
+                stopForLease(id, token)
                 DaemonStartResult.Failed("TASK_CANCELLED", "后台任务已取消")
             } else DaemonStartResult.Started(task)
         }
@@ -443,9 +516,9 @@ internal class DetachedTaskSupervisor(
         if (!USER_WAITERS.add(task.id)) return true
         val lease = "daemon:${task.id}"
         val stopped = java.util.concurrent.atomic.AtomicBoolean(false)
-        if (!acquireUserLease(lease) { stopped.set(true); stop(task.id) }) {
+        if (!acquireUserLease(lease) { stopped.set(true); stopForLease(task.id, task.token) }) {
             USER_WAITERS.remove(task.id)
-            return !stop(task.id)
+            return !stopForLease(task.id, task.token)
         }
         thread(name = "eta-daemon-adopt", isDaemon = true) {
             try {
@@ -459,8 +532,12 @@ internal class DetachedTaskSupervisor(
                     Thread.sleep(2_000)
                 }
             } finally {
-                USER_WAITERS.remove(task.id)
-                releaseUserLease(lease)
+                synchronized(LIFECYCLE_LOCK) {
+                    if (findTask(task.id)?.token == task.token) {
+                        USER_WAITERS.remove(task.id)
+                        releaseUserLease(lease)
+                    }
+                }
             }
         }
         return !stopped.get()
@@ -529,7 +606,7 @@ internal class DetachedTaskSupervisor(
         val excess = statuses.size - MAX_RETAINED_RECORDS
         if (excess <= 0) return
         val victims = statuses
-            .filter { !it.running && (!it.task.commandTask || it.task.completionNotified) }
+            .filter { !it.running && !it.task.restartOnBoot && (!it.task.commandTask || it.task.completionNotified) }
             .sortedBy { it.task.startedAt }
             .take(excess)
         if (victims.isEmpty()) return

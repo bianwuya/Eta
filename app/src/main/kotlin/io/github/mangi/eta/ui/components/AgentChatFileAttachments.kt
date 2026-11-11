@@ -263,6 +263,7 @@ internal fun PendingFileReferenceStrip(
     modifier: Modifier = Modifier,
 ) {
     val openPreview = io.github.mangi.eta.local.richcontent.LocalRichPreview.current
+    val openAttachment = io.github.mangi.eta.local.richcontent.LocalAttachmentPreview.current
     val listState = rememberLazyListState()
     var previousCount by remember { mutableIntStateOf(references.size) }
     LaunchedEffect(references.size) {
@@ -304,8 +305,8 @@ internal fun PendingFileReferenceStrip(
                         color = MiuixTheme.colorScheme.outline.copy(alpha = 0.5f),
                         cornerRadius = 12.dp,
                     )
-                    .clickable(enabled = reference.kind == AgentFileReferenceKind.File && io.github.mangi.eta.local.richcontent.LocalPreviewFiles.isSupported(reference.absolutePath)) {
-                        openPreview(reference.absolutePath)
+                    .clickable(enabled = reference.kind == AgentFileReferenceKind.File, onClickLabel = "查看附件") {
+                        if (openAttachment != null) openAttachment(reference) else openPreview(reference.absolutePath)
                     }
                     .padding(start = 12.dp, end = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -380,6 +381,7 @@ internal fun SentFileReferenceFlow(
     modifier: Modifier = Modifier,
 ) {
     val openPreview = io.github.mangi.eta.local.richcontent.LocalRichPreview.current
+    val openAttachment = io.github.mangi.eta.local.richcontent.LocalAttachmentPreview.current
     FlowRow(
         modifier = modifier,
         horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -399,8 +401,8 @@ internal fun SentFileReferenceFlow(
                         color = MiuixTheme.colorScheme.outline.copy(alpha = 0.45f),
                         cornerRadius = 12.dp,
                     )
-                    .clickable(enabled = reference.kind == AgentFileReferenceKind.File && io.github.mangi.eta.local.richcontent.LocalPreviewFiles.isSupported(reference.absolutePath)) {
-                        openPreview(reference.absolutePath)
+                    .clickable(enabled = reference.kind == AgentFileReferenceKind.File, onClickLabel = "查看附件") {
+                        if (openAttachment != null) openAttachment(reference) else openPreview(reference.absolutePath)
                     }
                     .padding(horizontal = 11.dp),
                 verticalAlignment = Alignment.CenterVertically,

@@ -5,6 +5,7 @@ import android.app.Dialog
 import android.content.Context
 import android.content.ContextWrapper
 import android.graphics.Bitmap
+import android.net.Uri
 import android.os.Looper
 import android.os.SystemClock
 import android.util.Base64
@@ -16,6 +17,7 @@ import android.view.ViewGroup
 import androidx.activity.ComponentActivity
 import androidx.compose.runtime.BroadcastFrameClock
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.Recomposer
 import androidx.compose.runtime.mutableStateOf
@@ -28,12 +30,23 @@ import androidx.compose.ui.semantics.SemanticsNode
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
 import io.github.mangi.eta.R
+import io.github.mangi.eta.data.model.AppearanceSettings
+import io.github.mangi.eta.data.model.AppearanceUiStyle
 import io.github.mangi.eta.local.richcontent.LocalPreviewFiles
 import io.github.mangi.eta.local.richcontent.RichPreviewScreen
 import io.github.mangi.eta.local.richcontent.decodePreviewImage
+import io.github.mangi.eta.local.richcontent.LocalRichPreview
+import io.github.mangi.eta.local.richcontent.LocalAttachmentPreview
+import io.github.mangi.eta.local.richcontent.AttachmentPreviewScreen
+import io.github.mangi.eta.agent.model.AgentFileReference
+import io.github.mangi.eta.agent.model.AgentFileReferenceKind
+import io.github.mangi.eta.ui.model.PendingFileReferenceUi
+import io.github.mangi.eta.ui.app.AgentAppTheme
+import io.github.mangi.eta.ui.model.UserMessageUi
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.time.Duration
+import java.nio.charset.Charset
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -57,6 +70,156 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 @Config(sdk = [36], application = Application::class, qualifiers = "w411dp-h896dp-xhdpi")
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class ImageViewerDialogTest {
+    @Test fun pendingTextOpensReadableAndEncodingCanBeChanged() {
+        val controller = Robolectric.buildActivity(ComponentActivity::class.java).setup().visible()
+        val activity = controller.get()
+        val fixture = ViewerFixture(activity)
+        val text = "中文附件内容，发送前核对。"
+        val file = File(activity.filesDir, "中文 #100%附件.txt").apply { writeBytes(text.toByteArray(Charset.forName("GB18030"))) }
+        val original = file.readBytes()
+        val opened = mutableStateOf<AgentFileReference?>(null)
+        try {
+            fixture.setContent {
+                AgentAppTheme(appearance = AppearanceSettings(uiStyle = AppearanceUiStyle.COUI), applyInterfaceScale = false) {
+                    CompositionLocalProvider(LocalAttachmentPreview provides { opened.value = it }) {
+                        val document = opened.value
+                        if (document == null) PendingFileReferenceStrip(
+                            listOf(PendingFileReferenceUi("document", AgentFileReference(file.name, file.path, AgentFileReferenceKind.File))), {},
+                        ) else AttachmentPreviewScreen(document.absolutePath, document.displayName, onBack = { opened.value = null })
+                    }
+                }
+            }
+            var root = fixture.mainRoot()
+            fixture.tap(root, requireNotNull(findText(root.semanticsOwner.unmergedRootSemanticsNode, file.name)))
+            fixture.awaitMainText(text)
+            root = fixture.mainRoot()
+            var button = requireNotNull(findText(root.semanticsOwner.rootSemanticsNode, "UTF-8"))
+            fixture.tap(root, button)
+            fixture.awaitMainText("无法用所选编码读取文件，请切换编码或使用其他应用打开")
+            root = fixture.mainRoot()
+            button = requireNotNull(findText(root.semanticsOwner.rootSemanticsNode, "GB18030"))
+            fixture.tap(root, button)
+            fixture.awaitMainText(text)
+            org.junit.Assert.assertArrayEquals(original, file.readBytes())
+        } finally {
+            try { fixture.close() } finally { controller.pause().stop().destroy() }
+            shadowOf(Looper.getMainLooper()).idle()
+            file.delete()
+        }
+    }
+
+    @Test fun couiPendingDocumentsOpenOnTouch() = assertPendingDocumentsOpen(AppearanceUiStyle.COUI)
+
+    @Test fun miuixPendingDocumentsOpenOnTouch() = assertPendingDocumentsOpen(AppearanceUiStyle.MIUIX)
+
+    private fun assertPendingDocumentsOpen(style: AppearanceUiStyle) {
+        val controller = Robolectric.buildActivity(ComponentActivity::class.java).setup().visible()
+        val fixture = ViewerFixture(controller.get())
+        val extension = mutableStateOf("txt")
+        val opened = mutableListOf<String>()
+        val removed = mutableListOf<String>()
+        try {
+            fixture.setContent {
+                AgentAppTheme(appearance = AppearanceSettings(uiStyle = style), applyInterfaceScale = false) {
+                    CompositionLocalProvider(LocalAttachmentPreview provides { opened += it.absolutePath }) {
+                        PendingFileReferenceStrip(
+                            references = listOf(PendingFileReferenceUi("document", AgentFileReference(
+                                "中文附件.${extension.value}", "/sdcard/Download/中文附件.${extension.value}", AgentFileReferenceKind.File))),
+                            onRemoveReference = { removed += it },
+                        )
+                    }
+                }
+            }
+            for (format in listOf("txt", "md", "pdf", "doc", "docx", "xls", "xlsx")) {
+                extension.value = format
+                val root = fixture.mainRoot()
+                val node = requireNotNull(findText(root.semanticsOwner.unmergedRootSemanticsNode, "中文附件.$format"))
+                var clickable: SemanticsNode? = node
+                while (clickable != null && !clickable.config.contains(SemanticsActions.OnClick)) clickable = clickable.parent
+                assertNotNull("$format attachment must offer preview", clickable)
+                assertFalse("$format preview must not be disabled", requireNotNull(clickable).config.contains(SemanticsProperties.Disabled))
+                fixture.tap(root, node)
+                assertEquals("/sdcard/Download/中文附件.$format", opened.lastOrNull())
+                assertTrue(removed.isEmpty())
+            }
+            val root = fixture.mainRoot()
+            val remove = requireNotNull(findDescription(root.semanticsOwner.unmergedRootSemanticsNode,
+                controller.get().getString(R.string.ui_remove_file_reference_04bbfc)))
+            val count = opened.size
+            fixture.tap(root, remove)
+            assertEquals(listOf("document"), removed)
+            assertEquals("removing an attachment must not open it", count, opened.size)
+        } finally {
+            try { fixture.close() } finally { controller.pause().stop().destroy() }
+            shadowOf(Looper.getMainLooper()).idle()
+        }
+    }
+
+    private fun findText(node: SemanticsNode, text: String): SemanticsNode? {
+        if (node.config.getOrNull(SemanticsProperties.Text)?.any { it.text == text } == true) return node
+        return node.children.firstNotNullOfOrNull { findText(it, text) }
+    }
+
+    @Test
+    fun couiChatThumbnailOpensViewerOnTouch() =
+        assertMessageThumbnailOpensViewer(AppearanceUiStyle.COUI, overlay = false)
+
+    @Test
+    fun miuixChatThumbnailOpensViewerOnTouch() =
+        assertMessageThumbnailOpensViewer(AppearanceUiStyle.MIUIX, overlay = false)
+
+    @Test
+    fun couiAssistantThumbnailOpensViewerOnTouch() =
+        assertMessageThumbnailOpensViewer(AppearanceUiStyle.COUI, overlay = true)
+
+    @Test
+    fun miuixAssistantThumbnailOpensViewerOnTouch() =
+        assertMessageThumbnailOpensViewer(AppearanceUiStyle.MIUIX, overlay = true)
+
+    private fun assertMessageThumbnailOpensViewer(style: AppearanceUiStyle, overlay: Boolean) {
+        val controller = Robolectric.buildActivity(ComponentActivity::class.java).setup().visible()
+        val activity = controller.get()
+        val fixture = ViewerFixture(activity)
+        val bitmap = Bitmap.createBitmap(64, 32, Bitmap.Config.ARGB_8888)
+        try {
+            val bytes = ByteArrayOutputStream().use { output ->
+                assertTrue(bitmap.compress(Bitmap.CompressFormat.PNG, 100, output))
+                output.toByteArray()
+            }
+            val imageUrl = "data:image/png;base64," + Base64.encodeToString(bytes, Base64.NO_WRAP)
+            fixture.setContent {
+                AgentAppTheme(appearance = AppearanceSettings(uiStyle = style), applyInterfaceScale = false) {
+                    ChatMessageItem(
+                        message = UserMessageUi(id = "image-entry", content = "", images = listOf(imageUrl)),
+                        onSuggestionClick = {},
+                        onRunTraceClick = {},
+                        onOpenBrowser = {},
+                        showBrowserShortcut = false,
+                        assistantOverlay = overlay,
+                    )
+                }
+            }
+            val root = fixture.mainRoot()
+            val thumbnail = requireNotNull(findDescription(root.semanticsOwner.unmergedRootSemanticsNode,
+                activity.getString(R.string.chat_image_attachment)))
+            assertTrue(fixture.showingDialogs().isEmpty())
+            fixture.tap(root, thumbnail)
+            val dialog = fixture.awaitDialog()
+            val dialogRoot = fixture.dialogRoot(dialog)
+            assertNotNull(findDescription(dialogRoot.semanticsOwner.unmergedRootSemanticsNode,
+                activity.getString(R.string.chat_image_attachment)))
+            val close = requireNotNull(findDescription(dialogRoot.semanticsOwner.rootSemanticsNode,
+                activity.getString(android.R.string.cancel)))
+            assertTrue(close.config[SemanticsActions.OnClick].action?.invoke() == true)
+            fixture.advance(4)
+            assertFalse(dialog.isShowing)
+        } finally {
+            bitmap.recycle()
+            try { fixture.close() } finally { controller.pause().stop().destroy() }
+            shadowOf(Looper.getMainLooper()).idle()
+        }
+    }
+
     @Test
     fun bitmapEntryUsesExistingViewerAndSingleTapDismissesIt() {
         val controller = Robolectric.buildActivity(ComponentActivity::class.java).setup().visible()
@@ -161,7 +324,8 @@ class ImageViewerDialogTest {
         try {
             file.outputStream().use { assertTrue(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
             // Report a decode failure directly instead of mistaking it for a missing Dialog.
-            val decoded = decodePreviewImage(activity, file.path)
+            val reference = Uri.encode(file.absolutePath, "/\\")
+            val decoded = decodePreviewImage(activity, reference)
             assertEquals(64, decoded.width)
             assertEquals(32, decoded.height)
             val routeOpen = mutableStateOf(true)
@@ -171,7 +335,7 @@ class ImageViewerDialogTest {
                 MiuixTheme {
                     if (routeOpen.value) {
                         DisposableEffect(Unit) { onDispose { routeDisposals++ } }
-                        RichPreviewScreen(reference = file.path, onBack = {
+                        RichPreviewScreen(reference = reference, onBack = {
                             backs++
                             routeOpen.value = false
                         })
@@ -261,6 +425,41 @@ class ImageViewerDialogTest {
             val decor = requireNotNull(dialog.window).decorView
             layout(decor)
             return requireNotNull(findRoot(decor)).also { it.measureAndLayoutForTest() }
+        }
+
+        fun mainRoot(): ViewRootForTest {
+            advance(4)
+            return requireNotNull(findRoot(host)).also { it.measureAndLayoutForTest() }
+        }
+
+        fun awaitMainText(text: String) {
+            val deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos()
+            fun contains(node: SemanticsNode): Boolean =
+                node.config.getOrNull(SemanticsProperties.Text)?.any { it.text == text } == true || node.children.any(::contains)
+            do {
+                val root = mainRoot()
+                if (contains(root.semanticsOwner.rootSemanticsNode)) return
+                Thread.sleep(5)
+            } while (System.nanoTime() < deadline)
+            error("Expected preview text was not displayed: $text")
+        }
+
+        fun tap(root: ViewRootForTest, node: SemanticsNode) {
+            val bounds = node.boundsInRoot
+            assertTrue(bounds.width > 0 && bounds.height > 0)
+            val location = IntArray(2).also { root.view.getLocationOnScreen(it) }
+            val downTime = SystemClock.uptimeMillis()
+            for (action in listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP)) {
+                val event = MotionEvent.obtain(downTime, SystemClock.uptimeMillis(), action,
+                    bounds.center.x + location[0], bounds.center.y + location[1], 0).apply {
+                    source = InputDevice.SOURCE_TOUCHSCREEN
+                    offsetLocation(-location[0].toFloat(), -location[1].toFloat())
+                }
+                try {
+                    assertTrue(root.view.dispatchTouchEvent(event))
+                } finally { event.recycle() }
+                advance()
+            }
         }
 
         fun close() {

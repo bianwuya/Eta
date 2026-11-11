@@ -12,11 +12,12 @@ import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.data.model.OpenAiCompatibleProviderSetting
 import io.github.mangi.eta.data.model.ProviderAuthModes
 import io.github.mangi.eta.data.repository.CodexAccountView
-import io.github.mangi.eta.data.repository.ProviderCredentialRepository
 import io.github.mangi.eta.data.repository.ProviderRepository
+import io.github.mangi.eta.data.repository.ProviderCredentialRepository
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
 import io.github.mangi.eta.ui.components.StatusError
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.Card
@@ -28,7 +29,10 @@ import top.yukonga.miuix.kmp.preference.OverlayDropdownPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 @Composable
-internal fun ImageGenSettingsScreen(onBack: () -> Unit) {
+internal fun ImageGenSettingsScreen(
+    onBack: () -> Unit,
+    readAccounts: (String, String) -> List<CodexAccountView> = ProviderCredentialRepository::accounts,
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var error by remember { mutableStateOf<String?>(null) }
@@ -36,14 +40,15 @@ internal fun ImageGenSettingsScreen(onBack: () -> Unit) {
         .getOrElse { error = "生图配置无法读取，请重新保存"; ImageGenConfig() }) }
     val providers by ProviderRepository.providersFlow().collectAsState(initial = emptyList())
     var accounts by remember { mutableStateOf<List<CodexAccountView>>(emptyList()) }
+    var accountError by remember { mutableStateOf<String?>(null) }
     var saving by remember { mutableStateOf(false) }
     var draftModel by rememberSaveable(config.model) { mutableStateOf(config.model) }
     LaunchedEffect(config.providerId, config.source, providers) {
-        accounts = withContext(Dispatchers.IO) {
-            if (config.source == ImageGenSource.CODEX_SUBSCRIPTION && config.providerId.isNotBlank()) {
-                ProviderCredentialRepository.accounts(config.providerId, ProviderAuthModes.OPENAI_CHATGPT)
-            } else emptyList()
-        }
+        accounts = emptyList()
+        accountError = null
+        val result = withContext(Dispatchers.IO) { loadImageGenAccounts(config, readAccounts) }
+        accounts = result.accounts
+        accountError = result.error
     }
     fun save(next: ImageGenConfig) {
         scope.launch {
@@ -51,7 +56,10 @@ internal fun ImageGenSettingsScreen(onBack: () -> Unit) {
             try {
                 withContext(Dispatchers.IO) { ImageGenConfigStore.write(context, next) }
                 config = next; error = null
-            } catch (_: Exception) { error = "生图配置保存失败，原配置未替换" }
+            } catch (failure: Exception) {
+                if (failure is CancellationException) throw failure
+                error = "生图配置保存失败，原配置未替换"
+            }
             finally { saving = false }
         }
     }
@@ -66,7 +74,7 @@ internal fun ImageGenSettingsScreen(onBack: () -> Unit) {
         item(key = "source") {
             SmallTitle("固定来源")
             Card(Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
-                OverlayDropdownPreference(title = "生图来源", items = listOf("未配置", "Codex 订阅", "OpenAI Images 兼容 API"),
+                OverlayDropdownPreference(title = "生图来源", items = listOf("未配置", "Codex 订阅", "中转 / OpenAI 兼容 API"),
                     selectedIndex = sources.indexOf(config.source).coerceAtLeast(0), enabled = !saving,
                     onSelectedIndexChange = { index -> save(config.copy(source = sources[index], providerId = "", accountId = "",
                         model = "gpt-image-2")) })
@@ -120,6 +128,11 @@ internal fun ImageGenSettingsScreen(onBack: () -> Unit) {
             Column(Modifier.padding(horizontal = 28.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(state, style = MiuixTheme.textStyles.body2)
                 error?.let { Text(it, style = MiuixTheme.textStyles.footnote2, color = StatusError) }
+                accountError?.let { Text(it, style = MiuixTheme.textStyles.footnote2, color = StatusError) }
+                if (config.source == ImageGenSource.OPENAI_API) {
+                    Text("使用所选 API Key 服务商的中转地址和 Key。模型请填写中转站支持的生图模型；仅支持 Images 生成接口。",
+                        style = MiuixTheme.textStyles.footnote2, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+                }
                 Text("生图始终使用此固定来源和账号，不随聊天模型或账号切换。真实调用会消耗该来源额度；失败不会改走其他收费来源。\n图片保存在 Downloads/Eta-输出/生成图片。兼容API须支持Images生成协议及Base64图片返回。",
                     style = MiuixTheme.textStyles.footnote2, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
             }

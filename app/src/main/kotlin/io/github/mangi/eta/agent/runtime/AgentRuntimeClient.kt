@@ -182,7 +182,41 @@ internal class AgentRuntimeClient(
         }
     }
 
-    enum class SteeringOutcome { Accepted, NotAccepted, InvalidInput, Unavailable }
+    enum class SteeringOutcome { Accepted, NotAccepted, InvalidInput, Unavailable, Preparing, Unsupported, Unauthorized, StorageFailed }
+
+    sealed interface SteeringStatus {
+        data class Accepted(val event: AgentEvent.UserSupplementReceived) : SteeringStatus
+        data object NotAccepted : SteeringStatus
+        data object Unavailable : SteeringStatus
+    }
+
+    fun querySteering(runId: String, queueMessageId: String): SteeringStatus {
+        val latch = CountDownLatch(1)
+        val result = AtomicReference<SteeringStatus>(SteeringStatus.Unavailable)
+        val receiver = Messenger(object : Handler(Looper.getMainLooper()) {
+            override fun handleMessage(msg: Message) {
+                if (msg.what != AgentRuntimeWire.MSG_QUERY_STEERING_RESPONSE) return
+                val data = msg.data
+                if (AgentRuntimeWire.runIdFromBundle(data) != runId || data.getString("queue_message_id") != queueMessageId) return
+                try {
+                    val event = AgentWireText.read(data, "accepted_event")?.let(AgentEventJsonCodec::decode) as? AgentEvent.UserSupplementReceived
+                    result.set(when {
+                        event != null && event.queueMessageId == queueMessageId -> SteeringStatus.Accepted(event)
+                        data.getBoolean("known") && !data.getBoolean("accepted") -> SteeringStatus.NotAccepted
+                        else -> SteeringStatus.Unavailable
+                    })
+                } catch (_: Exception) { result.set(SteeringStatus.Unavailable) }
+                finally { AgentWireText.close(data); latch.countDown() }
+            }
+        })
+        return withRuntimeMessenger(SteeringStatus.Unavailable) { service ->
+            service.send(Message.obtain(null, AgentRuntimeWire.MSG_QUERY_STEERING).apply {
+                replyTo = receiver
+                data = AgentRuntimeWire.ackBundle(runId).apply { putString("queue_message_id", queueMessageId) }
+            })
+            if (latch.await(RESPONSE_TIMEOUT_SECONDS, TimeUnit.SECONDS)) result.get() else SteeringStatus.Unavailable
+        }
+    }
 
     /** 接收确认与在途模型流分离；超时不表示拒绝，调用方不得据此重复发送。 */
     fun steerRun(runId: String, queueMessageId: String, text: String,
@@ -199,7 +233,13 @@ internal class AgentRuntimeClient(
                 outcome.set(when {
                     data.getBoolean("accepted") -> SteeringOutcome.Accepted
                     data.getBoolean("invalid_input") -> SteeringOutcome.InvalidInput
-                    else -> SteeringOutcome.NotAccepted
+                    else -> when (data.getString("rejection_reason")) {
+                        "preparing" -> SteeringOutcome.Preparing
+                        "unsupported" -> SteeringOutcome.Unsupported
+                        "unauthorized" -> SteeringOutcome.Unauthorized
+                        "storage_failed" -> SteeringOutcome.StorageFailed
+                        else -> SteeringOutcome.NotAccepted
+                    }
                 })
                 received.countDown()
             }

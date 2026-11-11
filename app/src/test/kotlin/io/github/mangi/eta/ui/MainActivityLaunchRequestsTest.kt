@@ -1,8 +1,6 @@
 package io.github.mangi.eta.ui
 
-import android.content.ClipData
 import android.content.Intent
-import android.net.Uri
 import android.os.Bundle
 import android.os.Parcel
 import io.github.mangi.eta.agent.voice.EtaAssistantOverlayService
@@ -15,7 +13,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
-@Config(application = android.app.Application::class)
+@Config(sdk = [36], application = android.app.Application::class)
 class MainActivityLaunchRequestsTest {
     @Test
     fun `指定运行身份在重建时保留且消费后不重播`() {
@@ -108,47 +106,13 @@ class MainActivityLaunchRequestsTest {
     }
 
     @Test
-    fun `单文件与多文件分享提取去重URI与附带文本且消费后重建不重放`() {
-        val fileUri = Uri.parse("content://provider/files/report.pdf")
-        val imageUri = Uri.parse("content://provider/images/photo.png")
-        val singleShare = Intent(Intent.ACTION_SEND).apply {
-            type = "application/pdf"
-            putExtra(Intent.EXTRA_STREAM, fileUri)
-            putExtra(Intent.EXTRA_TEXT, "帮我总结这份文档")
+    fun `系统分享由独立入口处理且主Activity不保存分享待办`() {
+        for (action in listOf(Intent.ACTION_SEND, Intent.ACTION_SEND_MULTIPLE)) {
+            val intent = Intent(action).setType("text/plain").putExtra(Intent.EXTRA_TEXT, "shared")
+            assertEquals(MainActivityLaunchRequests(), MainActivityLaunchRequests.restore(null, intent))
+            assertEquals(MainActivityLaunchRequests(),
+                MainActivityLaunchRequests.restore(savedState(MainActivityLaunchRequests()), intent))
         }
-        val acceptedSingle = MainActivityLaunchRequests.restore(null, singleShare)
-        assertEquals(
-            IncomingShareRequest(
-                uris = listOf(fileUri.toString()),
-                mimeType = "application/pdf",
-                text = "帮我总结这份文档",
-            ),
-            acceptedSingle.sharedContent,
-        )
-
-        val consumed = acceptedSingle.copy(sharedContent = null)
-        assertEquals(
-            MainActivityLaunchRequests(),
-            MainActivityLaunchRequests.restore(savedState(consumed), singleShare),
-        )
-
-        val multiShare = Intent(Intent.ACTION_SEND_MULTIPLE).apply {
-            type = "*/*"
-            putParcelableArrayListExtra(Intent.EXTRA_STREAM, arrayListOf(fileUri, imageUri))
-            clipData = ClipData.newRawUri("shared", fileUri).apply {
-                addItem(ClipData.Item(imageUri))
-            }
-            putExtra(Intent.EXTRA_TEXT, fileUri.toString())
-        }
-        val acceptedMulti = MainActivityLaunchRequests().accept(multiShare)
-        assertEquals(
-            IncomingShareRequest(
-                uris = listOf(fileUri.toString(), imageUri.toString()),
-                mimeType = "*/*",
-                text = null,
-            ),
-            acceptedMulti.sharedContent,
-        )
     }
 
     private fun savedState(requests: MainActivityLaunchRequests): Bundle {

@@ -19,10 +19,11 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
+import okhttp3.OkHttpClient
 import org.json.JSONObject
 
-internal class ImageGenClient(private val context: Context) {
-    private val http = AgentHttpClient.client.newBuilder()
+internal class ImageGenClient(private val context: Context, client: OkHttpClient = AgentHttpClient.client) {
+    private val http = client.newBuilder()
         .readTimeout(300, TimeUnit.SECONDS).callTimeout(360, TimeUnit.SECONDS)
         .followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(false).build()
 

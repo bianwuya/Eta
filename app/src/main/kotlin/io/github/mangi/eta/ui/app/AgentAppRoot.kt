@@ -50,7 +50,6 @@ import io.github.mangi.eta.core.AndroidAgentLogger
 import io.github.mangi.eta.data.model.AppearanceUiStyle
 import io.github.mangi.eta.data.repository.RuntimeConfigRepository
 import io.github.mangi.eta.ui.AppearanceSettingsScreen
-import io.github.mangi.eta.ui.IncomingShareRequest
 import io.github.mangi.eta.ui.SettingsScreen
 import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.coui.CouiConfirmDialog
@@ -130,8 +129,6 @@ fun AgentAppRoot(
     onRequestedConversationOpened: () -> Unit = {},
     requestedArchivedConversation: ArchivedConversationRequest? = null,
     onArchivedConversationOpened: () -> Unit = {},
-    sharedContent: IncomingShareRequest? = null,
-    onSharedContentAccepted: () -> Unit = {},
     openSpeechSettings: Boolean = false,
     openTerminal: Boolean = false,
     onTerminalOpened: () -> Unit = {},
@@ -287,18 +284,6 @@ fun AgentAppRoot(
         onAssistantConversationOpened(opened)
     }
 
-    LaunchedEffect(sharedContent) {
-        val request = sharedContent ?: return@LaunchedEffect
-        focusManager.clearFocus()
-        conversationPaneOpen = false
-        if (backStack.lastOrNull() != AppRoute.Home) {
-            navigator.popToHome()
-            navigationResetKey++
-        }
-        agentState.acceptSharedContent(request)
-        onSharedContentAccepted()
-    }
-
     fun pushRoute(
         route: AppRoute,
         restoreConversationPaneOnBack: Boolean = conversationPaneOpen,
@@ -439,6 +424,9 @@ fun AgentAppRoot(
         io.github.mangi.eta.local.richcontent.LocalRichPreview provides { reference ->
             pushRoute(AppRoute.RichPreview(reference))
         },
+        io.github.mangi.eta.local.richcontent.LocalAttachmentPreview provides { reference ->
+            pushRoute(AppRoute.RichPreview(reference.absolutePath, reference.displayName))
+        },
     ) {
     key(navigationResetKey) {
         NavDisplay(
@@ -500,7 +488,7 @@ fun AgentAppRoot(
                                     }
                                 }
                                 is AgentHomeAction.BranchConversation ->
-                                    agentState.branchConversation(action.conversationId, action.messageId)
+                                    agentState.branchConversation(action.conversationId, action.messageId, action.draftText)
                                 is AgentHomeAction.SelectReplyCandidate -> agentState.selectReplyCandidate(action.id, action.index)
                                 AgentHomeAction.OpenTools -> pushRoute(AppRoute.Tools)
                                 AgentHomeAction.OpenSkills -> pushRoute(AppRoute.Skills)
@@ -528,7 +516,9 @@ fun AgentAppRoot(
                 }
             }
             entry<AppRoute.RichPreview>(swipeDismiss = swipeDismiss) { route ->
-                io.github.mangi.eta.local.richcontent.RichPreviewScreen(reference = route.reference, onBack = ::popRoute)
+                io.github.mangi.eta.local.richcontent.RichPreviewScreen(
+                    reference = route.reference, onBack = ::popRoute, attachmentName = route.attachmentName,
+                )
             }
             entry<AppRoute.Terminal>(swipeDismiss = swipeDismiss) {
                 LaunchedEffect(Unit) { requestExecutionNotifications() }
@@ -934,53 +924,18 @@ fun AgentAppRoot(
     }
 
     conversationRenameTarget?.let { conversation ->
-        var renameInput by remember(conversation.id) { mutableStateOf(conversation.title) }
-        when (LocalUiStyle.current) {
-            AppearanceUiStyle.COUI -> {
-                CouiInputDialog(
-                    visible = true,
-                    title = stringResource(R.string.conversation_rename_title),
-                    value = renameInput,
-                    onValueChange = { renameInput = it },
-                    placeholder = stringResource(R.string.conversation_rename_hint),
-                    confirmText = stringResource(R.string.action_save),
-                    confirmEnabled = renameInput.isNotBlank(),
-                    onConfirm = {
-                        agentState.renameConversation(conversation.id, renameInput)
-                        conversationRenameTarget = null
-                    },
-                    onDismissRequest = { conversationRenameTarget = null },
-                )
-            }
-            AppearanceUiStyle.MIUIX -> {
-                WindowDialog(
-                    show = true,
-                    cornerRadius = DialogDefaults.CornerRadius,
-                    title = stringResource(R.string.conversation_rename_title),
-                    onDismissRequest = { conversationRenameTarget = null },
-                ) {
-                    Column {
-                        TextField(
-                            value = renameInput,
-                            onValueChange = { renameInput = it },
-                            label = stringResource(R.string.conversation_rename_hint),
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                        MiuixDialogActions(
-                            confirmText = stringResource(R.string.action_save),
-                            confirmEnabled = renameInput.isNotBlank(),
-                            onCancel = { conversationRenameTarget = null },
-                            onConfirm = {
-                                agentState.renameConversation(conversation.id, renameInput)
-                                conversationRenameTarget = null
-                            },
-                            modifier = Modifier.padding(top = 16.dp),
-                        )
-                    }
-                }
-            }
-        }
+        ConversationRenameDialog(
+            conversation = conversation,
+            onConfirmRename = { title ->
+                agentState.renameConversation(conversation.id, title)
+                conversationRenameTarget = null
+            },
+            onRegenerateTitle = {
+                agentState.regenerateConversationTitle(conversation.id)
+                conversationRenameTarget = null
+            },
+            onDismissRequest = { conversationRenameTarget = null },
+        )
     }
 
     conversationDeleteTarget?.let { conversation ->

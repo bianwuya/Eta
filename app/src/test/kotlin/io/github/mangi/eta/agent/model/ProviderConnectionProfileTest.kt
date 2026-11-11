@@ -82,6 +82,27 @@ class ProviderConnectionProfileTest {
         assertTrue(runCatching { ProviderConnectionProfile.forAuthMode("unknown-fixture") }.isFailure)
     }
 
+   @Test
+   fun codexSubscriptionAllowsOnlyExactRateLimitResetConsumeTarget() {
+       val profile = ProviderConnectionProfile.OPENAI_CODEX
+       assertEquals("https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume", profile.rateLimitResetConsumeUrl)
+       profile.requireRequestTarget(profile.rateLimitResetConsumeUrl!!.toHttpUrl())
+       listOf(
+           "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume?extra=param",
+           "https://chatgpt.com.evil.test/backend-api/wham/rate-limit-reset-credits/consume",
+           "http://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume",
+           "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/other",
+       ).forEach { url ->
+           assertThrows(IllegalArgumentException::class.java) { profile.requireRequestTarget(url.toHttpUrl()) }
+       }
+   }
+
+   @Test
+   fun otherSubscriptionProfilesDoNotGainRateLimitResetTargets() {
+       val profile = ProviderConnectionProfile.XAI_GROK
+       org.junit.Assert.assertNull(profile.rateLimitResetConsumeUrl)
+   }
+
     private fun config() = AgentModelClient.ModelConfig(
         providerId = "account", baseUrl = "https://api.x.ai/v1", apiKey = "",
         model = "grok-fixture", systemPrompt = "fixture",

@@ -193,6 +193,7 @@ internal fun AgentChatBody(
     onOpenBrowser: () -> Unit,
     hasEarlierMessages: Boolean = false,
     messageStartIndex: Int = 0,
+    sessionStatsPrefix: io.github.mangi.eta.ui.model.SessionStatsSummaryUi = io.github.mangi.eta.ui.model.SessionStatsSummaryUi(),
     historyLoadState: ConversationHistoryLoadState = ConversationHistoryLoadState.Idle,
     onLoadEarlierMessages: () -> Unit = {},
     onHistoryViewportChanged: (Boolean) -> Unit = {},
@@ -210,8 +211,8 @@ internal fun AgentChatBody(
     val isKeyboardVisible = imeBottomPx > 0
     val browserSnapshot = LocalAgentBrowserSession.current?.snapshots?.collectAsState()?.value
         ?: BrowserSessionSnapshot()
-    val contextUsage = remember(messages, modelPickerState.selectedModel) {
-        latestContextUsage(messages, modelPickerState.selectedModel)
+    val contextUsage = remember(messages, modelPickerState.selectedModel, sessionStatsPrefix) {
+        latestContextUsage(messages, modelPickerState.selectedModel, sessionStatsPrefix)
     }
 
     val visibleMessages = remember(messages, messageEdit?.targetMessageId, messageEdit?.preserveFollowingMessages) {

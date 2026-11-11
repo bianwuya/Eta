@@ -127,6 +127,7 @@ internal fun AgentChatQueueStrip(
                 Spacer(modifier = Modifier.width(6.dp))
                 Text(
                     text = when {
+                        first.steeringUnconfirmed -> stringResource(R.string.chat_queue_confirming)
                         first.immediateInterrupt -> stringResource(R.string.chat_queue_interrupting)
                         hasMultiple -> stringResource(R.string.chat_queue_status_count, queuedMessages.size)
                         else -> stringResource(R.string.chat_queue_status)
@@ -266,7 +267,7 @@ private fun QueuedMessageItemActions(
     onRemove: () -> Unit,
 ) {
     Row(verticalAlignment = Alignment.CenterVertically) {
-        if (!item.immediateInterrupt && !(isStreaming && item.requestMode == "plan")) {
+        if (!item.immediateInterrupt && !item.steeringUnconfirmed && !(isStreaming && item.requestMode == "plan")) {
             IconButton(
                 onClick = onSteer,
                 minWidth = QueueActionSize,
@@ -282,6 +283,7 @@ private fun QueuedMessageItemActions(
         }
         IconButton(
             onClick = onRemove,
+            enabled = !item.steeringUnconfirmed,
             minWidth = QueueActionSize,
             minHeight = QueueActionSize,
         ) {

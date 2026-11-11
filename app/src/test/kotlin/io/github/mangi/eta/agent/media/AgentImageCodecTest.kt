@@ -34,6 +34,46 @@ import org.robolectric.shadows.ShadowContentResolver
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class AgentImageCodecTest {
     @Test
+    fun fullScreenDisplayKeepsOriginalEncodedPixelsWhileThumbnailStaysSmall() {
+        val context = RuntimeEnvironment.getApplication()
+        val bitmap = patternedBitmap(width = 2_400, height = 1_600)
+        try {
+            val bytes = ByteArrayOutputStream().use { output ->
+                assertTrue(bitmap.compress(Bitmap.CompressFormat.PNG, 100, output))
+                output.toByteArray()
+            }
+            val original = AgentImageCodec.fromBytes(bytes, "user_attach", "image/png")
+            val display = requireNotNull(AgentImageCodec.displayFromReference(context, original))
+            val thumbnail = requireNotNull(AgentImageCodec.previewFromReference(context, original))
+            assertEquals(2_400, display.width)
+            assertEquals(1_600, display.height)
+            assertArrayEquals(bytes, display.reference.decodeDataUrl())
+            assertTrue(maxOf(thumbnail.width!!, thumbnail.height!!) <= 512)
+        } finally {
+            bitmap.recycle()
+        }
+    }
+
+    @Test
+    fun fullScreenDisplayCopiesLocalOriginalBeforeItsSourceDisappears() {
+        val context = RuntimeEnvironment.getApplication()
+        val file = File(context.cacheDir, "original-image.png")
+        val bitmap = patternedBitmap(2_400, 800)
+        try {
+            file.outputStream().use { assertTrue(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
+            val bytes = file.readBytes()
+            val original = AgentImageCodec.fromBytes(bytes, "user_share", "image/png").copy(reference = file.path)
+            val display = requireNotNull(AgentImageCodec.displayFromReference(context, original))
+            assertTrue(file.delete())
+            assertEquals(2_400, display.width)
+            assertArrayEquals(bytes, display.reference.decodeDataUrl())
+        } finally {
+            bitmap.recycle()
+            file.delete()
+        }
+    }
+
+    @Test
     fun screenBitmapUsesFullResolutionPngWithoutChangingPixels() {
         val bitmap = patternedBitmap(width = 1_200, height = 2_400)
         try {

@@ -39,6 +39,10 @@ internal object TerminalRuntime {
         if (appContext != null) AgentExecutionService.release(id)
     }
 
+    fun refreshPersistentServices() {
+        appContext?.let(TerminalDaemonRecovery::request)
+    }
+
     fun initialize(context: Context) {
         appContext = context.applicationContext
         File(userWorkspacePath).mkdirs()

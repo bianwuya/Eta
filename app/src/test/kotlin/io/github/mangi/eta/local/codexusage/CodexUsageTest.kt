@@ -35,4 +35,29 @@ class CodexUsageTest {
         val snapshot = CodexUsageRepository.parse(JSONObject("""{"rate_limit":{"primary_window":{"used_percent":500},"secondary_window":{"used_percent":null}}}"""), 1)
         assertTrue(snapshot.windows.all { it.remaining == null })
     }
+
+    @Test fun rateLimitResetCreditsParsedWhenAvailable() {
+        val snapshotWithCredits = CodexUsageRepository.parse(JSONObject("""{
+            "rate_limit":{"primary_window":{"used_percent":20}},
+            "rate_limit_reset_credits":{"available_count":2}
+        }"""), 1000)
+        assertEquals(2, snapshotWithCredits.resetCreditsAvailable)
+
+        val snapshotZeroCredits = CodexUsageRepository.parse(JSONObject("""{
+            "rate_limit":{"primary_window":{"used_percent":20}},
+            "rate_limit_reset_credits":{"available_count":0}
+        }"""), 1000)
+        assertEquals(0, snapshotZeroCredits.resetCreditsAvailable)
+
+        val snapshotMissingCredits = CodexUsageRepository.parse(JSONObject("""{
+            "rate_limit":{"primary_window":{"used_percent":20}}
+        }"""), 1000)
+        assertNull(snapshotMissingCredits.resetCreditsAvailable)
+
+        val snapshotNullCredits = CodexUsageRepository.parse(JSONObject("""{
+            "rate_limit":{"primary_window":{"used_percent":20}},
+            "rate_limit_reset_credits":{"available_count":null}
+        }"""), 1000)
+        assertNull(snapshotNullCredits.resetCreditsAvailable)
+    }
 }

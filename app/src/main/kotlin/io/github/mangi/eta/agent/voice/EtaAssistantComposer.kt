@@ -148,11 +148,11 @@ private fun AssistantInputBar(
     onStop: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val canSubmit = input.isNotBlank() && state.phase != EtaVoicePhase.PROCESSING
+    val canSubmit = input.isNotBlank()
     val focusRequester = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
     val windowInfo = LocalWindowInfo.current
-    val inputEnabled = state.phase != EtaVoicePhase.PROCESSING && !speech.active
+    val inputEnabled = !speech.active
     LaunchedEffect(inputFocusRequestKey, inputEnabled) {
         if (inputFocusRequestKey < 0 || !inputEnabled) return@LaunchedEffect
         // 输入栏挂载且浮窗取得焦点后再连接 IME，避免动画切换时请求落在尚不存在的输入框上。
@@ -182,20 +182,24 @@ private fun AssistantInputBar(
     val hintColor = colors.inputTertiary
     val inputShape = RoundedCornerShape(25.dp)
     val trailingIcon = when {
-        speech.active || state.phase == EtaVoicePhase.PROCESSING -> R.drawable.ic_assistant_stop
-        canSubmit || !recognitionEnabled -> R.drawable.ic_assistant_send
+        speech.active -> R.drawable.ic_assistant_stop
+        canSubmit -> R.drawable.ic_assistant_send
+        state.phase == EtaVoicePhase.PROCESSING -> R.drawable.ic_assistant_stop
+        !recognitionEnabled -> R.drawable.ic_assistant_send
         else -> R.drawable.ic_assistant_voice
     }
     val trailingDescription = when {
         speech.active -> R.string.voice_finish_speech
+        canSubmit -> R.string.voice_send
         state.phase == EtaVoicePhase.PROCESSING -> R.string.action_stop
-        canSubmit || !recognitionEnabled -> R.string.voice_send
+        !recognitionEnabled -> R.string.voice_send
         else -> R.string.voice_tap_to_speak
     }
     val trailingAction = when {
         speech.active -> onFinishSpeech
+        canSubmit -> onSubmit
         state.phase == EtaVoicePhase.PROCESSING -> onStop
-        canSubmit || !recognitionEnabled -> onSubmit
+        !recognitionEnabled -> onSubmit
         else -> { { onMicrophone(false) } }
     }
     Row(

@@ -100,11 +100,20 @@ internal class RootShellTerminalController(
             cwd = args.optString("cwd").ifBlank { null },
             identity = args.optString("identity"),
             environment = args.optString("environment", "android"),
+            restartOnBoot = args.optBoolean("restart_on_boot", false),
         )
         "list" -> daemonList()
+        "configure" -> {
+            val id = args.requiredText("task_id")
+            val enabled = args.optBoolean("restart_on_boot", false)
+            if (detachedSupervisor?.configureRestart(id, enabled) == true) {
+                TerminalRuntime.refreshPersistentServices()
+                JSONObject().put("ok", true).put("task_id", id).put("restart_on_boot", enabled).toString()
+            } else errorJson("TASK_NOT_FOUND", "未找到守护服务")
+        }
         "logs" -> daemonLogs(args.optString("task_id"))
         "stop" -> daemonStop(args.optString("task_id"))
-        else -> errorJson("UNSUPPORTED_TERMINAL_ACTION", "terminal_daemon action 仅支持 start/list/logs/stop")
+        else -> errorJson("UNSUPPORTED_TERMINAL_ACTION", "terminal_daemon action 仅支持 start/list/logs/stop/configure")
     }
 
     private fun openSession(identity: String, cwd: String?, environment: String): String {
@@ -215,6 +224,7 @@ internal class RootShellTerminalController(
         cwd: String?,
         identity: String,
         environment: String,
+        restartOnBoot: Boolean,
     ): String {
         val supervisor = detachedSupervisor
             ?: return errorJson("DAEMON_UNAVAILABLE", "守护任务宿主不可用")
@@ -224,8 +234,11 @@ internal class RootShellTerminalController(
         val normalizedIdentity = normalizeIdentity(identity.ifBlank { defaultIdentity(normalizedEnvironment) })
         environmentPreflight(normalizedIdentity, normalizedEnvironment)?.let { return it }
         val safeCwd = normalizeCwd(cwd, normalizedEnvironment, normalizedIdentity)
-        return when (val result = supervisor.start(trimmed, safeCwd, normalizedIdentity, normalizedEnvironment)) {
-            is DaemonStartResult.Started -> JSONObject()
+        return when (val result = supervisor.start(trimmed, safeCwd, normalizedIdentity, normalizedEnvironment,
+            restartOnBoot = restartOnBoot)) {
+            is DaemonStartResult.Started -> JSONObject().also {
+                if (result.task.restartOnBoot) TerminalRuntime.refreshPersistentServices()
+            }
                 .put("ok", true)
                 .put("tool", "terminal_daemon")
                 .put("action", "start")
@@ -234,6 +247,7 @@ internal class RootShellTerminalController(
                 .put("identity", result.task.identity)
                 .put("environment", result.task.environment.wireName)
                 .put("cwd", result.task.cwd)
+                .put("restart_on_boot", result.task.restartOnBoot)
                 .toString()
             is DaemonStartResult.Failed -> errorJson(result.code, result.message)
         }
@@ -255,6 +269,7 @@ internal class RootShellTerminalController(
                     .put("identity", status.task.identity)
                     .put("environment", status.task.environment.wireName)
                     .put("started_at", status.task.startedAt)
+                    .put("restart_on_boot", status.task.restartOnBoot)
             )
         }
         return JSONObject()
@@ -294,6 +309,7 @@ internal class RootShellTerminalController(
         if (!supervisor.stop(taskId)) {
             return errorJson("DAEMON_STOP_FAILED", "守护任务停止失败，请重试")
         }
+        TerminalRuntime.refreshPersistentServices()
         return JSONObject()
             .put("ok", true)
             .put("tool", "terminal_daemon")

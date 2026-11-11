@@ -51,6 +51,23 @@ internal data class SessionStatsSummaryUi(
     val reasoningTokens: Int = 0,
     val hasTokenUsage: Boolean = false,
 ) {
+    operator fun plus(other: SessionStatsSummaryUi): SessionStatsSummaryUi = SessionStatsSummaryUi(
+        turns = turns + other.turns,
+        steps = steps + other.steps,
+        llmMs = llmMs + other.llmMs,
+        toolMs = toolMs + other.toolMs,
+        ttftMs = ttftMs + other.ttftMs,
+        ttftSteps = ttftSteps + other.ttftSteps,
+        decodeMs = decodeMs + other.decodeMs,
+        decodeTokens = decodeTokens + other.decodeTokens,
+        promptTokens = promptTokens + other.promptTokens,
+        uncachedInputTokens = uncachedInputTokens + other.uncachedInputTokens,
+        cachedTokens = cachedTokens + other.cachedTokens,
+        outputTokens = outputTokens + other.outputTokens,
+        reasoningTokens = reasoningTokens + other.reasoningTokens,
+        hasTokenUsage = hasTokenUsage || other.hasTokenUsage,
+    )
+
     val totalTokens: Int
         get() = promptTokens + outputTokens
 
@@ -152,8 +169,9 @@ internal fun AgentModelPickerUiState.filterGroups(query: String): List<AgentMode
 internal fun latestContextUsage(
     messages: List<AgentChatMessageUi>,
     selectedModel: AgentModelOptionUi?,
+    sessionStatsPrefix: SessionStatsSummaryUi = SessionStatsSummaryUi(),
 ): AgentContextUsageUi {
-    val sessionStats = deriveSessionStatsSummary(messages)
+    val sessionStats = sessionStatsPrefix + deriveSessionStatsSummary(messages)
     for (message in messages.asReversed()) {
         when (message) {
             is AgentMessageUi -> message.usage?.contextTokens?.let {
@@ -168,25 +186,30 @@ internal fun latestContextUsage(
     return AgentContextUsageUi(null, selectedModel?.contextWindow, sessionStats)
 }
 
-internal fun deriveSessionStatsSummary(messages: List<AgentChatMessageUi>): SessionStatsSummaryUi {
-    var turns = 0
-    var steps = 0
-    var llmMs = 0L
-    var toolMs = 0L
-    var ttftMs = 0L
-    var ttftSteps = 0
-    var decodeMs = 0L
-    var decodeTokens = 0
-    var promptTokens = 0
-    var uncachedInputTokens = 0
-    var cachedTokens = 0
-    var outputTokens = 0
-    var reasoningTokens = 0
-    var hasTokenUsage = false
+internal fun deriveSessionStatsSummary(messages: List<AgentChatMessageUi>): SessionStatsSummaryUi =
+    SessionStatsAccumulator().apply {
+        messages.forEach { if (it is AgentMessageUi) add(it.usage) }
+    }.summary()
 
-    messages.forEach { message ->
-        if (message !is AgentMessageUi) return@forEach
-        val usage = message.usage ?: return@forEach
+/** Shared by the stored prefix cursor and the live message window. */
+internal class SessionStatsAccumulator {
+    private var turns = 0
+    private var steps = 0
+    private var llmMs = 0L
+    private var toolMs = 0L
+    private var ttftMs = 0L
+    private var ttftSteps = 0
+    private var decodeMs = 0L
+    private var decodeTokens = 0
+    private var promptTokens = 0
+    private var uncachedInputTokens = 0
+    private var cachedTokens = 0
+    private var outputTokens = 0
+    private var reasoningTokens = 0
+    private var hasTokenUsage = false
+
+    fun add(value: TokenUsageUi?) {
+        val usage = value ?: return
         val turnSteps = (usage.stepCount ?: 1).coerceAtLeast(1)
         turns += 1
         steps += turnSteps
@@ -222,7 +245,7 @@ internal fun deriveSessionStatsSummary(messages: List<AgentChatMessageUi>): Sess
         }
     }
 
-    return SessionStatsSummaryUi(
+    fun summary(): SessionStatsSummaryUi = SessionStatsSummaryUi(
         turns = turns,
         steps = steps,
         llmMs = llmMs,

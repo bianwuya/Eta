@@ -84,11 +84,11 @@ internal object AgentRunCheckpointStore {
     }
 
     /** 返回所有未确认 run；是否 active 或已完成由恢复协调器结合 Runtime 状态判断。 */
-    fun list(context: Context): List<Checkpoint> =
+    fun list(context: Context, runId: String? = null): List<Checkpoint> =
         runBlocking(Dispatchers.IO) {
             EtaDatabase.get(context.applicationContext)
                 .runtimeRunDao()
-                .inFlightRuns()
+                .inFlightRuns(runId)
                 .asSequence()
                 .map { stored ->
                     Checkpoint(

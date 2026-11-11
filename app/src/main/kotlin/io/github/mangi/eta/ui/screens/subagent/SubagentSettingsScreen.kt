@@ -120,8 +120,8 @@ private data class CustomSubagentDraft(
 @Composable
 internal fun SubagentSettingsScreen(
     onBack: () -> Unit,
-    onOpenCompaction: () -> Unit = {},
-    onOpenRequestStats: () -> Unit = {},
+    onOpenCompaction: () -> Unit,
+    onOpenRequestStats: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
     val agentPrefs = remember { Prefs.localAgentPreferences() }
@@ -404,6 +404,18 @@ internal fun SubagentSettingsScreen(
                     )
                     Divider()
                     CouiPreference(
+                        title = "上下文压缩",
+                        summary = "主/子代理统一的压缩模型、思考强度和摘要提示词",
+                        onClick = onOpenCompaction,
+                    )
+                    Divider()
+                    CouiPreference(
+                        title = "子代理请求统计",
+                        summary = "按会话查看输入、缓存命中与历史前缀变化",
+                        onClick = onOpenRequestStats,
+                    )
+                    Divider()
+                    CouiPreference(
                         title = "Subagent 模型",
                         summary = secondarySummary,
                         enabled = subagentEnabled,
@@ -629,6 +641,16 @@ internal fun SubagentSettingsScreen(
                             checked = subagentEnabled,
                             enabled = agentPrefs != null,
                             onCheckedChange = onToggleSubagent,
+                        )
+                        ArrowPreference(
+                            title = "上下文压缩",
+                            summary = "主/子代理统一的压缩模型、思考强度和摘要提示词",
+                            onClick = onOpenCompaction,
+                        )
+                        ArrowPreference(
+                            title = "子代理请求统计",
+                            summary = "按会话查看输入、缓存命中与历史前缀变化",
+                            onClick = onOpenRequestStats,
                         )
                         ArrowPreference(
                             title = "Subagent 模型",

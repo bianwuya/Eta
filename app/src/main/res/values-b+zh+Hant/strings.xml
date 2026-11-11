@@ -128,6 +128,7 @@
   <string name="terminal_daemon_empty">暫無背景任務</string>
   <string name="terminal_daemon_running">執行中</string>
   <string name="terminal_daemon_exited">已退出</string>
+  <string name="terminal_daemon_restart_enabled">重啟後恢復</string>
   <string name="terminal_daemon_view_logs">日誌</string>
   <string name="terminal_daemon_hide_logs">收合日誌</string>
   <string name="terminal_daemon_logs_empty">暫無日誌輸出</string>
@@ -1391,6 +1392,7 @@
   <string name="web_tools_credentials_lost">網頁工具憑據無法解密，請重新填寫並儲存</string>
   <string name="chat_queue_status">排隊中</string>
   <string name="chat_queue_status_count">排隊中 · %1$d</string>
+  <string name="chat_queue_confirming">等待接收確認</string>
   <string name="chat_queue_interrupting">插話中</string>
   <string name="chat_queue_steer_now">立即插話傳送</string>
   <string name="chat_queue_remove">移除排隊訊息</string>

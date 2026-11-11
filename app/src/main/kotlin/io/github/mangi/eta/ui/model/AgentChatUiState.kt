@@ -39,6 +39,8 @@ internal data class AgentChatUiState(
     val isConversationLoaded: Boolean = true,
     /** 当前展示窗口首条消息的持久化 sort_index，保存只更新这一位置之后的后缀。 */
     val messageStartIndex: Int = 0,
+    /** Derived usage of assistant records before messageStartIndex; never persisted. */
+    val sessionStatsPrefix: SessionStatsSummaryUi = SessionStatsSummaryUi(),
     val hasEarlierMessages: Boolean = false,
     val conversationCharacterName: String? = null,
     val conversationCharacterAvatarPath: String? = null,
@@ -221,6 +223,10 @@ internal data class QueuedMessageUi(
     val pendingImages: List<PendingImageUi> = emptyList(),
     val pendingFileReferences: List<PendingFileReferenceUi> = emptyList(),
     val immediateInterrupt: Boolean = false,
+    val steeringUnconfirmed: Boolean = false,
+    val steeringRunId: String = "",
+    /** Restored queues are retained for explicit user action, never auto-dispatched. */
+    val restoredFromStorage: Boolean = false,
     val requestMode: String = "normal",
 )
 

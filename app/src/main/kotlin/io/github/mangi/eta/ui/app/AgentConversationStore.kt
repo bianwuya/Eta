@@ -1,6 +1,7 @@
 package io.github.mangi.eta.ui.app
 
 import android.content.Context
+import android.database.Cursor
 import android.util.JsonReader
 import android.util.JsonToken
 import androidx.room.withTransaction
@@ -28,6 +29,8 @@ import io.github.mangi.eta.ui.model.ThinkingMessageUi
 import io.github.mangi.eta.ui.model.SystemNoticeCode
 import io.github.mangi.eta.ui.model.SystemNoticeMessageUi
 import io.github.mangi.eta.ui.model.TokenUsageUi
+import io.github.mangi.eta.ui.model.SessionStatsSummaryUi
+import io.github.mangi.eta.ui.model.SessionStatsAccumulator
 import io.github.mangi.eta.ui.model.ToolActivityMessageUi
 import io.github.mangi.eta.ui.model.ToolActivityStatusUi
 import io.github.mangi.eta.ui.model.ToolSummaryMessageUi
@@ -97,6 +100,9 @@ internal object AgentConversationStore {
                         phase = "delete_conversations"
                         (stored.keys - current.keys).forEach { dao.deleteConversation(it) }
                         for ((id, state) in current) {
+                            if (!state.isConversationLoaded && id in stored && state.queuedMessages != previous[id]?.queuedMessages) {
+                                writeQueueChanges(appContext, dao, id, state.queuedMessages, previous[id]?.queuedMessages.orEmpty())
+                            }
                             if (!state.isConversationLoaded) {
                                 val row = stored[id] ?: continue
                                 if (row.title != state.title || row.updatedAt != state.updatedAt || row.isPinned != state.isPinned) {
@@ -121,6 +127,10 @@ internal object AgentConversationStore {
                                 )
                                 phase = "write_metadata"
                                 dao.insertConversations(listOf(row))
+                            }
+                            if (old == null || state.queuedMessages != old.queuedMessages) {
+                                phase = "write_pending_queue"
+                                writeQueueChanges(appContext, dao, id, state.queuedMessages, old?.queuedMessages.orEmpty())
                             }
                             if (old == null || state.history != old.history || state.journal != old.journal) {
                                 val missing = dao.contextCheckpointRow(id) == null
@@ -185,6 +195,21 @@ internal object AgentConversationStore {
         }
     }
 
+    private suspend fun writeQueueChanges(
+        context: Context, dao: ConversationDao, id: String,
+        current: List<io.github.mangi.eta.ui.model.QueuedMessageUi>,
+        previous: List<io.github.mangi.eta.ui.model.QueuedMessageUi>,
+    ) {
+        val owned = AgentPendingQueueCodec.readOwned(dao, id)
+        AgentPendingQueueCodec.write(dao, id, AgentPendingQueueCodec.encode(context, current, owned))
+        val currentById = current.associateBy { it.id }
+        previous.filter { it.steeringRunId.isNotBlank() }.forEach { old ->
+            if (currentById[old.id]?.steeringRunId.isNullOrBlank()) {
+                AgentPendingQueueCodec.acknowledgeVoice(context, dao, id, old.id)
+            }
+        }
+    }
+
     private suspend fun loadSnapshot(context: Context): Snapshot {
         val dao = EtaDatabase.get(context).conversationDao()
         val conversations = dao.conversationIndex()
@@ -214,6 +239,7 @@ internal object AgentConversationStore {
                 }),
                 input = "", isStreaming = false, thinkingEnabled = effort.enablesReasoning,
                 reasoningEffort = effort, modelId = conversation.modelId, isConversationLoaded = false,
+                queuedMessages = AgentPendingQueueCodec.read(dao, conversation.id),
                 conversationCharacterName = character?.first, conversationCharacterAvatarPath = character?.second,
             )
             titles[conversation.id] = conversation.title.takeUnless { it == LEGACY_UNNAMED_TITLE }.orEmpty()
@@ -244,6 +270,7 @@ internal object AgentConversationStore {
         val messages: List<AgentChatMessageUi>,
         val startIndex: Int,
         val hasEarlierMessages: Boolean,
+        val sessionStatsPrefix: SessionStatsSummaryUi,
     )
 
     suspend fun loadConversation(context: Context, conversationId: String): AgentChatHomeUiState? = withContext(Dispatchers.IO) {
@@ -263,6 +290,7 @@ internal object AgentConversationStore {
                     json.decodeFromString<RoleplayMessageState>(it)
                 } ?: RoleplayMessageState(),
                 journal = journal,
+                queuedMessages = AgentPendingQueueCodec.read(dao, conversationId),
                 messages = page.messages,
                 history = history.ifEmpty { loadLegacyHistory(dao, conversationId) },
                 appliedRuntimeRunIds = conversation.appliedRuntimeRunIdsJson.toStringList(),
@@ -271,6 +299,7 @@ internal object AgentConversationStore {
                 reasoningEffort = conversation.reasoningEffortValue,
                 modelId = conversation.modelId,
                 messageStartIndex = page.startIndex,
+                sessionStatsPrefix = page.sessionStatsPrefix,
                 hasEarlierMessages = page.hasEarlierMessages,
             )
             RoleplayConversationReducer.decorate(state.copy(roleplayOriginalContents =
@@ -307,8 +336,23 @@ internal object AgentConversationStore {
     private suspend fun loadMessagePage(dao: ConversationDao, conversationId: String, before: Int): MessagePage {
         val rows = dao.messagesBefore(conversationId, before, MESSAGE_LOAD_PAGE_SIZE)
         val startIndex = rows.firstOrNull()?.sortIndex ?: 0
-        return MessagePage(rows.mapNotNull { it.toMessageOrNull() }, startIndex, dao.hasMessagesBefore(conversationId, startIndex))
+        val prefix = SessionStatsAccumulator()
+        dao.assistantUsageBefore(conversationId, startIndex).use { cursor ->
+            while (cursor.moveToNext()) prefix.add(TokenUsageUi(
+                contextTokens = cursor.nullableInt(0), inputTokens = cursor.nullableInt(1),
+                outputTokens = cursor.nullableInt(2), reasoningTokens = cursor.nullableInt(3),
+                cachedTokens = cursor.nullableInt(4), stepCount = cursor.nullableInt(5),
+                llmMs = cursor.nullableLong(6), toolMs = cursor.nullableLong(7),
+                ttftMs = cursor.nullableLong(8), ttftSteps = cursor.nullableInt(9),
+                decodeMs = cursor.nullableLong(10), decodeTokens = cursor.nullableInt(11),
+            ).takeUnless { it.isEmpty })
+        }
+        return MessagePage(rows.mapNotNull { it.toMessageOrNull() }, startIndex,
+            dao.hasMessagesBefore(conversationId, startIndex), prefix.summary())
     }
+
+    private fun Cursor.nullableInt(index: Int): Int? = if (isNull(index)) null else getInt(index)
+    private fun Cursor.nullableLong(index: Int): Long? = if (isNull(index)) null else getLong(index)
 
     suspend fun loadAllMessages(context: Context, conversationId: String): List<AgentChatMessageUi> =
         withContext(Dispatchers.IO) {

@@ -60,6 +60,13 @@ internal class RuntimeMessengerFixture : AutoCloseable {
         io.github.mangi.eta.data.repository.AgentMemoryRepository.init(context)
         io.github.mangi.eta.data.repository.ProviderRepository.init(context)
         io.github.mangi.eta.data.repository.McpServerRepository.init(context)
+        // Previous Robolectric methods may leave the process singleton pointing at their
+        // application sandbox. Bind this fixture's Room instance to its current test root.
+        val database = io.github.mangi.eta.data.db.EtaDatabase.get(context)
+        if (java.io.File(requireNotNull(database.openHelper.writableDatabase.path)).canonicalFile !=
+            context.getDatabasePath("eta.db").canonicalFile) {
+            io.github.mangi.eta.data.db.EtaDatabase.closeForTests()
+        }
     }
     private val workers = mutableListOf<Thread>()
 

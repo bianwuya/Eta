@@ -81,6 +81,7 @@ internal class AgentConversationPersistence(initial: AgentConversationStore.Snap
         val journal: List<AgentModelClient.ConversationMessage>,
         val isConversationLoaded: Boolean,
         val messageStartIndex: Int,
+        val queuedMessages: List<io.github.mangi.eta.ui.model.QueuedMessageUi>,
     ) {
         constructor(
             state: AgentChatHomeUiState,
@@ -91,7 +92,7 @@ internal class AgentConversationPersistence(initial: AgentConversationStore.Snap
             title, updatedAt, isPinned, state.reasoningEffort, state.appliedRuntimeRunIds,
             state.roleplay, if (state.roleplay == null) RoleplayMessageState() else state.roleplayMessages,
             state.modelId, state.messages, state.history, state.journal.ifEmpty { state.history },
-            state.isConversationLoaded, state.messageStartIndex,
+            state.isConversationLoaded, state.messageStartIndex, state.queuedMessages,
         )
 
         fun sameMetadata(other: Content): Boolean =

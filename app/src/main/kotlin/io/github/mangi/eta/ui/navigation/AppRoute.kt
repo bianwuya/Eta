@@ -13,7 +13,7 @@ sealed interface AppRoute : NavKey {
     data class Browser(val sessionKey: String = BrowserSessionRegistry.MANUAL_SESSION_KEY) : AppRoute
 
     @Serializable
-    data class RichPreview(val reference: String) : AppRoute
+    data class RichPreview(val reference: String, val attachmentName: String? = null) : AppRoute
 
     @Serializable
     data object Terminal : AppRoute

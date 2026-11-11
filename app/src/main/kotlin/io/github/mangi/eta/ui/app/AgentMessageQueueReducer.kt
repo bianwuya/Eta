@@ -115,6 +115,7 @@ internal object AgentMessageQueueReducer {
         stoppedByUser: Boolean,
     ): Pair<AgentChatUiState, QueuedMessageUi?> {
         val first = state.queuedMessages.firstOrNull() ?: return state to null
+        if (first.restoredFromStorage || first.steeringUnconfirmed || first.steeringRunId.isNotBlank()) return state to null
         if (!first.immediateInterrupt && stoppedByUser) {
             return clearInterruptFlags(state) to null
         }

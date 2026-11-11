@@ -21,9 +21,10 @@ import io.github.mangi.eta.core.AndroidAgentLogger
 import io.github.mangi.eta.core.safeLogType
 import io.github.mangi.eta.local.runtime.ExecutionKeepAlive
 import io.github.mangi.eta.ui.MainActivity
+import io.github.mangi.eta.agent.terminal.TerminalDaemonRecovery
 import java.util.concurrent.atomic.AtomicLong
 
-/** 只在用户任务存活期间持有前台执行生命周期；进程被系统停止后不重放任务。 */
+/** Holds execution leases; only explicitly opted-in terminal services may restart. */
 internal class AgentExecutionService : Service() {
     private val stopQueue = ExecutionStopQueue { failure ->
         AndroidAgentLogger.warn("Execution task stop failed: type=${failure.safeLogType()}")
@@ -64,6 +65,7 @@ internal class AgentExecutionService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent == null) TerminalDaemonRecovery.request(this)
         if (intent?.action == ACTION_STOP_RUN) {
             val runId = intent.getStringExtra(EXTRA_RUN_ID).orEmpty()
             val token = intent.getStringExtra(EXTRA_LEASE_TOKEN).orEmpty()
@@ -79,7 +81,7 @@ internal class AgentExecutionService : Service() {
             ensureForeground()
             refreshNotification()
         }
-        return START_NOT_STICKY
+        return if (TerminalDaemonRecovery.hasServices(this)) START_STICKY else START_NOT_STICKY
     }
 
     override fun onBind(intent: Intent?): IBinder? = null

@@ -141,7 +141,7 @@ private fun DaemonTaskRow(
                     }
                 },
             )
-            if (task.running) {
+            if (task.running || task.restartOnBoot) {
                 RowIconAction(
                     icon = Icons.Rounded.Stop,
                     contentDescription = stringResource(R.string.terminal_stop),
@@ -192,5 +192,6 @@ private fun daemonMeta(task: DaemonTaskUi): String {
         "interrupted" -> "已中断"
         else -> stringResource(if (task.running) R.string.terminal_daemon_running else R.string.terminal_daemon_exited)
     }
-    return "$environmentLabel · ${task.identity} · $stateLabel"
+    val restartLabel = if (task.restartOnBoot) " · " + stringResource(R.string.terminal_daemon_restart_enabled) else ""
+    return "$environmentLabel · ${task.identity} · $stateLabel$restartLabel"
 }
