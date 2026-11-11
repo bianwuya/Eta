@@ -55,6 +55,7 @@ class VoiceSteeringIpcTest {
             isAccessible = true
         }.newInstance(service) as Handler
         fun send(id: String, text: String) {
+            val expectedReplies = replies.size + 1
             handler.handleMessage(Message.obtain(null, AgentRuntimeWire.MSG_STEER_RUN).apply {
                 sendingUid = Process.myUid()
                 replyTo = receiver
@@ -63,7 +64,12 @@ class VoiceSteeringIpcTest {
                     putString("steering_text", text)
                 }
             })
+            val deadline = System.nanoTime() + 5_000_000_000
+            while (replies.size < expectedReplies && System.nanoTime() < deadline) {
+                shadowOf(Looper.getMainLooper()).idle(); Thread.sleep(5)
+            }
             shadowOf(Looper.getMainLooper()).idle()
+            org.junit.Assert.assertEquals(expectedReplies, replies.size)
         }
         try {
             send("queue-1", "新方向一")

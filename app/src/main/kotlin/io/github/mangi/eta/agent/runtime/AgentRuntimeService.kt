@@ -283,7 +283,8 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         displayedRun = null
         serviceScope.cancel()
         AgentExecutionService.updateRunStatus(this, null, activeRunCount = 0)
-        resultIo.shutdownNow()
+        // Drain received descriptors/receipts; destroyed=true prevents accepting new supplements.
+        resultIo.shutdown()
         mainHandler.removeCallbacksAndMessages(null)
         AgentOverlayClearance.detach(clearanceHost)
         VirtualDisplayController.release(this)
@@ -421,12 +422,12 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
     }
 
     /** Decode image FDs away from main; acknowledge only after actual enqueue, never on preparation alone. */
-    private val pendingSteeringInputs = mutableMapOf<Pair<String, String>, Int>()
+    private val pendingSteeringInputs = java.util.concurrent.ConcurrentHashMap<Pair<String, String>, Int>()
 
     private fun querySteering(data: Bundle, replyTo: Messenger?) {
         val runId = AgentRuntimeWire.runIdFromBundle(data)
         val queueId = data.getString("queue_message_id").orEmpty()
-        if ((runId to queueId) in pendingSteeringInputs) return // Input is still being materialized.
+        if (pendingSteeringInputs.containsKey(runId to queueId)) return // Input is still being materialized.
         dispatchResultIo {
             val outcome = runCatching {
                 val active = runs.get(runId)
@@ -500,34 +501,37 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
                 active.acceptedSupplement(queueId) ?: run { acknowledge(false, reason = "storage_failed"); return }
             }
             if (event != null) {
-                active.overlayState = active.overlayState.applyEvent(event)
-                if (displayedRun?.runId == runId) state.value = active.overlayState
+                mainHandler.post {
+                    if (!destroyed && runs.contains(active)) {
+                        active.overlayState = active.overlayState.applyEvent(event)
+                        if (displayedRun?.runId == runId) state.value = active.overlayState
+                    }
+                }
             }
             acknowledge(event != null, reason = if (event == null) "ended" else "")
         }
-        if (wireImages.isEmpty()) {
-            try { accept(AgentWireText.read(data, "steering_text").orEmpty().trim(), emptyList(), emptyList()) }
-            catch (_: Exception) { acknowledge(false, true) }
-            finally { AgentRuntimeWire.closeImageDescriptors(data) }
-        } else {
-            pendingSteeringInputs[runId to queueId] = (pendingSteeringInputs[runId to queueId] ?: 0) + 1
-            thread(name = "agent-runtime-steering-images") {
-                val prepared = runCatching {
-                    val text = AgentWireText.read(data, "steering_text").orEmpty().trim()
-                    val images = AgentRuntimeImageTransfer.materializeImages(wireImages)
-                    val previews = images.map { it.reference }
-                    // History/recovery retains the original encoded input; UI samples its own thumbnail.
-                    Triple(text, images, previews)
-                }
-                AgentRuntimeWire.closeImageDescriptors(data)
-                mainHandler.post {
-                    val pendingCount = (pendingSteeringInputs[runId to queueId] ?: 1) - 1
-                    if (pendingCount == 0) pendingSteeringInputs.remove(runId to queueId)
-                    else pendingSteeringInputs[runId to queueId] = pendingCount
+        val key = runId to queueId
+        pendingSteeringInputs.merge(key, 1, Int::plus)
+        try {
+            // Existing per-service serial I/O lane also orders receipt queries after durable writes.
+            resultIo.execute {
+                try {
+                    val prepared = runCatching {
+                        val text = AgentWireText.read(data, "steering_text").orEmpty().trim()
+                        val images = AgentRuntimeImageTransfer.materializeImages(wireImages)
+                        Triple(text, images, images.map { it.reference })
+                    }
                     prepared.fold(onSuccess = { (text, images, previews) -> accept(text, images, previews) },
-                        onFailure = { acknowledge(false, true) })
+                        onFailure = { acknowledge(false, true, "invalid_input") })
+                } finally {
+                    AgentRuntimeWire.closeImageDescriptors(data)
+                    pendingSteeringInputs.computeIfPresent(key) { _, count -> (count - 1).takeIf { it > 0 } }
                 }
             }
+        } catch (_: RejectedExecutionException) {
+            AgentRuntimeWire.closeImageDescriptors(data)
+            pendingSteeringInputs.computeIfPresent(key) { _, count -> (count - 1).takeIf { it > 0 } }
+            acknowledge(false, reason = "ended")
         }
     }
 

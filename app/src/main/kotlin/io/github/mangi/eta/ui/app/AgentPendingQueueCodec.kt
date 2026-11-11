@@ -37,7 +37,7 @@ internal object AgentPendingQueueCodec {
                 .put("images", JSONArray().also { images -> item.pendingImages.forEach { image ->
                     val stable = previousImages[image.id]?.uri ?: stableImage(context, image)
                     images.put(JSONObject().put("id", image.id).put("original", stable)
-                        .put("preview", image.dataUrl).put("mime", image.mimeType))
+                        .put("preview", image.dataUrl.takeUnless { it == stable }.orEmpty()).put("mime", image.mimeType))
                 } })
                 .put("files", JSONArray().also { files -> item.pendingFileReferences.forEach { file ->
                     val reference = file.reference
@@ -89,7 +89,7 @@ internal object AgentPendingQueueCodec {
             val run = row.optString("run")
             QueuedMessageUi(id, row.getString("text"),
                 pendingImages = (0 until images.length()).map { i -> images.getJSONObject(i).let { image ->
-                    PendingImageUi(image.getString("id"), image.getString("original"), image.getString("preview"),
+                    PendingImageUi(image.getString("id"), image.getString("original"), image.optString("preview").ifBlank { image.getString("original") },
                         image.getString("mime"), displayUrl = image.getString("original"))
                 } },
                 pendingFileReferences = (0 until files.length()).map { i -> files.getJSONObject(i).let { file ->

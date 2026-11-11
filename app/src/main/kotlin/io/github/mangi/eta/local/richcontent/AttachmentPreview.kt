@@ -16,6 +16,8 @@ import java.nio.charset.CodingErrorAction
 import androidx.compose.runtime.staticCompositionLocalOf
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 
 /** Explicit user attachments have a separate path from untrusted Markdown output links. */
 internal val LocalAttachmentPreview = staticCompositionLocalOf<((AgentFileReference) -> Unit)?> { null }
@@ -74,8 +76,7 @@ internal fun attachmentMimeType(name: String): String = when (val extension = na
 }
 
 /** Preserve original bytes and name; expose only a bounded read-only cache copy. */
-internal fun copyExternalAttachment(context: Context, reference: String, displayName: String): Uri {
-    val bytes = openAttachmentSource(context, reference).use { it.readBytesBounded(MAX_ATTACHMENT_PREVIEW_BYTES) }
+internal fun copyExternalAttachment(context: Context, reference: String, displayName: String, checkCancelled: () -> Unit = {}): Uri {
     return synchronized(attachmentCacheLock) {
         val root = File(context.cacheDir, ATTACHMENT_CACHE)
         check(root.mkdirs() || root.isDirectory) { "无法创建附件预览目录" }
@@ -87,7 +88,32 @@ internal fun copyExternalAttachment(context: Context, reference: String, display
         val name = displayName.map { if (it == '/' || it == '\\' || it.isISOControl()) '_' else it }
             .joinToString("").take(120).takeUnless { it.isBlank() || it == "." || it == ".." } ?: "attachment"
         try {
-            val copy = File(directory, name).apply { outputStream().use { it.write(bytes) } }
+            val copy = File(directory, name)
+            val temporary = File(directory, "$name.part")
+            openAttachmentSource(context, reference).use { input ->
+                java.io.FileOutputStream(temporary).use { output ->
+                    val buffer = ByteArray(64 * 1024)
+                    var total = 0L
+                    while (true) {
+                        checkCancelled()
+                        if (Thread.currentThread().isInterrupted) throw java.io.InterruptedIOException("附件复制已取消")
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        if (count == 0) {
+                            val one = input.read()
+                            if (one < 0) break
+                            require(++total <= MAX_ATTACHMENT_PREVIEW_BYTES) { "附件过大" }
+                            output.write(one)
+                        } else {
+                            total += count
+                            require(total <= MAX_ATTACHMENT_PREVIEW_BYTES) { "附件过大" }
+                            output.write(buffer, 0, count)
+                        }
+                    }
+                    output.fd.sync()
+                }
+            }
+            java.nio.file.Files.move(temporary.toPath(), copy.toPath(), java.nio.file.StandardCopyOption.ATOMIC_MOVE)
             FileProvider.getUriForFile(context, externalHtmlAuthority(context), copy)
         } catch (error: Exception) {
             directory.deleteRecursively()
@@ -110,7 +136,8 @@ internal fun externalAttachmentIntent(context: Context, uri: Uri, displayName: S
 internal suspend fun openExternalAttachment(context: Context, reference: String, displayName: String) {
     val app = context.applicationContext
     val intent = withContext(Dispatchers.IO) {
-        externalAttachmentIntent(app, copyExternalAttachment(app, reference, displayName), displayName)
+        val cancellation = currentCoroutineContext()
+        externalAttachmentIntent(app, copyExternalAttachment(app, reference, displayName) { cancellation.ensureActive() }, displayName)
     }
     withContext(Dispatchers.Main.immediate) {
         try { app.startActivity(intent) }
