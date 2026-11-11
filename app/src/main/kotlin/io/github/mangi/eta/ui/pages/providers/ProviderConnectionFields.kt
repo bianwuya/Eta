@@ -64,6 +64,7 @@ internal fun ProviderConnectionFields(
     onReloginAccount: (String) -> Unit = {},
     onRenameAccount: (String, String) -> Unit = { _, _ -> },
     onRemoveAccount: (String) -> Unit = {},
+    onRebuildIndex: () -> Unit = {},
 ) {
     val context = LocalContext.current
     var apiKeyVisible by remember { mutableStateOf(false) }
@@ -117,6 +118,7 @@ internal fun ProviderConnectionFields(
                     onReloginAccount = onReloginAccount,
                     onRenameAccount = onRenameAccount,
                     onRemoveAccount = onRemoveAccount,
+                    onRebuildIndex = onRebuildIndex,
                     providerId = provider.id,
                 )
             } else {
@@ -248,6 +250,7 @@ internal fun ProviderConnectionFields(
                     onReloginAccount = onReloginAccount,
                     onRenameAccount = onRenameAccount,
                     onRemoveAccount = onRemoveAccount,
+                    onRebuildIndex = onRebuildIndex,
                     providerId = provider.id,
                 )
             } else {

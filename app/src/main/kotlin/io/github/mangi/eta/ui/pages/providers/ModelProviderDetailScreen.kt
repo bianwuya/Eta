@@ -439,6 +439,7 @@ private fun ProviderConfigTab(
                     },
                     onRenameAccount = loginStore::rename,
                     onRemoveAccount = loginStore::remove,
+                    onRebuildIndex = { loginStore.rebuildUnreadableIndex(true) },
                 )
                 if (uiStyle == AppearanceUiStyle.COUI) {
                     Divider()
