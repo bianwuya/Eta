@@ -8,6 +8,7 @@ internal data class ProviderAccountSummary(
     val displayName: String?,
     val needsReauthentication: Boolean,
     val planEnabled: Boolean,
+    val needsRefresh: Boolean = false,
 )
 
 /** 请求开始时的凭据绑定；[credentialSlotId] 固定到具体账号槽，重试与 401 刷新都沿用它。 */
@@ -40,7 +41,7 @@ internal class ProviderLoginPrompt(
     override fun toString(): String = "ProviderLoginPrompt(redacted)"
 }
 
-internal class ProviderAuthException(val code: String, message: String) : RuntimeException(message)
+internal class ProviderAuthException(val code: String, message: String, val stage: String? = null) : RuntimeException(message)
 
 @Serializable
 internal data class ProviderCredential(
@@ -63,8 +64,10 @@ internal data class ProviderCredential(
             else -> false
         }
 
-    fun summary() = ProviderAccountSummary(email, displayName, subject == null || accessToken.isBlank() ||
-        (authMode == ProviderAuthModes.OPENAI_CHATGPT && !planEnabled), planEnabled)
+    fun summary(now: Long = System.currentTimeMillis()) = ProviderAccountSummary(email, displayName,
+        subject == null || accessToken.isBlank() || (expiresAt <= now && refreshToken.isBlank()) ||
+        (authMode == ProviderAuthModes.OPENAI_CHATGPT && !planEnabled), planEnabled,
+        needsRefresh = accessToken.isNotBlank() && expiresAt <= now + 60_000 && refreshToken.isNotBlank())
 
     fun withoutTokens() = copy(accessToken = "", refreshToken = "", idToken = "", accountId = null, expiresAt = 0)
 

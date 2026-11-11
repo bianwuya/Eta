@@ -49,7 +49,7 @@ class ImageGenSettingsScreenTest(private val style: AppearanceUiStyle) {
     @Test fun credentialKeyFailureKeepsSettingsPageOpenAndConfigurationIntact() {
         val controller = Robolectric.buildActivity(ComponentActivity::class.java).setup().visible()
         val activity = controller.get()
-        val config = ImageGenConfig(ImageGenSource.CODEX_SUBSCRIPTION, "fixed-subscription", "fixed-account")
+        val config = ImageGenConfig(ImageGenSource.CODEX_SUBSCRIPTION, "", "fixed-account", profileId = "settings-profile")
         ImageGenConfigStore.write(activity, config)
         val frames = BroadcastFrameClock()
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate + frames)
@@ -89,7 +89,7 @@ class ImageGenSettingsScreenTest(private val style: AppearanceUiStyle) {
                 Thread.sleep(5)
             }
             assertTrue("Expected login error on the settings page: $texts", texts.any { it.contains("订阅账号凭据不可用") })
-            assertTrue(texts.any { it.contains("生图来源") })
+            assertTrue(texts.any { it.contains("独立生图连接") })
             assertEquals(config, ImageGenConfigStore.read(activity))
         } finally {
             host.disposeComposition()

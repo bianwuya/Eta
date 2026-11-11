@@ -31,6 +31,7 @@ internal object ProviderCredentialRepository {
         val created = ProviderCredentialSessions(EncryptedProviderCredentialStorage(context), LiveProviderOAuthClient())
         codexAccounts = CodexAccountRepository(created, CodexAccountStore(context) { providerId -> created.credential(providerId) })
         sessions = created
+        io.github.mangi.eta.local.imagegen.ImageGenAvailability.reload(context)
     }
 
     private fun isCodex(authMode: String): Boolean = usesCodexAccountPool(authMode)
@@ -77,6 +78,8 @@ internal object ProviderCredentialRepository {
     fun removeAccount(providerId: String, authMode: String, accountId: String,
         controller: AgentRunController): Boolean? =
         if (isCodex(authMode)) codex().remove(providerId, authMode, accountId, controller) else null
+
+    fun rebuildUnreadableCodexIndex(confirmed: Boolean) = codex().rebuildUnreadableIndex(confirmed)
 
     /** 请求开始时的账号绑定；无可用账号时明确失败，不回退其他账号。 */
     fun binding(providerId: String, authMode: String): ProviderCredentialBinding = when {

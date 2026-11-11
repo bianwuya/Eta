@@ -39,6 +39,8 @@ internal data class ProviderLoginState(
     val prompt: ProviderLoginPrompt? = null,
     val phase: ProviderLoginPhase = ProviderLoginPhase.Idle,
     val message: String? = null,
+    val errorCode: String? = null,
+    val errorStage: String? = null,
 ) {
     val isBusy: Boolean get() = phase != ProviderLoginPhase.Idle
     val selected: CodexAccountView? get() = accounts.firstOrNull { it.selected }
@@ -162,6 +164,14 @@ internal class ProviderLoginStore(
         }
     }
 
+    fun rebuildUnreadableIndex(confirmed: Boolean) {
+        if (mutableState.value.isBusy || !confirmed) return
+        runOperation(ProviderAuthModes.OPENAI_CHATGPT, ProviderLoginPhase.Saving) { _, _ ->
+            withContext(ioDispatcher) { operations.rebuildUnreadableIndex(confirmed) }
+            refreshAccounts(ProviderAuthModes.OPENAI_CHATGPT, "已保全旧索引并重建；原 Codex 连接需重新登录，未删除聊天或其他服务商")
+        }
+    }
+
     /** 退出当前账号的登录状态，保留账号条目以便重新登录。 */
     fun disconnect() {
         val authMode = mutableState.value.authMode
@@ -197,6 +207,8 @@ internal class ProviderLoginStore(
             accounts = snapshot.first,
             account = snapshot.second,
             message = message,
+            errorCode = null,
+            errorStage = null,
         )
     }
 
@@ -215,6 +227,8 @@ internal class ProviderLoginStore(
             activeAccountId = activeAccountId,
             prompt = null,
             message = null,
+            errorCode = null,
+            errorStage = null,
         )
         operation = scope.launch(start = CoroutineStart.UNDISPATCHED) {
             try {
@@ -226,6 +240,8 @@ internal class ProviderLoginStore(
             } catch (error: Exception) {
                 if (generation == attempt && !activeController.isCancelled) {
                     mutableState.value = mutableState.value.copy(
+                        errorCode = (error as? ProviderAuthException)?.code,
+                        errorStage = (error as? ProviderAuthException)?.stage,
                         message = when (mutableState.value.phase) {
                             ProviderLoginPhase.SyncingModels -> "已登录，模型同步失败，请在模型页重新拉取"
                             else -> (error as? ProviderAuthException)?.message ?: when (phase) {
@@ -266,11 +282,13 @@ internal interface ProviderLoginOperations {
     fun selectAccount(providerId: String, authMode: String, accountId: String) = Unit
     fun renameAccount(providerId: String, accountId: String, name: String) = Unit
     fun removeAccount(providerId: String, authMode: String, accountId: String, controller: AgentRunController): Boolean? = true
+    fun rebuildUnreadableIndex(confirmed: Boolean) = Unit
     suspend fun syncModels(providerId: String, authMode: String): Int
     fun disconnect(providerId: String, authMode: String, controller: AgentRunController): Boolean?
 }
 
 private object RepositoryProviderLoginOperations : ProviderLoginOperations {
+    override fun rebuildUnreadableIndex(confirmed: Boolean) = ProviderCredentialRepository.rebuildUnreadableCodexIndex(confirmed)
     override suspend fun save(provider: ProviderSetting) {
         ProviderRepository.updateProvider(provider)
         RuntimeConfigRepository.syncToRemotePreferences(EtaApp.serviceInstance)

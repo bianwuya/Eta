@@ -22,7 +22,9 @@ internal object AgentToolCatalog {
     ): JSONArray =
         capabilities.project(JSONArray().also { tools ->
             AgentContextAppToolCatalog.appendTo(tools)
-            tools.put(io.github.mangi.eta.local.imagegen.ImageGenToolCatalog.schema())
+            if (io.github.mangi.eta.local.imagegen.ImageGenAvailability.available) {
+                tools.put(io.github.mangi.eta.local.imagegen.ImageGenToolCatalog.schema())
+            }
             io.github.mangi.eta.local.userquestions.AgentUserQuestionsToolCatalog.appendTo(tools)
             AgentGestureToolCatalog.appendTo(tools)
             AgentTextSystemToolCatalog.appendTo(tools)

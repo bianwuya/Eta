@@ -61,6 +61,8 @@ internal data class CodexAccountView(
     val selected: Boolean,
     val needsReauthentication: Boolean,
     val planEnabled: Boolean,
+    val credentialError: String? = null,
+    val needsRefresh: Boolean = false,
 ) {
     val loggedIn: Boolean get() = !needsReauthentication
     val label: String get() = name.ifBlank { email ?: displayName ?: "未命名账号" }
@@ -122,13 +124,25 @@ internal class CodexAccountRepository(
             val pool = requirePool(providerId)
             pool.selectedAccountId?.let { id -> pool.accounts.firstOrNull { it.accountId == id } }
         } ?: return null
-        return sessions.account(selected.credentialSlotId, authMode)
+        return try {
+            sessions.account(selected.credentialSlotId, authMode)
+        } catch (error: ProviderAuthException) {
+            if (!error.isUnreadableCredential()) throw error
+            ProviderAccountSummary(selected.email, selected.displayName, true, false)
+        }
     }
 
     fun views(providerId: String, authMode: String): List<CodexAccountView> {
         val pool = lock.withLock { requirePool(providerId) }
         return pool.accounts.map { entry ->
-            val summary = sessions.account(entry.credentialSlotId, authMode)
+            var credentialError: String? = null
+            val summary = try {
+                sessions.account(entry.credentialSlotId, authMode)
+            } catch (error: ProviderAuthException) {
+                if (!error.isUnreadableCredential()) throw error
+                credentialError = error.code
+                null
+            }
             CodexAccountView(
                 accountId = entry.accountId,
                 name = entry.name,
@@ -137,6 +151,8 @@ internal class CodexAccountRepository(
                 selected = entry.accountId == pool.selectedAccountId,
                 needsReauthentication = summary?.needsReauthentication ?: true,
                 planEnabled = summary?.planEnabled ?: false,
+                credentialError = credentialError,
+                needsRefresh = summary?.needsRefresh ?: false,
             )
         }
     }
@@ -175,7 +191,7 @@ internal class CodexAccountRepository(
             val currentTarget = target?.let { existing -> pool.accounts.firstOrNull { it.accountId == existing.accountId } }
             if (target != null && currentTarget == null) {
                 // 登录期间条目被删除：不保留刚写入的结果，避免留下无主凭据。
-                if (target.credentialSlotId != providerId) sessions.forget(target.credentialSlotId)
+                sessions.forget(target.credentialSlotId)
                 throw ProviderAuthException("oauth_account_missing", "账号已被删除，登录结果未保存")
             }
             if (currentTarget != null) {
@@ -214,9 +230,7 @@ internal class CodexAccountRepository(
                 email = credential.email,
                 displayName = credential.displayName,
             )
-            val selection = pool.selectedAccountId
-                ?.takeIf { id -> pool.accounts.any { it.accountId == id } }
-                ?: accountId
+            val selection = if (pool.accounts.isEmpty()) accountId else pool.selectedAccountId
             writePool(pool.copy(accounts = pool.accounts + entry, selectedAccountId = selection))
             ProviderAccountLogin(
                 accountId = accountId,
@@ -259,20 +273,18 @@ internal class CodexAccountRepository(
     /**
      * 删除只清理目标账号的槽与索引；删除当前账号后选择置空，不自动挑选其他账号。
      *
-     * 网络撤销在锁外完成，索引删除基于**最新**账号池，避免覆盖期间完成的新增、重命名或选择。
+     * 只做本地删除，失效密文和离线网络都不是删除的前置条件。
      */
     fun remove(providerId: String, authMode: String, accountId: String, controller: AgentRunController): Boolean? {
         val entry = lock.withLock {
             requirePool(providerId).accounts.firstOrNull { it.accountId == accountId }
         } ?: throw ProviderAuthException("oauth_account_missing", "账号不存在，请刷新后重试")
-        val revoked = try {
-            sessions.disconnect(entry.credentialSlotId, authMode, controller)
-        } catch (_: ProviderAuthException) {
-            false
-        }
+        controller.throwIfCancelled()
         val removed = lock.withLock {
             val pool = requirePool(providerId)
             if (pool.accounts.none { it.accountId == accountId }) return@withLock false
+            // No decrypt or network precondition. Invalidate pending login/refresh before removing the index.
+            sessions.forget(entry.credentialSlotId)
             writePool(
                 pool.copy(
                     accounts = pool.accounts.filterNot { it.accountId == accountId },
@@ -281,8 +293,12 @@ internal class CodexAccountRepository(
             )
             true
         }
-        if (removed) sessions.forget(entry.credentialSlotId)
-        return revoked
+        return if (removed) false else null
+    }
+
+    fun rebuildUnreadableIndex(confirmed: Boolean) {
+        if (!confirmed) throw ProviderAuthException("oauth_recovery_confirmation_required", "重建账号索引需要明确确认")
+        lock.withLock { store.rebuildUnreadableIndex() }
     }
 
     /** 退出当前账号的登录态但保留账号条目，行为与原有单账号退出一致。 */
@@ -346,7 +362,7 @@ internal class CodexAccountRepository(
  * （`Prefs.LOCAL_AGENT_GROUP`），不新增独立存储体系。
  *
  * 首次读取时若发现旧单账号凭据且尚无索引，则引用原 `providerId` 槽建立条目，
- * 不搬移或覆盖旧密文；凭据读取失败会向上抛出，不能当成“没有旧账号”。
+ * 不搬移或覆盖旧密文；无法解密时保留一个可管理的旧槽条目。
  */
 internal class CodexAccountStore(
     context: Context,
@@ -361,6 +377,7 @@ internal class CodexAccountStore(
 
     fun pool(providerId: String): CodexAccountPool? = lock.withLock {
         existingPool(providerId)?.let { return it }
+        if (preferences.getBoolean(RECOVERY_KEY, false)) return null
         val migrated = migrate(providerId) ?: return null
         write(CodexAccountIndex(read().pools + migrated))
         migrated
@@ -383,8 +400,16 @@ internal class CodexAccountStore(
     }
 
     private fun migrate(providerId: String): CodexAccountPool? {
-        // 读取失败必须向上抛出：否则会把“密钥不可用”误判成没有旧账号并覆盖原槽。
-        val credential = legacyCredential(providerId) ?: return null
+        // 无法解密时记录原槽，不当作缺失，也不覆盖原凭据。
+        val credential = try {
+            legacyCredential(providerId) ?: return null
+        } catch (error: ProviderAuthException) {
+            if (!error.isUnreadableCredential()) throw error
+            // Keep a concrete slot address for local removal/relogin even when this device cannot decrypt it.
+            return CodexAccountPool(providerId, listOf(CodexAccountEntry(
+                accountId = UUID.randomUUID().toString(), name = "旧账号 · 凭据不可用", credentialSlotId = providerId,
+            )))
+        }
         val identity = credential.identity()
         val entry = CodexAccountEntry(
             accountId = UUID.randomUUID().toString(),
@@ -422,8 +447,26 @@ internal class CodexAccountStore(
         cached = index
     }
 
+    /** A corrupt global index cannot be partitioned safely. Preserve it and explicitly detach all old slots. */
+    fun rebuildUnreadableIndex() = lock.withLock {
+        val raw = preferences.getString(INDEX_KEY, "").orEmpty()
+        if (runCatching { json.decodeFromString<CodexAccountIndex>(raw) }.isSuccess) {
+            throw ProviderAuthException("oauth_recovery_not_needed", "账号索引可读取，无需重建")
+        }
+        val edit = preferences.edit()
+            .putString("${INDEX_KEY}_recovery_${System.currentTimeMillis()}", raw)
+            .putBoolean(RECOVERY_KEY, true)
+            .putString(INDEX_KEY, json.encodeToString(CodexAccountIndex()))
+        if (!edit.commit()) throw ProviderAuthException("oauth_accounts_save_failed", "重建账号索引保存失败")
+        cached = CodexAccountIndex()
+    }
+
     private companion object {
         const val INDEX_KEY = "codex_accounts_v1"
+        const val RECOVERY_KEY = "codex_accounts_recovery_detached"
         val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
     }
 }
+
+private fun ProviderAuthException.isUnreadableCredential(): Boolean =
+    code in setOf("credential_storage_failed", "credential_key_unavailable")

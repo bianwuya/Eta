@@ -16,7 +16,7 @@ import org.robolectric.annotation.Config
 @Config(sdk = [36])
 class ImageGenTest {
     private val context: Context get() = RuntimeEnvironment.getApplication()
-    private val settings = ImageGenConfig(ImageGenSource.CODEX_SUBSCRIPTION, "fixed-provider", "fixed-account")
+    private val settings = ImageGenConfig(ImageGenSource.CODEX_SUBSCRIPTION, "", "fixed-account", profileId = "fixed-profile")
 
     @Test fun configurationRequiresExplicitBillingSourceAndAccount() {
         assertNotNull(ImageGenConfig().validate())
@@ -24,7 +24,8 @@ class ImageGenTest {
         assertNotNull(settings.copy(model = "chat-model").validate())
         assertNotNull(settings.copy(size = "999999x1").validate())
         assertNull(settings.validate())
-        assertNull(settings.copy(source = ImageGenSource.OPENAI_API, accountId = "", model = "gpt-image-1").validate())
+        assertNull(settings.copy(source = ImageGenSource.OPENAI_API, accountId = "", model = "gpt-image-1",
+            endpoint = "https://relay.example.invalid/v1/images/generations", keyConfigured = true).validate())
     }
     @Test fun requestUsesOnlyFixedConfigurationAndOneImage() {
         val body = ImageGenClient.requestBody("真实图片", settings)
@@ -62,6 +63,23 @@ class ImageGenTest {
     @Test fun configStoreRoundTripsFixedAccountWithoutFollowingChatSelection() {
         ImageGenConfigStore.write(context, settings)
         assertEquals(settings, ImageGenConfigStore.read(context))
+    }
+    @Test fun legacyConfigIsPreservedWithoutAutomaticallyEnablingAPaidSource() {
+        val prefs = context.getSharedPreferences(io.github.mangi.eta.config.Prefs.LOCAL_AGENT_GROUP, Context.MODE_PRIVATE)
+        val raw = """{"source":"openai_api","providerId":"old-language-provider"}"""
+        prefs.edit().putString("image_gen_config_v1", raw).commit()
+        assertTrue(ImageGenConfigStore.profiles(context).profiles.isEmpty())
+        assertNotNull(ImageGenConfigStore.read(context).validate())
+        assertEquals("old-language-provider", ImageGenConfigStore.legacy(context)?.providerId)
+        assertEquals(raw, prefs.getString("image_gen_config_v1", null))
+    }
+    @Test fun removingActiveProfileDoesNotSelectAnotherPaidConnection() {
+        ImageGenConfigStore.write(context, settings)
+        ImageGenConfigStore.write(context, settings.copy(profileId = "second-profile"))
+        ImageGenConfigStore.remove(context, "second-profile")
+        assertNull(ImageGenConfigStore.profiles(context).selectedId)
+        assertFalse(ImageGenAvailability.available)
+        assertEquals(1, ImageGenConfigStore.profiles(context).profiles.size)
     }
     @Test fun invalidAndCancelledImagesLeaveNoPartialFiles() {
         val directory = File(context.cacheDir, "imagegen-test-${System.nanoTime()}")

@@ -106,9 +106,10 @@ class CodexAccountRepositoryTest {
     fun legacyCredentialReadFailureIsNotTreatedAsMissingAccount() {
         val accounts = setUpWith(legacy = { throw ProviderAuthException("credential_storage_failed", "无法读写登录凭据") })
 
-        val failure = assertThrows(ProviderAuthException::class.java) { accounts.views(PROVIDER_ID, AUTH_MODE) }
-
-        assertEquals("credential_storage_failed", failure.code)
+        val entry = accounts.views(PROVIDER_ID, AUTH_MODE).single()
+        assertTrue(entry.needsReauthentication)
+        assertFalse(entry.usable)
+        assertFalse(entry.selected)
     }
 
     @Test
@@ -247,15 +248,77 @@ class CodexAccountRepositoryTest {
             .accounts.single { it.accountId == accountId }
             .credentialSlotId
 
+    @Test
+    fun damagedCredentialDoesNotHideOtherAccountsAndCanBeRemovedLocally() {
+        val accounts = setUpWith()
+        storage.write(PROVIDER_ID, credential("subject-a", "workspace-a"))
+        val first = accounts.views(PROVIDER_ID, AUTH_MODE).single()
+        oauth.next = credential("subject-b", "workspace-b")
+        accounts.login(PROVIDER_ID, AUTH_MODE, AgentRunController(), {})
+        storage.unreadable += PROVIDER_ID
+
+        val listed = accounts.views(PROVIDER_ID, AUTH_MODE)
+        assertEquals(2, listed.size)
+        assertTrue(listed.single { it.accountId == first.accountId }.needsReauthentication)
+        assertTrue(listed.single { it.accountId != first.accountId }.usable)
+        accounts.remove(PROVIDER_ID, AUTH_MODE, first.accountId, AgentRunController())
+        assertEquals(1, accounts.views(PROVIDER_ID, AUTH_MODE).size)
+        assertNull(accounts.account(PROVIDER_ID, AUTH_MODE))
+        assertFalse(storage.keys().contains(PROVIDER_ID))
+        assertFalse(accounts.views(PROVIDER_ID, AUTH_MODE).single().selected)
+    }
+
+    @Test
+    fun unreadableLegacySlotStillHasAnEntryForLocalRemoval() {
+        val accounts = setUpWith()
+        storage.unreadable += PROVIDER_ID
+        val entry = accounts.views(PROVIDER_ID, AUTH_MODE).single()
+        assertTrue(entry.needsReauthentication)
+        accounts.remove(PROVIDER_ID, AUTH_MODE, entry.accountId, AgentRunController())
+        assertTrue(accounts.views(PROVIDER_ID, AUTH_MODE).isEmpty())
+    }
+
+    @Test
+    fun selectedUnreadableCredentialDoesNotPreventLoadingLoginPage() {
+        val accounts = setUpWith()
+        storage.write(PROVIDER_ID, credential("subject-a", "workspace-a"))
+        accounts.views(PROVIDER_ID, AUTH_MODE)
+        storage.unreadable += PROVIDER_ID
+        val summary = accounts.account(PROVIDER_ID, AUTH_MODE)
+        assertTrue(requireNotNull(summary).needsReauthentication)
+        assertEquals(1, accounts.views(PROVIDER_ID, AUTH_MODE).size)
+    }
+
+    @Test
+    fun corruptIndexIsPreservedAndRecoveryDoesNotRemigrateLegacySlots() {
+        val accounts = setUpWith()
+        val prefs = context.getSharedPreferences(io.github.mangi.eta.config.Prefs.LOCAL_AGENT_GROUP, Context.MODE_PRIVATE)
+        prefs.edit().putString("codex_accounts_v1", "{broken").commit()
+        assertEquals("oauth_accounts_unreadable", assertThrows(ProviderAuthException::class.java) {
+            accounts.views(PROVIDER_ID, AUTH_MODE)
+        }.code)
+        assertThrows(ProviderAuthException::class.java) { accounts.rebuildUnreadableIndex(false) }
+        storage.write(PROVIDER_ID, credential("subject-old", "old"))
+        accounts.rebuildUnreadableIndex(true)
+        assertTrue(accounts.views(PROVIDER_ID, AUTH_MODE).isEmpty())
+        assertTrue(prefs.all.entries.any { it.key.startsWith("codex_accounts_v1_recovery_") && it.value == "{broken" })
+        assertTrue(repository().views(PROVIDER_ID, AUTH_MODE).isEmpty())
+    }
+
     private class MemoryStorage : ProviderCredentialStorage {
         private val credentials = ConcurrentHashMap<String, ProviderCredential>()
         val writes: MutableList<String> = java.util.Collections.synchronizedList(mutableListOf<String>())
-        override fun read(providerId: String): ProviderCredential? = credentials[providerId]
+        val unreadable = ConcurrentHashMap.newKeySet<String>()
+        override fun read(providerId: String): ProviderCredential? {
+            if (providerId in unreadable) throw ProviderAuthException("credential_key_unavailable", "fixture: unreadable slot")
+            return credentials[providerId]
+        }
         override fun write(providerId: String, credential: ProviderCredential) {
             writes += providerId
             credentials[providerId] = credential
         }
         override fun delete(providerId: String) {
+            unreadable.remove(providerId)
             credentials.remove(providerId)
         }
         fun keys(): Set<String> = credentials.keys.toSet()

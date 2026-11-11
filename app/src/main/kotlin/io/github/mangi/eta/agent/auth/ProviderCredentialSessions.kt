@@ -27,7 +27,7 @@ internal class ProviderCredentialSessions(
 
     fun account(slotId: String, authMode: String): ProviderAccountSummary? {
         val session = session(slotId)
-        return session.stateLock.withLock { storage.read(slotId)?.takeIf { it.authMode == authMode }?.summary() }
+        return session.stateLock.withLock { storage.read(slotId)?.takeIf { it.authMode == authMode }?.summary(now()) }
     }
 
     /** 账号身份的原始凭据；只供主进程做迁移与去重判断，不返回给 UI。 */
@@ -76,7 +76,9 @@ internal class ProviderCredentialSessions(
             // 浏览器登录尚未成功时，原会话仍可刷新；取消登录不能丢掉已经轮换的凭据。
             requireGeneration(session.loginGeneration, loginGeneration)
             accept(credential)
-            storage.write(slotId, credential)
+            try { storage.write(slotId, credential) } catch (error: ProviderAuthException) {
+                throw ProviderAuthException(error.code, "[credential_store] 无法保存授权凭据，请重试", "credential_store")
+            }
             ++session.generation
             credential
         }

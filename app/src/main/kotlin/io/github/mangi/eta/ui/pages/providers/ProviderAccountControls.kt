@@ -73,6 +73,7 @@ internal fun ProviderAccountControls(
     onRenameAccount: (String, String) -> Unit = { _, _ -> },
     onRemoveAccount: (String) -> Unit = {},
     providerId: String = "",
+    onRebuildIndex: () -> Unit = {},
 ) {
     val prompt = state.prompt
     val account = state.account
@@ -83,9 +84,24 @@ internal fun ProviderAccountControls(
     val multiAccount = authMode == ProviderAuthModes.OPENAI_CHATGPT && accounts.isNotEmpty()
     var showAccounts by remember { mutableStateOf(false) }
     var showMore by remember { mutableStateOf(false) }
+    var showRecovery by remember { mutableStateOf(false) }
     val current = state.selected
     var manageId by remember { mutableStateOf<String?>(null) }
     val managed = accounts.firstOrNull { it.accountId == manageId } ?: current
+
+    if (authMode == ProviderAuthModes.OPENAI_CHATGPT && state.errorCode == "oauth_accounts_unreadable") {
+        BasicComponent(title = "恢复旧 Codex 连接", summary = "账号索引损坏，重建前会保全旧索引；其他服务商与聊天保持原状",
+            endActions = { TextButton(text = "重建索引", enabled = enabled && !state.isBusy,
+                onClick = { showRecovery = true }) })
+    }
+    if (showRecovery) {
+        OverlayDialog(show = true, title = "重建 Codex 账号索引",
+            summary = "损坏索引无法安全区分各个 Codex 连接。确认后所有旧 Codex 账号槽会被隔离，所有 Codex 连接都需要重新登录。原索引保全在本机；不会删除聊天、其他服务商或取消订阅。",
+            onDismissRequest = { showRecovery = false }) {
+            MiuixDialogActions(confirmText = "确认重建所有 Codex 索引", destructive = true,
+                onCancel = { showRecovery = false }, onConfirm = { showRecovery = false; onRebuildIndex() })
+        }
+    }
 
     val title = current?.name?.takeIf { it.isNotBlank() } ?: account?.email?.let(::maskedAccountEmail)
         ?: account?.displayName ?: "$brand 账号"
@@ -96,6 +112,8 @@ internal fun ProviderAccountControls(
         ProviderLoginPhase.Authorizing -> if (prompt == null) "正在准备授权…" else "请在浏览器中完成授权"
         ProviderLoginPhase.SyncingModels -> "登录成功，正在拉取最新模型…"
         ProviderLoginPhase.Idle -> when {
+            current?.credentialError != null -> "本机无法读取该账号凭据，可重新登录或从本机移除"
+            account?.needsRefresh == true -> "凭据已到刷新时间，下次请求会刷新；有效性尚待服务端确认"
             account == null && multiAccount -> "当前未选择账号，请选择或登录一个账号"
             account == null -> if (authMode == ProviderAuthModes.OPENAI_CHATGPT) {
                 "使用 ChatGPT 账号登录 Codex"
@@ -613,11 +631,11 @@ private fun CodexAccountRow(
 
     if (showRemove) {
         val current = account.selected
-        val summary = if (current) {
+        val summary = (if (current) {
             "删除「${account.label}」后当前不会自动改用其他账号，需要手动选择或重新登录。"
         } else {
             "将从 $brand 连接中移除「${account.label}」，不影响其他账号与对话记录。"
-        }
+        }) + " 仅删除本机连接，不取消付费订阅；不会请求远端撤销。"
         when (LocalUiStyle.current) {
             AppearanceUiStyle.COUI -> {
                 CouiConfirmDialog(

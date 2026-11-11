@@ -11,10 +11,10 @@ internal fun loadImageGenAccounts(
     config: ImageGenConfig,
     readAccounts: (String, String) -> List<CodexAccountView> = ProviderCredentialRepository::accounts,
 ): ImageGenAccounts {
-    if (config.source != ImageGenSource.CODEX_SUBSCRIPTION || config.providerId.isBlank()) return ImageGenAccounts()
+    if (config.source != ImageGenSource.CODEX_SUBSCRIPTION || config.credentialPoolId.isBlank()) return ImageGenAccounts()
     return try {
-        ImageGenAccounts(readAccounts(config.providerId, ProviderAuthModes.OPENAI_CHATGPT))
+        ImageGenAccounts(readAccounts(config.credentialPoolId, ProviderAuthModes.OPENAI_CHATGPT))
     } catch (_: ProviderAuthException) {
-        ImageGenAccounts(error = "订阅账号凭据不可用，请到服务商设置重新登录；也可切换到中转 API")
+        ImageGenAccounts(error = "订阅账号凭据不可用，请在此独立连接中重新登录")
     }
 }

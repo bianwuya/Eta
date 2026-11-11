@@ -3,18 +3,14 @@ package io.github.mangi.eta.local.imagegen
 import android.content.Context
 import io.github.mangi.eta.agent.auth.ProviderAuthException
 import io.github.mangi.eta.agent.model.AgentHttpClient
-import io.github.mangi.eta.agent.model.AuthorizedProviderHttp
 import io.github.mangi.eta.agent.model.ProviderRequestHeaders
 import io.github.mangi.eta.agent.runtime.AgentRunController
-import io.github.mangi.eta.data.model.OpenAiCompatibleProviderSetting
 import io.github.mangi.eta.data.model.ProviderAuthModes
 import io.github.mangi.eta.data.provider.ProviderConnectionProfile
 import io.github.mangi.eta.data.repository.ProviderCredentialRepository
-import io.github.mangi.eta.data.repository.ProviderRepository
 import java.io.IOException
 import java.util.UUID
 import java.util.concurrent.TimeUnit
-import kotlinx.coroutines.runBlocking
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -22,7 +18,9 @@ import okhttp3.Response
 import okhttp3.OkHttpClient
 import org.json.JSONObject
 
-internal class ImageGenClient(private val context: Context, client: OkHttpClient = AgentHttpClient.client) {
+internal class ImageGenClient(private val context: Context, client: OkHttpClient = AgentHttpClient.client,
+    private val credentials: ImageGenCredentials = ImageGenCredentials(context),
+) {
     private val http = client.newBuilder()
         .readTimeout(300, TimeUnit.SECONDS).callTimeout(360, TimeUnit.SECONDS)
         .followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(false).build()
@@ -31,36 +29,43 @@ internal class ImageGenClient(private val context: Context, client: OkHttpClient
         config.validate()?.let { return failure("IMAGE_GEN_NOT_CONFIGURED", it) }
         if (prompt.isBlank() || prompt.length > 16000) return failure("IMAGE_GEN_INVALID_PROMPT", "图片描述须为1到16000字符")
         controller.throwIfCancelled()
-        val provider = runBlocking { ProviderRepository.providerById(config.providerId) }
-            ?.takeIf { it.isEnabled && it is OpenAiCompatibleProviderSetting }
-            ?: return failure("IMAGE_GEN_PROVIDER_MISSING", "固定生图服务商已停用或删除，请重新配置")
         val subscription = config.source == ImageGenSource.CODEX_SUBSCRIPTION
-        if (subscription && provider.authMode != ProviderAuthModes.OPENAI_CHATGPT ||
-            !subscription && provider.authMode != ProviderAuthModes.API_KEY) {
-            return failure("IMAGE_GEN_AUTH_MODE_CHANGED", "固定服务商的认证方式已改变，请重新配置，不会切换计费来源")
-        }
-        if (!subscription && provider.apiKey.isBlank()) return failure("IMAGE_GEN_API_KEY_MISSING", "固定服务商尚未填写 API Key")
         val profile = ProviderConnectionProfile.OPENAI_CODEX
-        val url = if (subscription) requireNotNull(profile.imageGenerationUrl)
-            else provider.baseUrl.trimEnd('/') + "/images/generations"
-        // Snapshot the exact account once, without changing the provider's selected chat account.
+        val url = if (subscription) requireNotNull(profile.imageGenerationUrl) else config.endpoint
         val binding = try {
-            if (subscription) ProviderCredentialRepository.codexAccountBinding(config.providerId, config.accountId) else null
+            if (subscription) ProviderCredentialRepository.codexAccountBinding(config.credentialPoolId, config.accountId) else null
         } catch (_: ProviderAuthException) {
             return failure("IMAGE_GEN_ACCOUNT_MISSING", "固定 Codex 账号已删除、未登录或需要重新授权")
         }
         val body = requestBody(prompt, config)
         val headers = okhttp3.Headers.Builder()
-        ProviderRequestHeaders.mergeInto(headers, if (subscription) profile.baseUrl else provider.baseUrl,
-            provider.customHeaders, authMode = provider.authMode, model = config.model)
-        if (subscription) headers.set("x-codex-image-turn-id", UUID.randomUUID().toString())
-        else headers.set("Authorization", "Bearer ${provider.apiKey}")
+        ProviderRequestHeaders.mergeInto(headers, if (subscription) profile.baseUrl else config.endpoint,
+            emptyList(), authMode = if (subscription) ProviderAuthModes.OPENAI_CHATGPT else ProviderAuthModes.API_KEY,
+            model = config.model)
+        val token = try {
+            if (binding != null) ProviderCredentialRepository.accessToken(binding, controller, null)
+            else credentials.read(config.keySlotId).ifBlank {
+                return failure("IMAGE_GEN_API_KEY_MISSING", "独立生图 API Key 不可用，请重新填写")
+            }
+        } catch (_: ProviderAuthException) {
+            return failure("IMAGE_GEN_AUTH_EXPIRED", "固定生图凭据不可用，请重新登录或填写 Key")
+        }
+        headers.set("Authorization", "Bearer $token")
+        if (subscription) {
+            headers.set("x-codex-image-turn-id", UUID.randomUUID().toString())
+            headers.set("ChatGPT-Account-Id", io.github.mangi.eta.agent.auth.CodexOAuth.accountId(token))
+        }
         val request = Request.Builder().url(url).headers(headers.build())
             .post(body.toString().toRequestBody("application/json".toMediaType())).build()
         return try {
-            AuthorizedProviderHttp.execute(http, config.providerId, provider.authMode, request, controller, binding) { response ->
-                consume(response, config, controller)
-            }
+            if (subscription) profile.requireRequestTarget(request.url)
+            // A paid request is executed once. Even a 401 does not replay the generation POST.
+            val call = http.newCall(request)
+            val cancellation = controller.register(call::cancel)
+            try {
+                controller.throwIfCancelled()
+                call.execute().use { response -> consume(response, config, controller) }
+            } finally { cancellation.close() }
         } catch (_: ProviderAuthException) {
             controller.throwIfCancelled()
             failure("IMAGE_GEN_AUTH_EXPIRED", "固定生图账号授权失效，请重新登录；未切换来源")

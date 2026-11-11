@@ -2,8 +2,6 @@ package io.github.mangi.eta.local.imagegen
 
 import android.content.Context
 import io.github.mangi.eta.agent.runtime.AgentRunController
-import io.github.mangi.eta.data.model.OpenAiCompatibleProviderSetting
-import io.github.mangi.eta.data.repository.ProviderRepository
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.runBlocking
 import okhttp3.MediaType.Companion.toMediaType
@@ -24,13 +22,8 @@ import org.robolectric.annotation.Config
 class ImageGenRelayTest {
     @Test fun customRelayGetsFixedEndpointKeyAndModelWithoutSubscriptionAuthOrRetry() = runBlocking {
         val context: Context = RuntimeEnvironment.getApplication()
-        ProviderRepository.init(context)
-        val provider = OpenAiCompatibleProviderSetting(
-            id = "image-relay-test", name = "Relay fixture", baseUrl = "https://relay.example.invalid/v1/",
-            apiKey = "fixture-api-key",
-        )
-        ProviderRepository.addProvider(provider)
         val requests = AtomicInteger()
+        var responseCode = 400
         val client = OkHttpClient.Builder().addInterceptor { chain ->
             requests.incrementAndGet()
             val request = chain.request()
@@ -42,12 +35,25 @@ class ImageGenRelayTest {
             val json = JSONObject(buffer.readUtf8())
             assertEquals("relay-image-model", json.getString("model"))
             assertEquals(1, json.getInt("n"))
-            Response.Builder().request(request).protocol(Protocol.HTTP_1_1).code(400).message("Fixture")
+            Response.Builder().request(request).protocol(Protocol.HTTP_1_1).code(responseCode).message("Fixture")
                 .body("{}".toResponseBody("application/json".toMediaType())).build()
         }.build()
-        val result = ImageGenClient(context, client).generate("fixture prompt", AgentRunController(),
-            ImageGenConfig(source = ImageGenSource.OPENAI_API, providerId = provider.id, model = "relay-image-model"))
-        assertEquals("IMAGE_GEN_REJECTED", result.getString("code"))
-        assertEquals(1, requests.get())
+        val keys = ImageGenCredentials(object : io.github.mangi.eta.agent.auth.ProviderCredentialStorage {
+            override fun read(providerId: String) = io.github.mangi.eta.agent.auth.ProviderCredential(
+                authMode = "api_key", clientId = "fixture", accessToken = "fixture-api-key")
+            override fun write(providerId: String, credential: io.github.mangi.eta.agent.auth.ProviderCredential) = Unit
+            override fun delete(providerId: String) = Unit
+        })
+        for ((status, code) in listOf(400 to "IMAGE_GEN_REJECTED", 401 to "IMAGE_GEN_AUTH_EXPIRED",
+            429 to "IMAGE_GEN_REJECTED", 503 to "IMAGE_GEN_OUTCOME_UNKNOWN")) {
+            responseCode = status
+            requests.set(0)
+            val result = ImageGenClient(context, client, keys).generate("fixture prompt", AgentRunController(),
+                ImageGenConfig(source = ImageGenSource.OPENAI_API, profileId = "relay-profile", model = "relay-image-model",
+                    endpoint = "https://relay.example.invalid/v1/images/generations", keyConfigured = true))
+            assertEquals(code, result.getString("code"))
+            assertEquals(1, requests.get())
+            assertFalse(result.getBoolean("automatic_retry"))
+        }
     }
 }

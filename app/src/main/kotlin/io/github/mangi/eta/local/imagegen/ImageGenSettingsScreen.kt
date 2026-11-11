@@ -1,23 +1,26 @@
 package io.github.mangi.eta.local.imagegen
 
-import androidx.compose.foundation.layout.Column
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.*
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
-import io.github.mangi.eta.data.model.OpenAiCompatibleProviderSetting
+import io.github.mangi.eta.agent.auth.ProviderLoginPrompt
+import io.github.mangi.eta.agent.runtime.AgentRunController
 import io.github.mangi.eta.data.model.ProviderAuthModes
 import io.github.mangi.eta.data.repository.CodexAccountView
-import io.github.mangi.eta.data.repository.ProviderRepository
 import io.github.mangi.eta.data.repository.ProviderCredentialRepository
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
 import io.github.mangi.eta.ui.components.StatusError
-import kotlinx.coroutines.Dispatchers
+import java.util.UUID
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.Card
@@ -25,6 +28,7 @@ import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TextField
+import top.yukonga.miuix.kmp.overlay.OverlayDialog
 import top.yukonga.miuix.kmp.preference.OverlayDropdownPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
@@ -36,106 +40,177 @@ internal fun ImageGenSettingsScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var error by remember { mutableStateOf<String?>(null) }
-    var config by remember { mutableStateOf(runCatching { ImageGenConfigStore.read(context) }
-        .getOrElse { error = "生图配置无法读取，请重新保存"; ImageGenConfig() }) }
-    val providers by ProviderRepository.providersFlow().collectAsState(initial = emptyList())
+    var state by remember { mutableStateOf(runCatching { ImageGenConfigStore.profiles(context) }.getOrElse {
+        error = "生图配置无法读取，原配置保留"; ImageGenProfiles()
+    }) }
+    var draft by remember { mutableStateOf(state.profiles.firstOrNull { it.profileId == state.selectedId } ?: ImageGenConfig()) }
+    // Keep secrets in ephemeral UI memory only: never rememberSaveable or profile JSON.
+    var keyDraft by remember { mutableStateOf("") }
+    var saving by remember { mutableStateOf(false) }
     var accounts by remember { mutableStateOf<List<CodexAccountView>>(emptyList()) }
     var accountError by remember { mutableStateOf<String?>(null) }
-    var saving by remember { mutableStateOf(false) }
-    var draftModel by rememberSaveable(config.model) { mutableStateOf(config.model) }
-    LaunchedEffect(config.providerId, config.source, providers) {
-        accounts = emptyList()
-        accountError = null
-        val result = withContext(Dispatchers.IO) { loadImageGenAccounts(config, readAccounts) }
-        accounts = result.accounts
-        accountError = result.error
+    var prompt by remember { mutableStateOf<ProviderLoginPrompt?>(null) }
+    var removeAccount by remember { mutableStateOf<String?>(null) }
+    var removeProfile by remember { mutableStateOf(false) }
+    var controller by remember { mutableStateOf<AgentRunController?>(null) }
+    DisposableEffect(Unit) { onDispose { controller?.cancel() } }
+    LaunchedEffect(draft.credentialPoolId, draft.source, saving) {
+        val loaded = withContext(Dispatchers.IO) { loadImageGenAccounts(draft, readAccounts) }
+        accounts = loaded.accounts; accountError = loaded.error
     }
-    fun save(next: ImageGenConfig) {
+    fun operation(action: suspend () -> Unit) {
+        if (saving) return
+        saving = true
         scope.launch {
-            saving = true
-            try {
-                withContext(Dispatchers.IO) { ImageGenConfigStore.write(context, next) }
-                config = next; error = null
-            } catch (failure: Exception) {
-                if (failure is CancellationException) throw failure
-                error = "生图配置保存失败，原配置未替换"
-            }
-            finally { saving = false }
+            try { action(); state = withContext(Dispatchers.IO) { ImageGenConfigStore.profiles(context) }; error = null }
+            catch (cancelled: CancellationException) { throw cancelled }
+            catch (failure: Exception) { error = (failure as? io.github.mangi.eta.agent.auth.ProviderAuthException)?.let {
+                "${it.stage?.let { phase -> "[$phase] " }.orEmpty()}${it.message}"
+            } ?: "操作失败，原配置保留，请检查输入后重试" }
+            finally { saving = false; prompt = null; controller = null }
         }
     }
-    val sources = listOf(ImageGenSource.NONE, ImageGenSource.CODEX_SUBSCRIPTION, ImageGenSource.OPENAI_API)
-    val selectable = providers.filterIsInstance<OpenAiCompatibleProviderSetting>().filter { provider ->
-        provider.isEnabled && if (config.source == ImageGenSource.CODEX_SUBSCRIPTION) {
-            provider.authMode == ProviderAuthModes.OPENAI_CHATGPT
-        } else provider.authMode == ProviderAuthModes.API_KEY
+    fun login(accountId: String? = null) {
+        operation {
+            val run = AgentRunController(); controller = run
+            withContext(Dispatchers.IO) {
+                ProviderCredentialRepository.login(draft.credentialPoolId, ProviderAuthModes.OPENAI_CHATGPT, run,
+                    onPrompt = { next -> scope.launch { prompt = next } }, accountId = accountId)
+            }
+        }
     }
-    val providerLabels = listOf("请选择固定服务商") + selectable.map { it.name }
     MiuixScaffoldPage(title = "生图配置", onBack = onBack) {
-        item(key = "source") {
-            SmallTitle("固定来源")
+        item(key = "profiles") {
+            SmallTitle("独立生图连接")
             Card(Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
-                OverlayDropdownPreference(title = "生图来源", items = listOf("未配置", "Codex 订阅", "中转 / OpenAI 兼容 API"),
-                    selectedIndex = sources.indexOf(config.source).coerceAtLeast(0), enabled = !saving,
-                    onSelectedIndexChange = { index -> save(config.copy(source = sources[index], providerId = "", accountId = "",
-                        model = "gpt-image-2")) })
-                if (config.source != ImageGenSource.NONE) {
-                    OverlayDropdownPreference(title = "生图服务商", items = providerLabels, enabled = !saving,
-                        selectedIndex = selectable.indexOfFirst { it.id == config.providerId } + 1,
-                        onSelectedIndexChange = { index -> save(config.copy(providerId = selectable.getOrNull(index - 1)?.id.orEmpty(), accountId = "")) })
-                    if (config.source == ImageGenSource.CODEX_SUBSCRIPTION) {
-                        OverlayDropdownPreference(title = "固定 Codex 账号", enabled = !saving,
-                            items = listOf("请选择固定账号") + accounts.map { account ->
-                                (account.name.ifBlank { account.displayName ?: "Codex账号" }) + if (account.usable) "" else " · 需重新登录"
-                            }, selectedIndex = accounts.indexOfFirst { it.accountId == config.accountId } + 1,
-                            onSelectedIndexChange = { index -> save(config.copy(accountId = accounts.getOrNull(index - 1)?.accountId.orEmpty())) })
-                    }
+                OverlayDropdownPreference(title = "当前连接", enabled = !saving,
+                    items = listOf("未启用") + state.profiles.map { it.name.ifBlank { "未命名连接" } },
+                    selectedIndex = state.profiles.indexOfFirst { it.profileId == state.selectedId } + 1,
+                    onSelectedIndexChange = { index ->
+                        val selected = state.profiles.getOrNull(index - 1)
+                        operation { withContext(Dispatchers.IO) { ImageGenConfigStore.select(context, selected?.profileId) }
+                            draft = selected ?: ImageGenConfig(); keyDraft = "" }
+                    })
+                TextButton(text = "新增生图连接", enabled = !saving, onClick = {
+                    draft = ImageGenConfig(profileId = UUID.randomUUID().toString(), source = ImageGenSource.OPENAI_API,
+                        name = "生图连接 ${state.profiles.size + 1}"); keyDraft = ""
+                })
+                if (state.profiles.isEmpty()) Text("尚未创建生图连接。可独立填写 API，或登录 Codex；无需创建语言模型服务商。",
+                    modifier = Modifier.padding(16.dp), style = MiuixTheme.textStyles.body2)
+                if (runCatching { ImageGenConfigStore.legacy(context) }.getOrNull() != null) {
+                    Text("检测到旧生图配置，原记录已保留。请手动确认地址、Key 和账号后创建独立连接；不会继承旧付费来源。",
+                        modifier = Modifier.padding(16.dp), style = MiuixTheme.textStyles.footnote2)
                 }
             }
         }
-        item(key = "parameters") {
-            if (config.source != ImageGenSource.NONE) {
-                SmallTitle("模型与输出")
+        item(key = "editor") {
+            if (draft.profileId.isNotBlank()) {
                 Card(Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
-                    if (config.source == ImageGenSource.CODEX_SUBSCRIPTION) {
-                        Text("gpt-image-2 · Codex 订阅图片接口", modifier = Modifier.padding(16.dp), style = MiuixTheme.textStyles.body2)
-                    } else {
-                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            TextField(value = draftModel, onValueChange = { draftModel = it }, label = "生图模型", singleLine = true,
-                                modifier = Modifier.fillMaxWidth())
-                            TextButton(text = "保存模型", enabled = !saving && draftModel.isNotBlank() && draftModel != config.model,
-                                onClick = { save(config.copy(model = draftModel.trim())) })
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TextField(value = draft.name, onValueChange = { draft = draft.copy(name = it) }, label = "连接名称",
+                            enabled = !saving, singleLine = true, modifier = Modifier.fillMaxWidth())
+                        val sources = listOf(ImageGenSource.OPENAI_API, ImageGenSource.CODEX_SUBSCRIPTION)
+                        OverlayDropdownPreference(title = "生图来源", items = listOf("独立 Images API", "Codex 订阅"), enabled = !saving,
+                            selectedIndex = sources.indexOf(draft.source).coerceAtLeast(0), onSelectedIndexChange = {
+                                draft = draft.copy(source = sources[it], accountId = "", model = "gpt-image-2")
+                            })
+                        if (draft.source == ImageGenSource.OPENAI_API) {
+                            TextField(value = draft.endpoint, onValueChange = { draft = draft.copy(endpoint = it) },
+                                label = "完整 HTTPS Images endpoint", enabled = !saving, singleLine = true, modifier = Modifier.fillMaxWidth())
+                            TextField(value = keyDraft, onValueChange = { keyDraft = it },
+                                label = if (draft.keyConfigured) "替换 API Key（留空保留）" else "独立 API Key", enabled = !saving,
+                                visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth())
+                            TextField(value = draft.model, onValueChange = { draft = draft.copy(model = it) }, label = "生图模型",
+                                enabled = !saving, singleLine = true, modifier = Modifier.fillMaxWidth())
+                        } else {
+                            OverlayDropdownPreference(title = "固定 Codex 账号", enabled = !saving,
+                                items = listOf("请选择固定账号") + accounts.map { it.label + if (it.usable) "" else " · 需重新登录" },
+                                selectedIndex = accounts.indexOfFirst { it.accountId == draft.accountId } + 1,
+                                onSelectedIndexChange = { draft = draft.copy(accountId = accounts.getOrNull(it - 1)?.accountId.orEmpty()) })
+                            TextButton(text = "添加独立 Codex 账号", enabled = !saving, onClick = { login() })
+                            accountError?.let { Text(it, color = StatusError, style = MiuixTheme.textStyles.footnote2) }
+                            if (prompt != null) TextButton(text = "打开授权浏览器", onClick = {
+                                try { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(prompt!!.authorizationUrl))) }
+                                catch (_: Exception) { error = "[browser_launch] 无法打开授权浏览器"; controller?.cancel() }
+                            })
+                            if (saving && controller != null) TextButton(text = "取消登录", onClick = { controller?.cancel() })
+                            accounts.forEach { item ->
+                                Text(item.label + if (item.usable) "" else " · 需要重新登录")
+                                TextButton(text = "重新登录", enabled = !saving, onClick = { login(item.accountId) })
+                                TextButton(text = "从本机移除账号", enabled = !saving, onClick = { removeAccount = item.accountId })
+                            }
                         }
+                        OverlayDropdownPreference(title = "尺寸", items = ImageGenConfig.SIZES, enabled = !saving,
+                            selectedIndex = ImageGenConfig.SIZES.indexOf(draft.size).coerceAtLeast(0),
+                            onSelectedIndexChange = { draft = draft.copy(size = ImageGenConfig.SIZES[it]) })
+                        OverlayDropdownPreference(title = "质量", items = ImageGenConfig.QUALITIES, enabled = !saving,
+                            selectedIndex = ImageGenConfig.QUALITIES.indexOf(draft.quality).coerceAtLeast(0),
+                            onSelectedIndexChange = { draft = draft.copy(quality = ImageGenConfig.QUALITIES[it]) })
+                        OverlayDropdownPreference(title = "背景", items = ImageGenConfig.BACKGROUNDS, enabled = !saving,
+                            selectedIndex = ImageGenConfig.BACKGROUNDS.indexOf(draft.background).coerceAtLeast(0),
+                            onSelectedIndexChange = { draft = draft.copy(background = ImageGenConfig.BACKGROUNDS[it]) })
+                        TextButton(text = "保存并启用连接", enabled = !saving, onClick = {
+                            val snapshot = draft.copy(name = draft.name.trim(), endpoint = draft.endpoint.trim(), model = draft.model.trim(),
+                                keyConfigured = draft.keyConfigured || keyDraft.isNotBlank(),
+                                credentialId = if (keyDraft.isNotBlank()) UUID.randomUUID().toString() else draft.credentialId,
+                                retiredCredentialIds = if (keyDraft.isNotBlank() && draft.keyConfigured)
+                                    (draft.retiredCredentialIds + draft.keySlotId).distinct() else draft.retiredCredentialIds)
+                            val key = keyDraft
+                            val problem = snapshot.validate()
+                            if (problem != null) error = problem else operation {
+                                withContext(Dispatchers.IO) {
+                                    val credentials = ImageGenCredentials(context)
+                                    if (key.isNotBlank()) credentials.write(snapshot.keySlotId, key)
+                                    try { ImageGenConfigStore.write(context, snapshot) }
+                                    catch (failure: Exception) {
+                                        if (key.isNotBlank()) credentials.delete(snapshot.keySlotId)
+                                        throw failure
+                                    }
+                                }
+                                draft = snapshot; keyDraft = ""
+                            }
+                        })
+                        if (state.profiles.any { it.profileId == draft.profileId }) TextButton(text = "删除此生图连接",
+                            enabled = !saving, onClick = { removeProfile = true })
                     }
-                    OverlayDropdownPreference(title = "尺寸", items = ImageGenConfig.SIZES, enabled = !saving,
-                        selectedIndex = ImageGenConfig.SIZES.indexOf(config.size).coerceAtLeast(0),
-                        onSelectedIndexChange = { save(config.copy(size = ImageGenConfig.SIZES[it])) })
-                    OverlayDropdownPreference(title = "质量", items = ImageGenConfig.QUALITIES, enabled = !saving,
-                        selectedIndex = ImageGenConfig.QUALITIES.indexOf(config.quality).coerceAtLeast(0),
-                        onSelectedIndexChange = { save(config.copy(quality = ImageGenConfig.QUALITIES[it])) })
-                    OverlayDropdownPreference(title = "背景", items = ImageGenConfig.BACKGROUNDS, enabled = !saving,
-                        selectedIndex = ImageGenConfig.BACKGROUNDS.indexOf(config.background).coerceAtLeast(0),
-                        onSelectedIndexChange = { save(config.copy(background = ImageGenConfig.BACKGROUNDS[it])) })
                 }
             }
         }
         item(key = "status") {
-            val selected = providers.firstOrNull { it.id == config.providerId }
-            val state = config.validate() ?: when {
-                selected == null || !selected.isEnabled -> "固定服务商已删除或停用"
-                config.source == ImageGenSource.CODEX_SUBSCRIPTION && accounts.none { it.accountId == config.accountId && it.usable } -> "固定账号不可用，请重新登录或选择"
-                else -> "配置已保存 · 接口可用性尚待真实生成验证"
-            }
             Column(Modifier.padding(horizontal = 28.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(state, style = MiuixTheme.textStyles.body2)
-                error?.let { Text(it, style = MiuixTheme.textStyles.footnote2, color = StatusError) }
-                accountError?.let { Text(it, style = MiuixTheme.textStyles.footnote2, color = StatusError) }
-                if (config.source == ImageGenSource.OPENAI_API) {
-                    Text("使用所选 API Key 服务商的中转地址和 Key。模型请填写中转站支持的生图模型；仅支持 Images 生成接口。",
-                        style = MiuixTheme.textStyles.footnote2, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
-                }
-                Text("生图始终使用此固定来源和账号，不随聊天模型或账号切换。真实调用会消耗该来源额度；失败不会改走其他收费来源。\n图片保存在 Downloads/Eta-输出/生成图片。兼容API须支持Images生成协议及Base64图片返回。",
-                    style = MiuixTheme.textStyles.footnote2, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+                if (prompt != null) TextButton(text = "打开授权浏览器", onClick = {
+                    try { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(prompt!!.authorizationUrl))) }
+                    catch (_: Exception) { error = "[browser_launch] 无法打开授权浏览器"; controller?.cancel() }
+                })
+                if (saving && controller != null) TextButton(text = "取消登录", onClick = { controller?.cancel() })
+                error?.let { Text(it, color = StatusError, style = MiuixTheme.textStyles.footnote2) }
+                accountError?.let { Text(it, color = StatusError, style = MiuixTheme.textStyles.footnote2) }
+                Text("编辑后点击保存，快速编辑使用同一份草稿。生图固定使用当前独立连接和账号，不随聊天切换；请求只执行一次，失败不换来源。",
+                    style = MiuixTheme.textStyles.footnote2)
             }
+        }
+    }
+    if (removeAccount != null || removeProfile) {
+        OverlayDialog(show = true, title = "确认从本机移除", summary = "只删除此独立生图连接或账号；不取消付费订阅，不影响聊天与其他连接，远端撤销未确认。",
+            onDismissRequest = { removeAccount = null; removeProfile = false }) {
+            TextButton(text = "取消", onClick = { removeAccount = null; removeProfile = false })
+            TextButton(text = "确认移除", onClick = {
+                val accountId = removeAccount; val profile = draft
+                removeAccount = null; removeProfile = false
+                operation {
+                    withContext(Dispatchers.IO) {
+                        if (accountId != null) ProviderCredentialRepository.removeAccount(profile.credentialPoolId,
+                            ProviderAuthModes.OPENAI_CHATGPT, accountId, AgentRunController())
+                        else {
+                            val credentials = ImageGenCredentials(context)
+                            (profile.retiredCredentialIds + profile.keySlotId).distinct().forEach(credentials::delete)
+                            ProviderCredentialRepository.forget(profile.credentialPoolId)
+                            ImageGenConfigStore.remove(context, profile.profileId)
+                        }
+                    }
+                    draft = if (accountId != null) draft.copy(accountId = draft.accountId.takeIf { it != accountId }.orEmpty()) else ImageGenConfig()
+                }
+            })
         }
     }
 }

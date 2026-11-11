@@ -42,7 +42,7 @@ internal class LiveProviderOAuthClient(
             MessageDigest.getInstance("SHA-256").digest(pkceVerifier.toByteArray(Charsets.US_ASCII)),
         )
         val receiver = try { callbackReceiver() } catch (_: java.io.IOException) {
-            throw ProviderAuthException("oauth_callback_unavailable", "无法启动 Codex 登录回调，请结束其他登录后重试")
+            throw ProviderAuthException("oauth_callback_unavailable", "无法启动 Codex 登录回调，请结束其他登录后重试", "callback_listen")
         }
         return receiver.use {
             val url = "https://auth.openai.com/oauth/authorize".toHttpUrl().newBuilder()
@@ -59,18 +59,19 @@ internal class LiveProviderOAuthClient(
                 .addQueryParameter("originator", CodexOAuth.ORIGINATOR)
                 .build()
             controller.throwIfCancelled()
-            onPrompt(ProviderLoginPrompt(url.toString()))
-            val code = receiver.awaitCode(state, controller)
-            val response = http.post(OAuthProvider.OPENAI.tokenEndpoint, mapOf(
+            oauthStage("browser_launch") { onPrompt(ProviderLoginPrompt(url.toString())) }
+            val code = oauthStage("callback_validate") { receiver.awaitCode(state, controller) }
+            val response = oauthStage("token_exchange") { http.post(OAuthProvider.OPENAI.tokenEndpoint, mapOf(
                 "grant_type" to "authorization_code",
                 "client_id" to CodexOAuth.CLIENT_ID,
                 "code" to code,
                 "code_verifier" to pkceVerifier,
                 "redirect_uri" to receiver.redirectUri,
-            ), controller)
-            requireSuccess(response)
-            credential(response.json, OAuthProvider.OPENAI, CodexOAuth.CLIENT_ID, nonce, controller, null,
-                defaultScopes = CodexOAuth.SCOPE.split(' ').toSet())
+            ), controller).also { requireSuccess(it) } }
+            oauthStage("oidc_validate") {
+                credential(response.json, OAuthProvider.OPENAI, CodexOAuth.CLIENT_ID, nonce, controller, null,
+                    defaultScopes = CodexOAuth.SCOPE.split(' ').toSet())
+            }
         }
     }
 
@@ -220,4 +221,17 @@ internal class LiveProviderOAuthClient(
         val TERMINAL_REFRESH_ERRORS = setOf("invalid_grant", "invalid_refresh_token", "token_expired", "refresh_token_expired",
             "refresh_token_invalidated", "refresh_token_reused")
     }
+}
+
+/** Stage-only errors: never attach the original throwable, URL, token or callback parameters. */
+private inline fun <T> oauthStage(stage: String, action: () -> T): T = try {
+    action()
+} catch (cancelled: io.github.mangi.eta.agent.runtime.AgentRunCancelledException) {
+    throw cancelled
+} catch (cancelled: kotlinx.coroutines.CancellationException) {
+    throw cancelled
+} catch (error: ProviderAuthException) {
+    throw ProviderAuthException(error.code, "[$stage] ${error.message}", error.stage ?: stage)
+} catch (_: Exception) {
+    throw ProviderAuthException("oauth_stage_failed", "[$stage] 授权未完成，请重试", stage)
 }

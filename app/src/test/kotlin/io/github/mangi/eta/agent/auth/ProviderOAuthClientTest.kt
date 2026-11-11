@@ -28,6 +28,19 @@ import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class ProviderOAuthClientTest {
+    @Test fun listenerAndBrowserFailuresHaveDistinctRedactedStages() {
+        val unavailable = LiveProviderOAuthClient(callbackReceiver = { throw java.net.BindException("fixture") })
+        val listenError = assertThrows(ProviderAuthException::class.java) {
+            unavailable.login(OAuthProvider.OPENAI, AgentRunController()) { error("must not open browser") }
+        }
+        assertEquals("callback_listen", listenError.stage)
+        val browser = LiveProviderOAuthClient(callbackReceiver = { LoopbackAuthorizationReceiver(0) })
+        val browserError = assertThrows(ProviderAuthException::class.java) {
+            browser.login(OAuthProvider.OPENAI, AgentRunController()) { throw IllegalStateException("secret-url-fixture") }
+        }
+        assertEquals("browser_launch", browserError.stage)
+        assertFalse(browserError.toString().contains("secret-url-fixture"))
+    }
     @Test fun devicePollingHonorsServerIntervalAndSlowDown() {
         var nanos = 0L
         var tokenRequests = 0
