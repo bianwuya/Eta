@@ -262,10 +262,10 @@ class EtaAssistantSteeringTest {
                 AgentRuntimeWire.ETA_VOICE_HANDOFF_SOURCE, "voice-key"
             )
             val dao = EtaDatabase.get(fixture.context).conversationDao()
-            runBlocking {
-                val pending = AgentPendingQueueCodec.read(dao, conversationId)
-                assertTrue("已接收的引导应从 Room 队列中清除", pending.isEmpty())
+            fixture.await {
+                runBlocking { AgentPendingQueueCodec.read(dao, conversationId).isEmpty() }
             }
+            runBlocking { assertTrue("已接收的引导应从 Room 队列中清除", AgentPendingQueueCodec.read(dao, conversationId).isEmpty()) }
 
             host.destroy()
         }

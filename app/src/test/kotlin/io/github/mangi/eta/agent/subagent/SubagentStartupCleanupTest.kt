@@ -62,7 +62,7 @@ class SubagentStartupCleanupTest {
         val stopped = java.util.concurrent.CountDownLatch(1)
         val context = org.robolectric.RuntimeEnvironment.getApplication()
         io.github.mangi.eta.local.imagegen.ImageGenConfigStore.write(context,
-            io.github.mangi.eta.local.imagegen.ImageGenConfig(io.github.mangi.eta.local.imagegen.ImageGenSource.CODEX_SUBSCRIPTION, "fixture", "fixture"))
+            io.github.mangi.eta.local.imagegen.ImageGenConfig(io.github.mangi.eta.local.imagegen.ImageGenSource.CODEX_SUBSCRIPTION, "", "fixture", profileId = "child-image-fixture"))
         var actual: AgentRunController? = null
         var requestThread: Thread? = null
         lateinit var tool: AgentModelClient.ToolExecutor

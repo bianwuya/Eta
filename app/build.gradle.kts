@@ -125,6 +125,8 @@ android {
         unitTests.isIncludeAndroidResources = true
         // Robolectric 在高版本 JDK 下需要访问内部 API，参数只作用于测试 JVM。
         unitTests.all {
+            // Large-history fixtures exceed Gradle's default 512 MiB test heap.
+            it.maxHeapSize = "4g"
             if (System.getProperty("os.name").startsWith("Windows")) {
                 // Native SQLite does not accept long Windows paths even when the filesystem does.
                 val testTemp = rootProject.file(".tmp/t")

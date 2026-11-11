@@ -48,7 +48,9 @@ class AgentImageCodecTest {
             assertEquals(2_400, display.width)
             assertEquals(1_600, display.height)
             assertArrayEquals(bytes, display.reference.decodeDataUrl())
-            assertTrue(maxOf(thumbnail.width!!, thumbnail.height!!) <= 512)
+            assertTrue(maxOf(thumbnail.width!!, thumbnail.height!!) <= CHAT_PREVIEW_MAX_LONG_EDGE)
+            assertTrue(thumbnail.width!! * thumbnail.height!! <= 1_800_000)
+            assertTrue(thumbnail.width!! < display.width!!)
         } finally {
             bitmap.recycle()
         }

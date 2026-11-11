@@ -19,10 +19,11 @@ internal object AgentToolCatalog {
         capabilities: AgentToolCapabilities = AgentToolCapabilities(rootAvailable = true),
         localWebSearch: Boolean = true,
         disabledTools: Set<String> = emptySet(),
+        imageGeneration: Boolean = io.github.mangi.eta.local.imagegen.ImageGenAvailability.available,
     ): JSONArray =
         capabilities.project(JSONArray().also { tools ->
             AgentContextAppToolCatalog.appendTo(tools)
-            if (io.github.mangi.eta.local.imagegen.ImageGenAvailability.available) {
+            if (imageGeneration) {
                 tools.put(io.github.mangi.eta.local.imagegen.ImageGenToolCatalog.schema())
             }
             io.github.mangi.eta.local.userquestions.AgentUserQuestionsToolCatalog.appendTo(tools)

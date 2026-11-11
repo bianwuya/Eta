@@ -101,7 +101,7 @@ class AgentToolRequirementsTest {
     private fun catalog(root: Boolean) = AgentToolCatalog.build(
         terminalTools = true, browserTools = true, deviceDirectTools = true,
         deviceSensitiveReadTools = true, deviceSensitiveActionTools = true,
-        skillGitHubDiscovery = true, skillGitHubInstall = true, memoryTools = true,
+        skillGitHubDiscovery = true, skillGitHubInstall = true, memoryTools = true, imageGeneration = true,
         capabilities = AgentToolCapabilities(rootAvailable = root),
     ).also { ConversationMessagingToolCatalog.appendSchemas(it) }
 
