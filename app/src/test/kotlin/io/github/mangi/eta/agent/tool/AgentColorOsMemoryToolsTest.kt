@@ -11,16 +11,17 @@ import org.junit.Test
 class AgentColorOsMemoryToolsTest {
     @Test
     fun snapshotCopiesAllSqliteSidecars() {
+        val snapshot = File("/data/user/0/io.github.mangi.eta/cache/eta-coloros-memory-test.db")
         val command = buildColorOsMemorySnapshotCommand(
             source = "/data/user/0/com.oplus.aimemory/databases/ai_memory",
-            snapshot = File("/data/user/0/io.github.mangi.eta/cache/eta-coloros-memory-test.db"),
+            snapshot = snapshot,
         )
 
         assertTrue(command.contains("ai_memory-wal"))
         assertTrue(command.contains("ai_memory-shm"))
         assertTrue(command.contains("ai_memory-journal"))
         assertTrue(command.contains("eta-coloros-memory-test.db-shm"))
-        assertTrue(command.contains("rm -f '/data/user/0/io.github.mangi.eta/cache/eta-coloros-memory-test.db-journal'"))
+        assertTrue(command.contains("rm -f '${snapshot.absolutePath}-journal'"))
     }
 
     @Test

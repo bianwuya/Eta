@@ -254,6 +254,8 @@ class SubagentActivityStatsTest {
         val firstSnapshot = requireNotNull(SubagentActivitySnapshot.decode(first.command))
         assertEquals(24_000, firstSnapshot.contextTokens)
         assertEquals(SubagentContextReading.ATTEMPT_COMPLETED, firstSnapshot.contextReading?.attempt)
+        assertEquals(SubagentContextReading.ATTEMPT_COMPLETED,
+            SubagentSessionStore.get(conversation, child)?.lastContext?.reading?.attempt)
         model = "model-b"
         progress.clear()
         val second = executor.execute(2, AgentModelClient.ToolCall("second", "subagent", JSONObject()
@@ -265,6 +267,8 @@ class SubagentActivityStatsTest {
         assertEquals(24_000, snapshot.contextReading?.tokens)
         assertEquals(true, snapshot.contextReading?.previousInvocation)
         assertEquals(true, snapshot.contextReading?.modelChanged)
+        assertEquals(firstSnapshot.contextReading?.at, snapshot.contextReading?.at)
+        assertEquals(SubagentContextReading.ATTEMPT_COMPLETED, snapshot.contextReading?.attempt)
         assertEquals(SubagentActivitySnapshot.REQUEST_COMPLETED, snapshot.contextRequestState)
     }
 

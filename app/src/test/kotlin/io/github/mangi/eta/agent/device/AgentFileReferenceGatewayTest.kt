@@ -29,17 +29,17 @@ class AgentFileReferenceGatewayTest {
         val gateway = AgentFileReferenceGateway(rootAvailable = { false }) {
             error("普通路径不应执行 Root 校验")
         }
-        val result = gateway.resolveAbsolutePath(file.absolutePath, AgentFileReferenceKind.File)
+        val result = gateway.resolveAbsolutePath(androidPath(file), AgentFileReferenceKind.File)
             as AgentFileReferenceGateway.Resolution.Success
         assertEquals(file.canonicalPath, result.reference.absolutePath)
         assertFailure(
             AgentFileReferenceGateway.Error.TypeMismatch,
-            gateway.resolveAbsolutePath(file.absolutePath, AgentFileReferenceKind.Directory),
+            gateway.resolveAbsolutePath(androidPath(file), AgentFileReferenceKind.Directory),
         )
-        assertTrue(gateway.resolveAbsolutePath(temporaryFolder.root.path) is AgentFileReferenceGateway.Resolution.Success)
+        assertTrue(gateway.resolveAbsolutePath(androidPath(temporaryFolder.root)) is AgentFileReferenceGateway.Resolution.Success)
         assertFailure(
             AgentFileReferenceGateway.Error.PathNotFound,
-            gateway.resolveAbsolutePath(File(temporaryFolder.root, "missing").path),
+            gateway.resolveAbsolutePath(androidPath(File(temporaryFolder.root, "missing"))),
         )
     }
 
@@ -53,7 +53,8 @@ class AgentFileReferenceGatewayTest {
         val result = gateway.resolveDocumentUri(uri, AgentFileReferenceKind.File)
             as AgentFileReferenceGateway.Resolution.Success
         val imported = File(result.reference.absolutePath)
-        assertTrue(imported.path.startsWith(File(context.filesDir, "terminal-user/workspace/imports").path + "/"))
+        assertEquals(File(context.filesDir, "terminal-user/workspace/imports").canonicalFile,
+            imported.parentFile?.parentFile?.canonicalFile)
         assertEquals("授权内容", imported.readText())
         imported.parentFile?.deleteRecursively()
     }
@@ -62,6 +63,14 @@ class AgentFileReferenceGatewayTest {
     fun importNamesCannotEscapeTheirPrivateDirectory() {
         assertEquals(".._.._secret_name", AgentFileReferenceGateway.safeImportName("../../secret\nname"))
         assertEquals("imported-file", AgentFileReferenceGateway.safeImportName(".."))
+    }
+
+    private fun androidPath(file: File): String {
+        // Keep the API's Android absolute-path contract. On Windows the leading slash
+        // resolves against the fixture's current drive, without exposing a drive-letter input.
+        val path = "/" + file.relativeTo(file.toPath().root.toFile()).invariantSeparatorsPath
+        assertEquals(file.canonicalFile, File(path).canonicalFile)
+        return path
     }
 
     @Test

@@ -26,10 +26,13 @@ import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import java.time.Duration
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 import org.junit.Assert.*
@@ -69,6 +72,7 @@ class HistoryStripInteractionTest {
         f.clickContains("先保留现有主题")
         assertTrue(f.clickable(f.nodes().first { it.text().contains("先保留现有主题") })
             .config.getOrNull(SemanticsProperties.Selected) == true)
+        f.awaitDraftCount(id, 1, index = 1)
         f.clickContains("1 · 策略")
         assertEquals(ToggleableState.On, f.clickable(f.nodes().first { it.text().contains("保留手动标题") })
             .config.getOrNull(SemanticsProperties.ToggleableState))
@@ -76,6 +80,14 @@ class HistoryStripInteractionTest {
         assertTrue(UserQuestionStore.setPresentation(id, UserQuestionPresentation.HIDDEN))
         assertTrue(UserQuestionStore.setPresentation(id, UserQuestionPresentation.EXPANDED))
         assertEquals(2, UserQuestionStore.forms.value.single { it.id == id }.drafts[0].selected.size)
+        UserQuestionStore.resetForTest()
+        UserQuestionStore.initialize(f.activity)
+        val restored = UserQuestionStore.forms.value.single { it.id == id }
+        assertEquals(setOf(0, 1), restored.drafts[0].selected)
+        assertEquals(setOf(0), restored.drafts[1].selected)
+        assertFalse(restored.active)
+        assertEquals("ended", restored.status)
+        assertFalse(waiter.isDone)
     }
 
     @Test fun historyViewCollapseAndCloseRemainReadOnlyAfterTimeout() = withFixture { f ->
@@ -179,12 +191,25 @@ class HistoryStripInteractionTest {
             repeat(120) { advance(2); if (hasText(text)) return }
             error("text not found: $text; ${nodes().map { it.text() }}")
         }
-        fun awaitDraftCount(id: String, count: Int) {
-            repeat(80) {
-                advance(2)
-                if (UserQuestionStore.forms.value.singleOrNull { it.id == id }?.drafts?.firstOrNull()?.selected?.size == count) return
+        fun awaitDraftCount(id: String, count: Int, index: Int = 0) {
+            val persisted = CountDownLatch(1)
+            // Store publication runs on IO after fsync, independently of the paused main
+            // looper. Wait for that event rather than exhausting virtual frames before IO runs.
+            val observation = scope.launch(Dispatchers.Unconfined) {
+                UserQuestionStore.forms.first { forms ->
+                    forms.singleOrNull { it.id == id }?.drafts?.getOrNull(index)?.selected?.size == count
+                }
+                persisted.countDown()
             }
-            error("draft selection did not persist: ${UserQuestionStore.forms.value.singleOrNull { it.id == id }?.drafts}")
+            try {
+                shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(300)) // draft debounce
+                check(persisted.await(5, TimeUnit.SECONDS)) {
+                    "draft selection did not persist: ${UserQuestionStore.forms.value.singleOrNull { it.id == id }?.drafts}"
+                }
+                advance()
+            } finally {
+                observation.cancel()
+            }
         }
         fun hasText(text: String) = nodes().any { it.text() == text }
         fun clickText(text: String) = click(nodes().first { it.text() == text })

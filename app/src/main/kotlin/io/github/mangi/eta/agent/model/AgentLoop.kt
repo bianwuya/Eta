@@ -232,14 +232,6 @@ internal class AgentLoop(
             )
             // Persist the assistant/tool-call declaration before any child can start.
             publishTranscript()
-            onEvent(
-                AgentEvent.AssistantReceived(
-                    round = round,
-                    contentChars = assistantMessage.optString("content").length,
-                    reasoningContent = assistantReasoning,
-                    toolNames = toolCalls.map { it.name },
-                )
-            )
             val accumulatedUsage = turnMetrics.recordStep(
                 stepLlmMs = stepLlmMs,
                 stepTtftMs = stepTtftMs,
@@ -250,6 +242,16 @@ internal class AgentLoop(
             if (!accumulatedUsage.isEmpty) {
                 onEvent(AgentEvent.UsageReceived(round = round, usage = accumulatedUsage))
             }
+            // Usage belongs to this request. Publish it before the completion event so
+            // observers finalize the reading instead of reopening an already completed one.
+            onEvent(
+                AgentEvent.AssistantReceived(
+                    round = round,
+                    contentChars = assistantMessage.optString("content").length,
+                    reasoningContent = assistantReasoning,
+                    toolNames = toolCalls.map { it.name },
+                )
+            )
 
             if (toolCalls.isNotEmpty()) {
                 val outcomes = executeToolBatch(round, toolCalls, providerResponse.stopReason)
