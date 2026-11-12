@@ -8,4 +8,4 @@ Fresh source snapshot g4-fake-native: tree 461036b0438b3532bc1a3a3204369ff63c75c
 
 One fixture compile error was corrected to this Robolectric version's getApplication() signature. PNG success needed native graphics (the default legacy bitmap fixture did not encode a decodable image); enabled native graphics for this test, without changing production decode or assertions. This is a test-host correction, not product fallback.
 
-No credential material was read or changed. Source SHA and rollback refs are recorded in task CHECKPOINTS.json. G5 preview approval is required before new endpoint/ordering/statistics business UI is implemented.
+No credential material was read or changed. Source SHA and rollback refs are recorded in [CHECKPOINTS.json](../../../CHECKPOINTS.json). G5 preview approval is required before new endpoint/ordering/statistics business UI is implemented.
