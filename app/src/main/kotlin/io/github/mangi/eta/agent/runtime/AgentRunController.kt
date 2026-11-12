@@ -160,36 +160,6 @@ internal class AgentRunController {
         emptyList()
     }
 
-    data class BoundaryInputs<T>(val steering: List<SteeringInput>, val conversations: List<ConversationInput>, val reports: List<T>)
-
-    fun <T> collectBoundaryInputs(reports: () -> List<T>): BoundaryInputs<T> = lock.withLock {
-        val readyReports = reports()
-        val steering = steeringMessages.toList().also { steeringMessages.clear(); pendingSteering = false }
-        val conversations = conversationMessages.toList().also { conversationMessages.clear() }
-        BoundaryInputs(steering, conversations, readyReports)
-    }
-
-    /** Linearize the natural-wait group barrier with incoming guidance, without sealing input queues. */
-    fun atNaturalWait(sealGroups: () -> Unit): Boolean = lock.withLock {
-        if (cancelled) throw AgentRunCancelledException()
-        if (steeringMessages.isNotEmpty() || conversationMessages.isNotEmpty()) return false
-        sealGroups()
-        true
-    }
-
-    /** Wait under the same lock as steering and wake notifications; never poll the model. */
-    fun awaitWorkAvailable(isReady: () -> Boolean) = lock.withLock {
-        while (!cancelled && (paused || (steeringMessages.isEmpty() && conversationMessages.isEmpty() && !isReady()))) {
-            try {
-                pauseCondition.await()
-            } catch (_: InterruptedException) {
-                Thread.currentThread().interrupt()
-                throw AgentRunCancelledException()
-            }
-        }
-        if (cancelled) throw AgentRunCancelledException()
-    }
-
     /** Wait once for an answer, plan update or steering, with a monotonic deadline. */
     fun awaitWorkAvailableFor(timeoutMs: Long, isReady: () -> Boolean): Boolean = lock.withLock {
         var remaining = TimeUnit.MILLISECONDS.toNanos(timeoutMs)
@@ -200,27 +170,6 @@ internal class AgentRunController {
         if (cancelled) throw AgentRunCancelledException()
         isReady()
     }
-
-    /** Serialize a decision commit against cancel, pause and parent revisions. The callback
-     * must not acquire another controller in the opposite order; parent precedes child. */
-    fun <T> withDecisionBoundary(block: (String?) -> T): T = lock.withLock {
-        val unavailable = when {
-            cancelled -> "cancelled"
-            paused -> "paused"
-            steeringMessages.isNotEmpty() -> "revised"
-            else -> null
-        }
-        block(unavailable)
-    }
-
-    @Volatile private var committedDecisionInBatch = false
-    fun protectCommittedDecisionUntilToolBatch() { committedDecisionInBatch = true }
-    fun mustStopForCancelledDecisionBatch(): Boolean = committedDecisionInBatch && isCancelled
-    fun finishDecisionToolBatch() { committedDecisionInBatch = false }
-
-    @Volatile private var stopAfterToolBatch = false
-    fun requestStopAfterToolBatch() { stopAfterToolBatch = true }
-    fun shouldStopAfterToolBatch(): Boolean = stopAfterToolBatch
 
     fun signalWorkAvailable() = lock.withLock { pauseCondition.signalAll() }
 

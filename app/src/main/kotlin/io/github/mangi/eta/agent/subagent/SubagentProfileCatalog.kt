@@ -29,7 +29,7 @@ internal object SubagentProfileCatalog {
     fun isValidName(name: String): Boolean =
         name.length in 2..48 && NAME_REGEX.matches(name)
 
-    fun listAll(agentsDir: File = defaultAgentsDir()): List<SubagentProfile> {
+    fun listAll(agentsDir: File = defaultAgentsDir(), priority: List<String> = emptyList()): List<SubagentProfile> {
         val merged = linkedMapOf<String, SubagentProfile>()
         SubagentProfile.BUILTIN_PROFILES.forEach { profile ->
             merged[profile.name] = profile
@@ -41,7 +41,7 @@ internal object SubagentProfileCatalog {
             }
             merged[custom.name] = custom
         }
-        return merged.values.toList()
+        return merged.values.sortedBy { profile -> priority.indexOf(profile.name).takeIf { it >= 0 } ?: Int.MAX_VALUE }
     }
 
     fun listCustom(agentsDir: File = defaultAgentsDir()): List<SubagentProfile> =

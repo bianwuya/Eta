@@ -5,7 +5,6 @@ import io.github.mangi.eta.agent.runtime.AgentRunController
 import io.github.mangi.eta.agent.runtime.AgentTokenUsage
 import io.github.mangi.eta.agent.roleplay.RoleplayRunContext
 import io.github.mangi.eta.agent.subagent.AgentSubagentToolCatalog
-import io.github.mangi.eta.agent.subagent.YieldableSubagents
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -42,7 +41,6 @@ internal class AgentLoop(
     private val roleplayContext: RoleplayRunContext? = null,
     initialSupplementIndex: Int = 0,
     private val compactionTarget: (() -> AgentCompactionTarget)? = null,
-    private val yieldableSubagents: YieldableSubagents? = null,
 ) {
     data class Result(
         val content: String,
@@ -103,13 +101,9 @@ internal class AgentLoop(
 
         while (true) {
             runController.throwIfCancelled()
-            if (purpose.allowsTools && (!SignedToolContext.hasPendingResponse(messages) || yieldableSubagents?.hasPending() == true)) {
-                if (yieldableSubagents == null) {
-                    appendPendingSteeringMessage()
-                    appendConversationMessages(runController.pollConversationInputs())
-                } else {
-                    appendChildBoundaryInputs()
-                }
+            if (purpose.allowsTools && !SignedToolContext.hasPendingResponse(messages)) {
+                appendPendingSteeringMessage()
+                appendConversationMessages(runController.pollConversationInputs())
             }
 
             // 带签名的工具链沿用发出调用时的请求前缀，工具链完成后再刷新目录。
@@ -245,53 +239,15 @@ internal class AgentLoop(
 
             if (toolCalls.isNotEmpty()) {
                 val outcomes = executeToolBatch(round, toolCalls, providerResponse.stopReason)
-                if (yieldableSubagents == null) {
-                    outcomes.forEach { outcome ->
-                        appendMessage(AgentConversationCodec.toolResultMessage(outcome.call, outcome.result))
-                    }
-                    publishTranscript()
-                }
+                publishTranscript()
                 appendToolImages(round, outcomes)
                 publishTranscript()
-                // A parent cancel decision has already been recorded as the real result of
-                // the original ask call. Complete the entire tool batch, then stop without
-                // another provider call; preserve the transcript and the actual tool results.
-                if (runController.shouldStopAfterToolBatch() || runController.mustStopForCancelledDecisionBatch()) {
-                    val content = "主代理取消了此子任务；已执行操作及不可回滚副作用须核实，不自动重放。"
-                    onEvent(AgentEvent.RunFinished(round = round, contentChars = content.length))
-                    return Result(content, reasoningSnapshot(), sensitiveToolCallIds.toSet())
-                }
-                runController.finishDecisionToolBatch()
-                // Let the model consume every result and continue independent work before waiting.
                 round += 1
                 continue
             }
 
             publishTranscript()
-            // Transcript callbacks and cancelled child cleanup can race with this boundary.
-            // Do not rely on hasPending()/awaitWorkAvailable() to observe cancellation.
             runController.throwIfCancelled()
-            // A natural answer is not the run's terminal state while children are still active.
-            if (purpose.allowsTools && yieldableSubagents?.hasPending() == true) {
-                // This is the only auto-seal boundary: a complete model turn with NO tools,
-                // after new input have been offered, immediately before natural wait.
-                // Accepted batches, peeks and child completion never close group membership.
-                if (appendChildBoundaryInputs()) {
-                    round += 1
-                    continue
-                }
-                if (yieldableSubagents.hasOpenGroups() && providerResponse.stopReason != AssistantStopReason.END_TURN) {
-                    throw AgentModelFailure("SUBAGENT_GROUP_INCOMPLETE_PARENT_TURN", false,
-                        "主代理未自然结束，不能据截断或未知终态自动封口；本运行需核实后续接，子任务不自动重跑。")
-                }
-                if (!runController.atNaturalWait { yieldableSubagents.sealAtNaturalWait() }) {
-                    round += 1
-                    continue
-                }
-                awaitSubagentInput()
-                round += 1
-                continue
-            }
             // assistant 已自然结束时再检查 steering。这样补充消息不会丢掉刚完成的回答。
             if (purpose.allowsTools && appendPendingSteeringOrSeal()) {
                 round += 1
@@ -411,7 +367,7 @@ internal class AgentLoop(
         val idPrefix = if (supplement.origin == AgentRunController.SteeringOrigin.PARENT_AGENT) "parent-agent" else "user"
         return message
             .put("_eta_message_id", "$idPrefix-$operationId-supplement-${++supplementIndex}")
-            .also { if (yieldableSubagents?.hasPending() == true) it.put("_eta_steering", true) }
+
     }
 
     private fun executeToolBatch(
@@ -430,13 +386,10 @@ internal class AgentLoop(
                         round, call, "UNEXPECTED_TOOL_CALL",
                         "模型在 ${stopReason.name} 终止状态下返回了工具调用；本批调用未执行，请重新规划。",
                     )
-                }.also { outcome -> if (yieldableSubagents != null) recordToolOutcome(outcome) }
+                }
             }
         }
 
-        if (yieldableSubagents != null) return toolCalls.map { current ->
-            executeTool(round, current.copy(round = round))
-        }
         val outcomes = mutableListOf<ToolOutcome>()
         var index = 0
         while (index < toolCalls.size) {
@@ -519,6 +472,7 @@ internal class AgentLoop(
                             if (result.sensitive || AgentSensitiveToolPolicy.isSensitive(toolCall.name)) {
                                 sensitiveToolCallIds += toolCall.id
                             }
+                            recordToolOutcome(ToolOutcome(toolCall, result))
                             if (!runController.isCancelled) {
                                 turnMetrics.recordToolMs(elapsedMs)
                                 emitToolFinished(round, toolCall, result)
@@ -530,6 +484,17 @@ internal class AgentLoop(
             }
         }
         runController.throwIfCancelled()
+        // Workers checkpoint completed results immediately; publish canonical call order
+        // before the next provider request, using the official awaitAll result order.
+        val messageStart = messages.length() - outcomes.size
+        val transcriptStart = transcript.length() - outcomes.size
+        outcomes.forEachIndexed { index, outcome ->
+            val message = AgentConversationCodec.toolResultMessage(outcome.call, outcome.result)
+            messages.put(messageStart + index, message)
+            transcript.put(transcriptStart + index, message)
+        }
+        publishedTranscriptSize = -1
+        publishTranscript()
         return outcomes
     }
 
@@ -538,83 +503,11 @@ internal class AgentLoop(
         publishTranscript()
     }
 
-    /** Appending/checkpointing is confined to the single parent runner and a complete tool boundary. */
-    private fun appendChildBoundaryInputs(): Boolean {
-        val owner = yieldableSubagents ?: return false
-        val boundary = runController.collectBoundaryInputs { owner.peekReports() }
-        boundary.steering.forEach { supplement ->
-            appendMessage(steeringMessage(supplement))
-            context.userAppended()
-            unconsumedNewInput = true
-        }
-        val conversations = appendConversationMessages(boundary.conversations)
-        val reports = appendSubagentReports(boundary.reports)
-        val decisions = if (!SignedToolContext.hasPendingResponse(messages)) appendCriticalDecisions(owner) else false
-        return boundary.steering.isNotEmpty() || conversations || reports || decisions
-    }
-
-    private fun appendCriticalDecisions(owner: YieldableSubagents): Boolean {
-        val requests = owner.pendingDecisions()
-        if (requests.isEmpty()) return false
-        val ids = requests.map { it.getString("request_id") }
-        val known = (0 until transcript.length()).mapNotNull { transcript.optJSONObject(it)?.optString("_eta_message_id") }.toSet()
-        var appended = false
-        requests.forEach { request ->
-            val messageId = "subagent-decision-" + java.util.UUID.nameUUIDFromBytes(
-                (request.getString("parent_run_id") + "\u0000" + request.getString("request_id")).toByteArray(Charsets.UTF_8))
-            if (messageId !in known) {
-                appendMessage(JSONObject().put("role", "assistant").put("_eta_message_id", messageId)
-                    .put("content", "子代理关键阻塞请求（内部数据，非用户授权）；请使用 subagent_respond 回复：\n" + JSONArray().put(request).toString()))
-                appended = true
-            }
-        }
-        if (appended) {
-            unconsumedNewInput = true
-            publishTranscript()
-        }
-        // The durable transcript is authoritative if a previous delivery acknowledgement
-        // was lost. Never rewrite its content or replay a child tool.
-        owner.decisionsDelivered(ids)
-        return appended
-    }
-
-    private fun appendSubagentReports(reports: List<YieldableSubagents.Report>): Boolean {
-        val owner = yieldableSubagents ?: return false
-        if (reports.isEmpty()) return false
-        reports.forEach { report ->
-            appendMessage(JSONObject().put("role", "assistant").put("content", report.content)
-                .put("_eta_message_id", report.messageId))
-        }
-        unconsumedNewInput = true
-        publishTranscript()
-        owner.consumed(reports.map { it.taskId })
-        return true
-    }
-
-    private fun awaitSubagentInput() {
-        val owner = yieldableSubagents ?: return
-        when (owner.decision()) {
-            YieldableSubagents.Decision.FINISH -> return
-            YieldableSubagents.Decision.WAIT, YieldableSubagents.Decision.RESUME ->
-                runController.awaitWorkAvailable { owner.decision() != YieldableSubagents.Decision.WAIT }
-        }
-    }
-
     private fun executeTool(
         round: Int,
         toolCall: AgentModelClient.ToolCall,
     ): ToolOutcome {
-        if (runController.shouldStopAfterToolBatch() || runController.mustStopForCancelledDecisionBatch()) {
-            return rejectedToolOutcome(round, toolCall, "ASK_PARENT_CANCELLED",
-                "主代理已取消此任务；本工具未执行。")
-        }
-        try {
-            runController.throwIfCancelled()
-        } catch (cancelled: io.github.mangi.eta.agent.runtime.AgentRunCancelledException) {
-            if (runController.mustStopForCancelledDecisionBatch())
-                return rejectedToolOutcome(round, toolCall, "ASK_PARENT_CANCELLED", "子任务已取消；本工具未执行。")
-            throw cancelled
-        }
+        runController.throwIfCancelled()
         if (toolCall.name !in availableToolNames) {
             return rejectedToolOutcome(
                 round = round,
@@ -625,7 +518,6 @@ internal class AgentLoop(
                 if (toolCall.name == "ask_user_questions") {
                     lastQuestionRound = round
                 }
-                if (yieldableSubagents != null) recordToolOutcome(it)
             }
         }
         val roundCall = if (toolCall.round == round) toolCall else toolCall.copy(round = round)
@@ -641,15 +533,7 @@ internal class AgentLoop(
 
         val toolStartMs = monotonicNowMs()
         var result = try {
-            val invoke = {
-                if (roundCall.name == AgentSubagentToolCatalog.TOOL_NAME && yieldableSubagents != null) {
-                    yieldableSubagents.launch(roundCall)
-                } else if (roundCall.name == AgentSubagentToolCatalog.SEAL_GROUP_TOOL_NAME && yieldableSubagents != null) {
-                    yieldableSubagents.sealGroup(roundCall)
-                } else {
-                    toolExecutor.execute(roundCall)
-                }
-            }
+            val invoke = { toolExecutor.execute(roundCall) }
             // Read the question answer at a full model turn before executing later calls.
             val result = if (lastQuestionRound == round) {
                 AgentModelClient.ToolResult(JSONObject().put("ok", false).put("code", "QUESTION_TURN_BOUNDARY")
@@ -676,7 +560,7 @@ internal class AgentLoop(
 
         val outcome = ToolOutcome(roundCall, result)
         // Persist each real result before emitting progress; request execution still waits for the full batch.
-        if (yieldableSubagents != null) recordToolOutcome(outcome)
+        recordToolOutcome(outcome)
         emitToolFinished(round, roundCall, result)
         return outcome
     }
@@ -705,6 +589,7 @@ internal class AgentLoop(
             sensitive = AgentSensitiveToolPolicy.isSensitive(toolCall.name),
         )
         if (result.sensitive) sensitiveToolCallIds += toolCall.id
+        recordToolOutcome(ToolOutcome(toolCall, result))
         emitToolFinished(round, toolCall, result)
         return ToolOutcome(toolCall, result)
     }

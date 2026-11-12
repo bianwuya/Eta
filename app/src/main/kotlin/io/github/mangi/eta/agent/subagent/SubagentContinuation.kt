@@ -10,8 +10,10 @@ internal object SubagentContinuation {
         prompt: String,
         transcript: List<AgentModelClient.ConversationMessage>,
         snapshot: AgentContextSnapshot?,
+        initialMessageId: String = "",
     ): List<AgentModelClient.ConversationMessage> {
-        if (snapshot == null) return prior + AgentModelClient.buildUserHistoryMessage(prompt, emptyList()) + transcript
+        if (snapshot == null) return prior + AgentModelClient.buildUserHistoryMessage(prompt, emptyList())
+            .copy(messageId = initialMessageId) + transcript
         val consumed = requireNotNull(snapshot.consumedTranscriptMessages) { "压缩快照缺少 transcript 覆盖边界" }
         require(consumed in 0..transcript.size) { "压缩快照的 transcript 覆盖边界无效" }
         return snapshot.messages + transcript.drop(consumed)

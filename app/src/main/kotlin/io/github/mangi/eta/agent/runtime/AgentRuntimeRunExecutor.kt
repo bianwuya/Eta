@@ -92,8 +92,6 @@ internal class AgentRuntimeRunExecutor(
         var response: AgentModelClient.ModelResponse.Text? = null
         var cancelled = false
         var checkpointRecorder: AgentRunCheckpointRecorder? = null
-        var childOwner: io.github.mangi.eta.agent.subagent.YieldableSubagents? = null
-        var childCheckpoint: AgentSubagentCheckpoint? = null
         val childController = AgentRunController()
         val childCancellation = runController.registerChild(childController)
         val timing = AgentRunTiming(AndroidAgentLogger)
@@ -286,9 +284,7 @@ internal class AgentRuntimeRunExecutor(
                 request.config.subagentTools && currentPermissions().subagentTools
             }
             val controlRegistry = SubagentControlRegistry()
-            val supportsChildGroups = checkpointRecorder != null && request.operation == AgentRuntimeWire.OP_CHAT
-            val groupStore = if (supportsChildGroups) AgentSubagentCheckpoint(appContext, request.runId) { runController.isCancelled } else null
-            val decisionBroker = groupStore?.let { io.github.mangi.eta.agent.subagent.SubagentDecisionBroker(request.runId, runController, it) }
+            io.github.mangi.eta.agent.subagent.SubagentSessionStore.initialize(appContext)
             val subagentExecutor = SubagentExecutor(
                 conversationKey = browserKey,
                 parentRunId = request.runId,
@@ -303,14 +299,14 @@ internal class AgentRuntimeRunExecutor(
                 },
                 parentController = childController,
                 controlRegistry = controlRegistry,
-                mailboxStorage = groupStore,
-                decisionBroker = decisionBroker,
                 configProvider = {
                     val rawSubagentConfig = runBlocking {
                         RuntimeConfigRepository.subagentRuntimeConfig(request.config)
                     }
                     AgentRuntimePolicy.constrain(rawSubagentConfig, currentPermissions())
                 },
+                candidateConfigs = { runBlocking { RuntimeConfigRepository.subagentRuntimeCandidates(request.config) }
+                    .map { AgentRuntimePolicy.constrain(it, currentPermissions()) } },
                 capabilitiesProvider = { AgentToolCapabilities.capture(appContext) },
                 baseToolExecutor = routingExecutor,
                 childToolFactory = { child ->
@@ -332,7 +328,7 @@ internal class AgentRuntimeRunExecutor(
                 },
             )
             val runTools = JSONArray(mcpTools.toString()).also { tools ->
-                if (subagentAllowed()) AgentSubagentToolCatalog.appendSchemas(tools, groupsSupported = supportsChildGroups)
+                if (subagentAllowed()) AgentSubagentToolCatalog.appendSchemas(tools, profiles = io.github.mangi.eta.agent.subagent.SubagentProfileCatalog.listAll(priority = runBlocking { io.github.mangi.eta.data.datastore.SettingsDataStore.subagentSettings() }.profilePriority))
                 if (historyTool != null) tools.put(AgentConversationToolCatalog.schema())
                 if (conversationTools != null) ConversationMessagingToolCatalog.appendSchemas(tools)
                 if (characterMemoryTools != null && memoryEnabled) {
@@ -356,12 +352,6 @@ internal class AgentRuntimeRunExecutor(
                                 "需要时请让用户在当前会话直接授权")
                             .toString(),
                     )
-                } else if (call.name == io.github.mangi.eta.agent.subagent.SubagentDecisionBroker.RESPOND) {
-                    decisionBroker?.respond(call) ?: AgentModelClient.ToolResult(JSONObject().put("ok", false)
-                        .put("code", "ASK_PARENT_UNAVAILABLE").toString())
-                } else if (call.name == AgentSubagentToolCatalog.SEAL_GROUP_TOOL_NAME) {
-                    childOwner?.sealGroup(call) ?: AgentModelClient.ToolResult(JSONObject().put("ok", false)
-                        .put("code", "SUBAGENT_GROUP_UNAVAILABLE").put("message", "当前运行不支持持久化关联组。").toString())
                 } else if (call.name == AgentSubagentToolCatalog.CONTROL_TOOL_NAME) {
                     // Disabling future delegation must not block the parent from stopping
                     // children that are already running in this run.
@@ -402,38 +392,6 @@ internal class AgentRuntimeRunExecutor(
                     }
                 }
             }
-            // UI and archive-capable external handoffs have durable in-flight recovery. A caller
-            // without a recoverable handoff retains the synchronous protocol.
-            if (supportsChildGroups) {
-                val store = checkNotNull(groupStore)
-                childCheckpoint = store
-                session.setChildRecovery { transcript -> AgentSubagentCheckpoint.recover(appContext, request.runId, transcript) }
-                childOwner = io.github.mangi.eta.agent.subagent.YieldableSubagents(
-                    controller = runController,
-                    persistence = store,
-                    cancelChildren = childController::cancel,
-                    parentRunId = request.runId,
-                    decisionBroker = decisionBroker,
-                    executeOwned = { call, taskId, started ->
-                        if (!subagentAllowed()) AgentModelClient.ToolResult(JSONObject().put("ok", false).put("code", "SUBAGENT_DISABLED").toString())
-                        else subagentExecutor.execute(call.round, call, onStarted = started, decisionTaskId = taskId)
-                    },
-                    executeGrouped = { call, invocation, started ->
-                        if (!subagentAllowed()) {
-                            AgentModelClient.ToolResult(JSONObject().put("ok", false).put("code", "SUBAGENT_DISABLED")
-                                .put("message", "Subagent 权限已关闭").toString())
-                        } else subagentExecutor.execute(call.round, call, invocation, onStarted = started)
-                    },
-                    execute = { call, started ->
-                        if (!subagentAllowed()) {
-                            AgentModelClient.ToolResult(JSONObject().put("ok", false).put("code", "SUBAGENT_DISABLED")
-                                .put("message", "Subagent 权限已关闭").toString())
-                        } else {
-                            subagentExecutor.execute(call.round, call, onStarted = started)
-                        }
-                    },
-                )
-            }
             val completedResponse = AgentModelClient.complete(
                 config = request.config,
                 compactionTarget = { runBlocking { RuntimeConfigRepository.compactionTarget(request.config) } },
@@ -464,7 +422,6 @@ internal class AgentRuntimeRunExecutor(
                 images = request.images,
                 history = request.history,
                 runController = runController,
-                yieldableSubagents = childOwner,
                 skillContext = skillContext,
                 memoryContext = memoryContext,
                 additionalTools = runTools,
@@ -496,7 +453,6 @@ internal class AgentRuntimeRunExecutor(
                 rewriteTargetMessageId = request.rewriteTargetMessageId,
             )
         } catch (throwable: Throwable) {
-            val abortFailure = runCatching { childOwner?.abort() }.exceptionOrNull()
             // 中断并不改变会话的系统前缀；保留记忆 pin，避免此前 own-write 后重新注入最新快照。
             // 外部记忆变化仍由 contextFor 检测；真正压缩历史时由 onContextSnapshot 失效。
             val modelFailure = throwable as? AgentModelExecutionException
@@ -536,14 +492,13 @@ internal class AgentRuntimeRunExecutor(
             }
             val partialTranscript = modelFailure?.transcript ?: session.transcript
             val childRecovery = runCatching {
-                if (childCheckpoint != null) AgentSubagentCheckpoint.recover(appContext, request.runId, partialTranscript)
-                else AgentToolBatchRecovery.completeInterrupted(partialTranscript)
+                AgentSubagentCheckpoint.recover(appContext, request.runId, partialTranscript)
             }
             AgentRuntimeWire.RunResult(
                 runId = request.runId,
                 ok = false,
                 content = "",
-                error = if (abortFailure != null || childRecovery.isFailure) "$message；子代理恢复记录读写失败，结果可能不完整。" else message,
+                error = if (childRecovery.isFailure) "$message；子代理恢复记录读写失败，结果可能不完整。" else message,
                 reasoningContent = modelFailure?.reasoningContent.orEmpty(),
                 transcript = childRecovery.getOrDefault(AgentToolBatchRecovery.completeInterrupted(partialTranscript)),
                 contextSnapshot = modelFailure?.contextSnapshot?.copy(operationId = request.runId) ?: session.contextSnapshot,
@@ -551,7 +506,6 @@ internal class AgentRuntimeRunExecutor(
                 rewriteTargetMessageId = request.rewriteTargetMessageId,
             )
         } finally {
-            runCatching { childOwner?.close() }
             runCatching { childController.cancel() }
             childCancellation.close()
             runCatching { toolsBinding?.close() }

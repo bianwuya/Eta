@@ -45,10 +45,6 @@ internal class AgentRuntimeSession(
 
     private var recoverChildren: (List<AgentModelClient.ConversationMessage>) -> List<AgentModelClient.ConversationMessage> =
         { AgentToolBatchRecovery.completeInterrupted(it) }
-    fun setChildRecovery(recover: (List<AgentModelClient.ConversationMessage>) -> List<AgentModelClient.ConversationMessage>) = lock.withLock {
-        if (state == State.RUNNING) recoverChildren = recover
-    }
-
     private var latestContext: AgentContextSnapshot? = null
     val contextSnapshot: AgentContextSnapshot?
         get() = lock.withLock { latestContext }

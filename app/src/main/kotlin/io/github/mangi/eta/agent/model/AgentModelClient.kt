@@ -115,7 +115,6 @@ internal object AgentModelClient {
         compactionTarget: (() -> AgentCompactionTarget)? = null,
         onContextSnapshot: (AgentContextSnapshot) -> Unit = {},
         onTranscript: (List<ConversationMessage>) -> Unit = {},
-        yieldableSubagents: io.github.mangi.eta.agent.subagent.YieldableSubagents? = null,
         runRole: AgentRunRole = AgentRunRole.PRIMARY,
         onEvent: (AgentEvent) -> Unit = {}
     ): ModelResponse.Text {
@@ -213,7 +212,6 @@ internal object AgentModelClient {
         }
         val loop = AgentLoop(
             transcript = transcript,
-            yieldableSubagents = yieldableSubagents,
             compactionTarget = compactionTarget,
             systemCount = systemCount,
             operationId = operationId,
@@ -257,9 +255,7 @@ internal object AgentModelClient {
                     transcript,
                     0,
                     loop.sensitiveToolCallIdsSnapshot(),
-                ).let { partial ->
-                    if (yieldableSubagents != null) partial else AgentToolBatchRecovery.completeInterrupted(partial)
-                },
+                ),
             )
         }
         return ModelResponse.Text(

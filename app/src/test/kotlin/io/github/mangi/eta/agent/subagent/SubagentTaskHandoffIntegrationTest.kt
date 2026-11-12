@@ -322,6 +322,6 @@ class SubagentTaskHandoffIntegrationTest {
         val properties=parameters.getJSONObject("properties")
         for(name in listOf("prompt","description","resume","role","tools","subagent_type","handoff")) assertTrue(properties.has(name))
         assertFalse(properties.getJSONObject("handoff").has("required"))
-        assertTrue(fn.getString("description").contains("no new user guidance is required"))
+        assertTrue(fn.getString("description").contains("runtime executes them concurrently"))
     }
 }

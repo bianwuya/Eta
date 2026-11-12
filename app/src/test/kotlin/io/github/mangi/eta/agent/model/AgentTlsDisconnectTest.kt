@@ -112,11 +112,11 @@ class AgentTlsDisconnectTest {
                 controller = AgentRunController(), onEvent = events::add, onProviderEvent = { _, _ -> }, discardAttemptReasoning = {},
             )
         }
-        assertEquals(4, attempts)
-        assertEquals(listOf(2_000L, 4_000L, 8_000L), delays)
-        assertEquals(listOf(1, 2, 3), events.filterIsInstance<AgentEvent.ModelRetryScheduled>().map { it.attempt })
+        assertEquals(3, attempts)
+        assertEquals(listOf(2_000L, 4_000L), delays)
+        assertEquals(listOf(1, 2), events.filterIsInstance<AgentEvent.ModelRetryScheduled>().map { it.attempt })
         assertFalse(failure.retryable)
-        assertTrue(failure.message.orEmpty().contains("已重试 3 次"))
+        assertTrue(failure.message.orEmpty().contains("已重试 2 次"))
     }
 
     @Test

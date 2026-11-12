@@ -107,62 +107,6 @@ class SubagentStartupCleanupTest {
         }
     }
 
-    @Test fun acceptedExecutorCancellationDuringParentStopRecoversInterruptedNotStartupFailure() {
-        val root = AgentRunController()
-        val group = AgentRunController()
-        val groupBinding = root.registerChild(group)
-        val cancellingChildren = java.util.concurrent.CountDownLatch(1)
-        val releaseCancellation = java.util.concurrent.CountDownLatch(1)
-        val workerReturned = java.util.concurrent.CountDownLatch(1)
-        val childFailure = java.util.concurrent.atomic.AtomicReference<Throwable?>()
-        // group.cancel() first cancels the actual child, then blocks here before root's
-        // registered persistence.interrupted() callback can run.
-        val pauseStop = group.register {
-            cancellingChildren.countDown()
-            check(releaseCancellation.await(5, java.util.concurrent.TimeUnit.SECONDS))
-        }
-        val context = org.robolectric.RuntimeEnvironment.getApplication()
-        val run = "accepted-real-executor-cancel-gap"
-        val store = io.github.mangi.eta.agent.runtime.AgentSubagentCheckpoint(context, run) { root.isCancelled }
-        val executor = SubagentExecutor(conversationKey = run, parentController = group,
-            configProvider = { config }, capabilitiesProvider = { AgentToolCapabilities(rootAvailable = false) },
-            baseToolExecutor = AgentModelClient.ToolExecutor { error("unexpected") },
-            skillContext = SkillContext.EMPTY, memoryContext = AgentMemoryContext.DISABLED, mcpTools = JSONArray(),
-            executionContext = null, onProgress = {})
-        val owner = YieldableSubagents(root, store, cancelChildren = group::cancel) { childCall, started ->
-            try {
-                executor.execute(1, childCall) { id, snapshot ->
-                    started(id, snapshot)
-                    check(cancellingChildren.await(5, java.util.concurrent.TimeUnit.SECONDS))
-                    group.throwIfCancelled()
-                }
-            } catch (failure: Throwable) {
-                childFailure.set(failure)
-                throw failure
-            } finally { workerReturned.countDown() }
-        }
-        val canceller = Thread { root.cancel() }
-        try {
-            val acknowledgement = org.json.JSONObject(owner.launch(call).content)
-            assertEquals("accepted", acknowledgement.getString("status"))
-            canceller.start()
-            assertTrue(cancellingChildren.await(5, java.util.concurrent.TimeUnit.SECONDS))
-            assertTrue(workerReturned.await(5, java.util.concurrent.TimeUnit.SECONDS))
-            assertTrue(childFailure.get() is io.github.mangi.eta.agent.runtime.AgentRunCancelledException)
-            assertTrue(root.isCancelled)
-            val deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5)
-            while (owner.decision() != YieldableSubagents.Decision.FINISH && System.nanoTime() < deadline) Thread.yield()
-            assertEquals(YieldableSubagents.Decision.FINISH, owner.decision())
-            assertTrue(owner.peekReports().isEmpty())
-            val recovered = io.github.mangi.eta.agent.runtime.AgentSubagentCheckpoint.recover(context, run, emptyList()).single()
-            assertTrue(recovered.content.contains("interrupted"))
-            assertFalse(recovered.content.contains("SUBAGENT_START_FAILED"))
-        } finally {
-            releaseCancellation.countDown(); canceller.join(5000); owner.close(); pauseStop.close(); groupBinding.close()
-            io.github.mangi.eta.agent.runtime.AgentSubagentCheckpoint.remove(context, run)
-        }
-    }
-
     @Test fun startupCancellationIsNotConvertedToStartupFailure() {
         val parent = AgentRunController()
         val executor = SubagentExecutor(conversationKey = "startup-cancel", parentController = parent,

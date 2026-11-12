@@ -91,6 +91,33 @@ internal object RuntimeConfigRepository {
         )
     }
 
+    /** Same provider/account only; ordered candidates are prepared before any child request. */
+    suspend fun subagentRuntimeCandidates(primary: AgentModelClient.ModelConfig): List<AgentModelClient.ModelConfig> {
+        val settings = SettingsDataStore.subagentSettings()
+        val default = subagentRuntimeConfig(primary)
+        if (settings.modelPriority.isEmpty()) return listOf(default)
+        val providers = ProviderRepository.allProviders()
+        val ordered = settings.modelPriority.mapNotNull { id ->
+            providers.enabledModel(id)?.let { (provider, model) ->
+                val config = buildRuntimeConfig(provider, model).copy(
+                    terminalTools = default.terminalTools, browserTools = default.browserTools,
+                    deviceDirectTools = default.deviceDirectTools, deviceSensitiveReadTools = default.deviceSensitiveReadTools,
+                    deviceSensitiveActionTools = default.deviceSensitiveActionTools, subagentTools = false,
+                    autoCompactionEnabled = default.autoCompactionEnabled, supportsSearchSuggestions = false,
+                    reasoningEffort = default.reasoningEffort, thinkingEnabled = default.thinkingEnabled,
+                )
+                io.github.mangi.eta.agent.subagent.SubagentModelPolicy.Candidate(config, model.supportsTools)
+            }
+        }
+        // Anchor account to the selected config, never to the first surviving arbitrary provider.
+        val sameAccount = ordered.filter { c ->
+            c.config.providerId == default.providerId && c.config.baseUrl == default.baseUrl &&
+                c.config.authMode == default.authMode && c.config.apiKey == default.apiKey
+        }
+        return io.github.mangi.eta.agent.subagent.SubagentModelPolicy.eligible(sameAccount)
+            .ifEmpty { throw io.github.mangi.eta.agent.model.AgentModelFailure("SUBAGENT_MODEL_UNAVAILABLE", false, "排序中的子模型没有可用的同账号工具模型") }
+    }
+
     suspend fun compactionTarget(primary: AgentModelClient.ModelConfig): io.github.mangi.eta.agent.model.AgentCompactionTarget {
         val settings = SettingsDataStore.compactionSettings()
         val selected = settings.modelId?.let { id ->

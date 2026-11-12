@@ -14,6 +14,8 @@ internal data class SubagentSettings(
     val reasoningEffort: String? = null,
     val collectRequestStats: Boolean = false,
     val statsEpoch: String = "initial",
+    val modelPriority: List<String> = emptyList(),
+    val profilePriority: List<String> = emptyList(),
 ) {
     val resolvedReasoningEffort: ReasoningEffort?
         get() = ReasoningEffort.fromWireValue(reasoningEffort)

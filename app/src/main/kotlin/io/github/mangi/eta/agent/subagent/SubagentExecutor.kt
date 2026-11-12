@@ -14,7 +14,6 @@ import io.github.mangi.eta.local.subagentdisplay.SubagentReadableText
 import io.github.mangi.eta.local.subagentcontext.SubagentTaskHandoff
 import io.github.mangi.eta.local.subagentcontext.AgentRunRole
 import io.github.mangi.eta.local.subagentcontext.SubagentTaskResult
-import io.github.mangi.eta.local.subagentcontext.SubagentMailbox
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import org.json.JSONArray
@@ -44,11 +43,9 @@ internal class SubagentExecutor(
     private val childToolFactory: ((AgentRunController) -> AgentModelClient.ToolExecutor)? = null,
     private val detailStoreFactory: (() -> SubagentDetailStore)? = null,
     private val controlRegistry: SubagentControlRegistry? = null,
-    private val mailboxStorage: SubagentMailbox.Storage? = null,
-    private val decisionBroker: SubagentDecisionBroker? = null,
-    private val mailboxToolGate: ((AgentModelClient.ToolCall, () -> AgentModelClient.ToolResult) -> AgentModelClient.ToolResult)? = null,
     private val providerFactory: (AgentModelClient.ModelConfig) -> io.github.mangi.eta.agent.model.AgentProviderClient =
         io.github.mangi.eta.agent.model.ProviderClientFactory::getClient,
+    private val candidateConfigs: (() -> List<AgentModelClient.ModelConfig>)? = null,
 ) {
     private val latestSnapshots = ConcurrentHashMap<String, String>()
 
@@ -57,19 +54,12 @@ internal class SubagentExecutor(
     fun execute(
         parentRound: Int,
         toolCall: AgentModelClient.ToolCall,
-        mailboxInvocation: SubagentMailbox.Invocation? = null,
-        decisionTaskId: String? = null,
         onStarted: (String, String) -> Unit = { _, _ -> },
     ): AgentModelClient.ToolResult {
         parentController.throwIfCancelled()
         val args = runCatching { JSONObject(toolCall.argumentsJson) }.getOrNull()
             ?: return failureResult(toolCall, "INVALID_ARGUMENTS", "subagent 参数必须是合法的 JSON 对象")
-        if (args.has("group_key")) return failureResult(toolCall, "SUBAGENT_GROUP_UNAVAILABLE",
-            "当前调用没有持久化父运行 owner；未启动分组任务。请去除 group_key 使用原同步路径。")
-        if (mailboxInvocation != null && (mailboxStorage == null || parentRunId.isBlank() ||
-                mailboxInvocation.scope.parentRunId != parentRunId))
-            return failureResult(toolCall, "MAILBOX_UNAUTHORIZED", "Mailbox requires a trusted durable parent owner")
-
+        if (args.has("group_key")) return failureResult(toolCall, "SUBAGENT_GROUP_UNAVAILABLE", "分组调度协议已退出；本调用未执行")
         val prompt = args.optString("prompt").trim()
         val description = args.optString("description").trim()
             .replace(Regex("\\s+"), " ")
@@ -125,7 +115,7 @@ internal class SubagentExecutor(
                 )
             }
             entry = existing
-            priorHistory = existing.history
+            priorHistory = io.github.mangi.eta.agent.model.AgentToolBatchRecovery.completeInterrupted(existing.history)
         } else {
             val catalog = SubagentProfileCatalog.listAll()
             val customRole = args.optString("role").trim()
@@ -150,8 +140,6 @@ internal class SubagentExecutor(
                 taskPrompt = taskPrompt,
                 description = description,
                 isResume = isResume,
-                mailboxInvocation = mailboxInvocation,
-                decisionTaskId = decisionTaskId ?: mailboxInvocation?.taskId,
                 onStarted = onStarted,
             )
         } catch (failure: Exception) {
@@ -173,8 +161,6 @@ internal class SubagentExecutor(
         taskPrompt: String,
         description: String,
         isResume: Boolean,
-        mailboxInvocation: SubagentMailbox.Invocation?,
-        decisionTaskId: String?,
         onStarted: (String, String) -> Unit,
     ): AgentModelClient.ToolResult {
         val profile = entry.profile
@@ -183,52 +169,14 @@ internal class SubagentExecutor(
         val controllerBinding = parentController.registerChild(childController)
         val controlBinding = controlRegistry?.register(
             subagentId, description, toolCall.id, childController,
-            onCancel = { entry.explicitlyCancelled.set(true) },
+            onCancel = { entry.explicitlyCancelled.set(true); SubagentSessionStore.persist(conversationKey, entry) },
         )
         var ownedTools: AgentModelClient.ToolExecutor? = null
         var toolBinding: AgentRunController.ResourceBinding? = null
-        var mailboxBinding: AgentRunController.ResourceBinding? = null
-        var mailboxIdentity: SubagentMailbox.Identity? = null
-        val mailboxActive = java.util.concurrent.atomic.AtomicBoolean(true)
-        var mailboxCloseAttempted = false
-        var mailboxCloseFailure: Exception? = null
-        fun closeMailbox() {
-            mailboxActive.set(false)
-            if (mailboxCloseAttempted) return
-            mailboxCloseAttempted = true
-            mailboxBinding?.close()
-            try {
-                mailboxIdentity?.let { checkNotNull(mailboxStorage).close(it) }
-            } catch (failure: Exception) {
-                mailboxCloseFailure = failure
-            }
-        }
-        fun withMailboxCleanup(result: AgentModelClient.ToolResult): AgentModelClient.ToolResult {
-            closeMailbox()
-            val failure = mailboxCloseFailure ?: return result
-            return result.copy(content = JSONObject(result.content).put("cleanup_failure", JSONObject()
-                .put("code", "MAILBOX_CLOSE_FAILED").put("exception_type", failure.javaClass.simpleName)
-                .put("message", "Mailbox close persistence failed; original execution outcome is preserved. Do not replay completed work.")
-                .put("outcome_preserved", true)).toString())
-        }
         var detailStoreForCleanup: SubagentDetailStore? = null
         var historyRecorderForFailure: SubagentHistoryRecorder? = null
         try {
-        val mailbox = mailboxInvocation?.let { invocation ->
-            val identity = SubagentMailbox.Identity(invocation, subagentId)
-            val storage = checkNotNull(mailboxStorage)
-            storage.bind(identity, profile.isToolAllowed(SubagentMailbox.TOOL_NAME)) {
-                mailboxActive.get() && !entry.explicitlyCancelled.get() && !childController.isCancelled && !parentController.isCancelled
-            }
-            mailboxIdentity = identity
-            mailboxBinding = childController.register { storage.close(identity) }
-            // The ordinary executor already observes pause. Do not block on pause while holding a DB transaction.
-            SubagentMailbox(identity, storage) {
-                if (childController.isCancelled || parentController.isCancelled) throw AgentRunCancelledException()
-            }
-        }
-        val resolvedConfig = runCatching { configProvider() }.getOrElse { throwable ->
-            mailboxActive.set(false)
+        val orderedConfigs = runCatching { candidateConfigs?.invoke() ?: listOf(configProvider()) }.getOrElse { throwable ->
             if (throwable is AgentRunCancelledException || throwable is java.util.concurrent.CancellationException) throw throwable
             if (parentController.isCancelled || childController.isCancelled) throw AgentRunCancelledException()
             val previousCompactions = entry.compactionCount.get()
@@ -258,7 +206,7 @@ internal class SubagentExecutor(
                     snapshotJson = failed.encode(),
                 ),
             )
-            return withMailboxCleanup(AgentModelClient.ToolResult(
+            return (AgentModelClient.ToolResult(
                 content = SubagentTaskResult.runtimeFailure(message).attach(JSONObject()
                     .put("ok", false)
                     .put("code", "SUBAGENT_CONFIG_ERROR")
@@ -268,7 +216,15 @@ internal class SubagentExecutor(
                 command = latestSnapshots[toolCall.id],
             ))
         }
-        val modelLabel = resolvedConfig.modelDisplayName.ifBlank { resolvedConfig.model }
+        val resolvedConfig = entry.modelIdentity?.takeUnless { entry.completed }?.let { bound ->
+            orderedConfigs.firstOrNull { SubagentSessionStore.modelIdentity(it) == bound }
+                ?: throw IllegalStateException("原子代理模型或账号不可用；未切换账号或重跑旧任务")
+        } ?: orderedConfigs.first()
+        val runCandidates = if (isResume) listOf(resolvedConfig) else SubagentModelPolicy.eligible(
+            orderedConfigs.map { SubagentModelPolicy.Candidate(it) },
+            if (orderedConfigs.size > 1) taskPrompt.length + priorHistory.sumOf { it.content.length + it.contentJson.length } else 0)
+        entry.completed = false
+        var modelLabel = resolvedConfig.modelDisplayName.ifBlank { resolvedConfig.model }
         val tracker = StepTracker(
             subagentId = subagentId,
             subagentType = profile.name,
@@ -353,13 +309,9 @@ internal class SubagentExecutor(
         val tools = ownedTools ?: baseToolExecutor
         toolBinding = (ownedTools as? AutoCloseable)?.let { childController.register { it.close() } }
 
-        val cancelledByDecision = java.util.concurrent.atomic.AtomicBoolean(false)
         val childToolExecutor = AgentModelClient.ToolExecutor { subCall ->
             childController.throwIfCancelled()
-            if (cancelledByDecision.get()) {
-                AgentModelClient.ToolResult(JSONObject().put("ok", false).put("code", "ASK_PARENT_CANCELLED")
-                    .put("message", "Parent cancelled this work; all later tool calls are blocked. Report actual outcomes.").toString())
-            } else if (childController.hasPendingParentDirective) {
+            if (childController.hasPendingParentDirective) {
                 // The parent has corrected the direction while the child was thinking.
                 // Reject stale tools already emitted by the model; inject the correction at
                 // the next complete turn instead of applying stale side effects.
@@ -389,25 +341,7 @@ internal class SubagentExecutor(
                     SubagentDisplayText.redact(subCall.argumentsJson)
                 }
                 runCatching { detailStore?.capture(detailId, stepId, "${subCall.name}\n$safeArguments\n[执行中]") }
-                val result = if (subCall.name == SubagentMailbox.TOOL_NAME) {
-                    val readOrStore = {
-                        mailbox?.execute(subCall) ?: AgentModelClient.ToolResult(JSONObject().put("ok", false)
-                            .put("code", "MAILBOX_UNAVAILABLE").put("message", "No explicit runtime group; mailbox is unavailable").toString())
-                    }
-                    mailboxToolGate?.invoke(subCall, readOrStore) ?: readOrStore()
-                } else if (subCall.name == SubagentDecisionBroker.ASK) {
-                    val invoke = {
-                        if (decisionBroker == null || decisionTaskId == null) AgentModelClient.ToolResult(JSONObject()
-                            .put("ok", false).put("code", "ASK_PARENT_UNAVAILABLE").toString())
-                        else decisionBroker.ask(decisionTaskId, subagentId, subCall, childController)
-                    }
-                    (mailboxToolGate?.invoke(subCall, invoke) ?: invoke()).also { result ->
-                        if (runCatching { JSONObject(result.content).optString("status") }.getOrNull() == "cancel") {
-                            cancelledByDecision.set(true)
-                            childController.requestStopAfterToolBatch()
-                        }
-                    }
-                } else tools.execute(subCall)
+                val result = tools.execute(subCall)
                 result.also { result ->
                     recordHistory { onToolResult(subCall, result) }
                     val safeResult = if (result.sensitive || io.github.mangi.eta.agent.model.AgentSensitiveToolPolicy.isSensitive(subCall.name)) {
@@ -432,7 +366,25 @@ internal class SubagentExecutor(
             AgentModelClient.validateConfig(subagentConfig)
             onStarted(subagentId, latestSnapshots[toolCall.id].orEmpty())
             var finalStopReason = io.github.mangi.eta.agent.model.AssistantStopReason.UNKNOWN
-            val delegate = providerFactory(subagentConfig)
+            val delegate = SubagentModelPolicy.provider(runCandidates.map { candidate ->
+                candidate.copy(systemPrompt = profile.buildSystemPrompt(), subagentTools = false, supportsSearchSuggestions = false)
+            }, { selected ->
+                io.github.mangi.eta.local.subagentstats.SubagentRequestStats.provider(
+                    delegate = providerFactory(selected),
+                    template = io.github.mangi.eta.local.subagentstats.SubagentRequestStat(
+                        conversationId = conversationKey, subagentId = subagentId, invocationId = toolCall.id,
+                        parentRunId = parentRunId, profile = profile.name, providerId = selected.providerId,
+                        model = selected.model, purpose = "CHAT", ordinal = 0, resumed = isResume),
+                    baseline = entry.requestStatsBaseline, collectionEpoch = requestStatsEpoch, save = onRequestStat)
+            }) { selected, reason ->
+                modelLabel = selected.modelDisplayName.ifBlank { selected.model }
+                tracker.selectModel(selected, reason)
+                entry.modelIdentity = SubagentSessionStore.modelIdentity(selected)
+                SubagentSessionStore.persist(conversationKey, entry)
+                publishSnapshot(force = true)
+            }
+            entry.modelIdentity = SubagentSessionStore.modelIdentity(resolvedConfig)
+            SubagentSessionStore.persist(conversationKey, entry)
             val resultProvider = object : io.github.mangi.eta.agent.model.AgentProviderClient by delegate {
                 override fun complete(
                     request: io.github.mangi.eta.agent.model.ProviderRequest,
@@ -446,24 +398,7 @@ internal class SubagentExecutor(
             val response = AgentModelClient.complete(
                 config = subagentConfig,
                 runRole = AgentRunRole.SUBAGENT,
-                provider = io.github.mangi.eta.local.subagentstats.SubagentRequestStats.provider(
-                    delegate = resultProvider,
-                    template = io.github.mangi.eta.local.subagentstats.SubagentRequestStat(
-                        conversationId = conversationKey,
-                        subagentId = subagentId,
-                        invocationId = toolCall.id,
-                        parentRunId = parentRunId,
-                        profile = profile.name,
-                        providerId = subagentConfig.providerId,
-                        model = subagentConfig.model,
-                        purpose = "CHAT",
-                        ordinal = 0,
-                        resumed = isResume,
-                    ),
-                    baseline = entry.requestStatsBaseline,
-                    collectionEpoch = requestStatsEpoch,
-                    save = onRequestStat,
-                ),
+                provider = resultProvider,
                 compactionTarget = compactionTarget?.let { resolve ->
                     { ->
                         val target = resolve(subagentConfig)
@@ -495,23 +430,24 @@ internal class SubagentExecutor(
                 runController = childController,
                 skillContext = skillContext,
                 memoryContext = memoryContext,
-                additionalTools = profile.filterTools(JSONArray(mcpTools.toString()).also { extra ->
-                    if (mailbox != null) extra.put(SubagentMailbox.schema())
-                    if (decisionBroker != null && decisionTaskId != null) extra.put(SubagentDecisionBroker.askSchema())
-                }),
+                additionalTools = profile.filterTools(mcpTools),
                 executionContext = executionContext,
                 capabilitiesProvider = capabilitiesProvider,
                 sessionId = "$conversationKey-$subagentId",
                 operationId = "${toolCall.id}-$subagentId",
                 toolFilter = profile::filterTools,
-                onTranscript = { transcript -> recordHistory { onTranscript(transcript) } },
+                onTranscript = { transcript ->
+                    entry.history = SubagentContinuation.history(priorHistory, taskPrompt, transcript, null,
+                        "user-${toolCall.id}-$subagentId")
+                    SubagentSessionStore.persist(conversationKey, entry)
+                    recordHistory { onTranscript(transcript) }
+                },
                 onEvent = { childEvent ->
                     recordHistory { onEvent(childEvent) }
                     val force = tracker.onChildEvent(childEvent)
                     publishSnapshot(force = force)
                 },
             )
-            mailboxActive.set(false)
             // A child stopped while the model returned must not publish a successful completion.
             // A durable answer can win before a simultaneous cancellation. Preserve the
             // completed real tool result in child history before honoring cancellation.
@@ -520,29 +456,28 @@ internal class SubagentExecutor(
                 taskPrompt,
                 response.transcript,
                 response.contextSnapshot,
+                "user-${toolCall.id}-$subagentId",
             )
             // Commit the real transcript before checking cancellation, while keeping the
             // running guard until terminal tracking and measurement publication finish.
             entry.history = updatedHistory
+            entry.completed = true
+            SubagentSessionStore.persist(conversationKey, entry)
             historyCommittedOnSuccess = true
             childController.throwIfCancelled()
-            if (cancelledByDecision.get()) tracker.markCancelled(response.content)
-            else tracker.markCompleted(response.content)
+            tracker.markCompleted(response.content)
             publishSnapshot(force = true)
             childController.throwIfCancelled()
-            val taskResult = if (cancelledByDecision.get()) SubagentTaskResult.interrupted(
-                "主代理取消了该任务；请核实已完成工作和不可回滚副作用。\n" + response.content)
-            else SubagentTaskResult.fromFinal(response.content,
+            val taskResult = SubagentTaskResult.fromFinal(response.content,
                 finalStopReason == io.github.mangi.eta.agent.model.AssistantStopReason.END_TURN)
-
             val result = AgentModelClient.ToolResult(
                 content = taskResult.attach(JSONObject()
-                    .put("ok", !cancelledByDecision.get())
+                    .put("ok", true)
                     .put("subagent_id", subagentId)
                     .put("subagent_type", profile.name)
                     .put("description", description)
                     .put("model", modelLabel)
-                    .put("status", if (cancelledByDecision.get()) SubagentActivitySnapshot.STATUS_CANCELLED else SubagentActivitySnapshot.STATUS_COMPLETED)
+                    .put("status", SubagentActivitySnapshot.STATUS_COMPLETED)
                     .put("tool_calls", tracker.toolCount())
                     .put("summary", response.content)
                     .put(
@@ -552,21 +487,23 @@ internal class SubagentExecutor(
                     ).toString(),
                 command = latestSnapshots[toolCall.id],
             )
-            val finalized = withMailboxCleanup(result)
+            val finalized = result
             childController.throwIfCancelled()
             val selected = controlRegistry?.finish(subagentId, toolCall.id, finalized) ?: finalized
             recordHistory {
-                if (cancelledByDecision.get()) finish("cancelled", "已停止", response.content)
-                else finish("completed", "子任务已完成。", response.content)
+                finish("completed", "子任务已完成。", response.content)
             }
             selected
         } catch (throwable: Throwable) {
-            mailboxActive.set(false)
             val partialHistory = (throwable as? AgentModelExecutionException)?.let { ex ->
-                SubagentContinuation.history(priorHistory, taskPrompt, ex.transcript, ex.contextSnapshot)
+                SubagentContinuation.history(priorHistory, taskPrompt, ex.transcript, ex.contextSnapshot,
+                    "user-${toolCall.id}-$subagentId")
             }
             // Keep the known transcript before failure publication can itself throw.
-            if (partialHistory != null && !historyCommittedOnSuccess) entry.history = partialHistory
+            if (partialHistory != null && !historyCommittedOnSuccess) {
+                entry.history = partialHistory
+                SubagentSessionStore.persist(conversationKey, entry)
+            }
             val partial = tracker.partialOutput()
 
             val cancellationCause = (throwable as? AgentModelExecutionException)?.cause
@@ -622,7 +559,7 @@ internal class SubagentExecutor(
                 command = latestSnapshots[toolCall.id],
             )
             try {
-                val finalized = withMailboxCleanup(result)
+                val finalized = result
                 childController.throwIfCancelled()
                 val selected = controlRegistry?.finish(subagentId, toolCall.id, finalized) ?: finalized
                 recordHistory { finish("failed", errorMessage) }
@@ -643,16 +580,11 @@ internal class SubagentExecutor(
             }
             throw failure
         } finally {
-            try {
-                // Fallback for startup/cancellation exits. Never replace an already selected outcome.
-                closeMailbox()
-            } finally {
-                runCatching { toolBinding?.close() }
-                (ownedTools as? AutoCloseable)?.let { runCatching { it.close() } }
-                runCatching { kotlinx.coroutines.runBlocking { detailStoreForCleanup?.prune() } }
-                runCatching { controlBinding?.close() }
-                runCatching { controllerBinding.close() }
-            }
+            runCatching { toolBinding?.close() }
+            (ownedTools as? AutoCloseable)?.let { runCatching { it.close() } }
+            runCatching { kotlinx.coroutines.runBlocking { detailStoreForCleanup?.prune() } }
+            runCatching { controlBinding?.close() }
+            runCatching { controllerBinding.close() }
         }
     }
 
@@ -803,13 +735,13 @@ internal class SubagentExecutor(
         private val subagentType: String,
         private val description: String,
         private val prompt: String,
-        private val model: String,
+        private var model: String,
         private val resumed: Boolean,
-        private val contextWindow: Int? = null,
+        private var contextWindow: Int? = null,
         private val successfulCompactions: AtomicInteger = AtomicInteger(0),
         previousContext: SubagentSessionStore.ContextState? = null,
-        private val modelId: String = model,
-        private val providerId: String = "",
+        private var modelId: String = model,
+        private var providerId: String = "",
         private val onContextChanged: (SubagentSessionStore.ContextState) -> Unit = {},
         private val now: () -> Long = System::currentTimeMillis,
     ) {
@@ -1088,6 +1020,14 @@ internal class SubagentExecutor(
                 .filter { it.isNotEmpty() }
                 .joinToString("\n\n")
                 .takeLast(MAX_OUTPUT_CHARS)
+        }
+
+        fun selectModel(config: AgentModelClient.ModelConfig, reason: String?) = synchronized(lock) {
+            model = config.modelDisplayName.ifBlank { config.model }
+            modelId = config.model
+            providerId = config.providerId
+            contextWindow = config.knownContextWindow
+            currentAction = "模型不可用（$reason），改用 $model；缓存重新开始"
         }
 
         fun toolCount(): Int = synchronized(lock) { totalTools }

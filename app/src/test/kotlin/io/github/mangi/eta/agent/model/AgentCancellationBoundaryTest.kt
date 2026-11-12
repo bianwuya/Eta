@@ -4,7 +4,6 @@ import io.github.mangi.eta.agent.runtime.AgentEvent
 import io.github.mangi.eta.agent.runtime.AgentRunCancelledException
 import io.github.mangi.eta.agent.runtime.AgentRunController
 import io.github.mangi.eta.agent.subagent.AgentSubagentToolCatalog
-import io.github.mangi.eta.agent.subagent.YieldableSubagents
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -112,89 +111,4 @@ class AgentCancellationBoundaryTest {
         } finally { binding.close(); controller.cancel() }
     }
 
-    @Test fun cancelledChildCleanupBeforePendingCheckCannotReturnNaturalAnswerAsSuccess() = childCancellation(false)
-
-    @Test fun cancellationAfterParentActuallyEntersWaitCannotPublishChildCompletion() = childCancellation(true)
-
-    private fun childCancellation(cancelAfterWaiting: Boolean) {
-        val controller = AgentRunController()
-        val enteredCallback = CountDownLatch(1)
-        val releaseParent = CountDownLatch(1)
-        val releaseChild = CountDownLatch(1)
-        val rounds = AtomicInteger()
-        val finishes = AtomicInteger()
-        val interruptions = AtomicInteger()
-        val finishedEvents = AtomicInteger()
-        val firstAnswer = AtomicBoolean()
-        val result = AtomicReference<AgentModelClient.ModelResponse.Text?>()
-        val failure = AtomicReference<Throwable?>()
-        val owner = YieldableSubagents(controller, object : YieldableSubagents.Persistence {
-            override fun started(taskId: String, toolCallId: String, round: Int, subagentId: String, prompt: String, accepted: String) = Unit
-            override fun finished(taskId: String, report: String): Boolean { finishes.incrementAndGet(); return true }
-            override fun interrupted() { interruptions.incrementAndGet() }
-        }) { _, started ->
-            started("fixture-child", "")
-            check(releaseChild.await(5, TimeUnit.SECONDS))
-            AgentModelClient.ToolResult("""{"ok":true,"status":"completed"}""")
-        }
-        val child = JSONObject().put("id", "launch").put("type", "function")
-            .put("function", JSONObject().put("name", "subagent")
-                .put("arguments", """{"prompt":"inspect","description":"inspect"}"""))
-        val model = provider {
-            when (rounds.incrementAndGet()) {
-                1 -> ProviderResponse(JSONObject().put("role", "assistant").put("content", "")
-                    .put("finish_reason", "tool_calls").put("tool_calls", JSONArray().put(child)))
-                2 -> answer()
-                else -> error("cancelled run must not request another provider round")
-            }
-        }
-        val runner = Thread {
-            try {
-                result.set(AgentModelClient.complete(config, "inspect", { error("unexpected parent tool") },
-                    provider = model, runController = controller, yieldableSubagents = owner,
-                    additionalTools = JSONArray().put(AgentSubagentToolCatalog.schema()),
-                    onEvent = { if (it is AgentEvent.RunFinished) finishedEvents.incrementAndGet() },
-                    onTranscript = { transcript ->
-                        if (transcript.any { it.content == "natural answer" } && firstAnswer.compareAndSet(false, true)) {
-                            enteredCallback.countDown()
-                            check(releaseParent.await(5, TimeUnit.SECONDS))
-                        }
-                    }))
-            } catch (t: Throwable) { failure.set(t) }
-        }
-        try {
-            runner.start()
-            assertTrue(enteredCallback.await(3, TimeUnit.SECONDS))
-            assertEquals(YieldableSubagents.Decision.WAIT, owner.decision())
-            if (cancelAfterWaiting) {
-                releaseParent.countDown()
-                val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3)
-                while (!atChildWait(runner) && runner.isAlive && System.nanoTime() < deadline) Thread.yield()
-                assertTrue("parent must actually enter awaitWorkAvailable before cancel", atChildWait(runner))
-                controller.cancel()
-                releaseChild.countDown()
-            } else {
-                controller.cancel()
-                releaseChild.countDown()
-                val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3)
-                while (owner.decision() != YieldableSubagents.Decision.FINISH && System.nanoTime() < deadline) Thread.yield()
-                assertEquals(YieldableSubagents.Decision.FINISH, owner.decision())
-                releaseParent.countDown()
-            }
-            runner.join(5000)
-            assertFalse(runner.isAlive)
-            assertCancelled(failure.get())
-            assertNull(result.get())
-            assertEquals(2, rounds.get())
-            assertEquals(0, finishes.get())
-            assertTrue(interruptions.get() > 0)
-            assertEquals(0, finishedEvents.get())
-            assertTrue(owner.peekReports().isEmpty())
-        } finally {
-            releaseChild.countDown(); releaseParent.countDown(); controller.cancel(); owner.close(); runner.join(5000)
-        }
-    }
-
-    private fun atChildWait(worker: Thread): Boolean = worker.state == Thread.State.WAITING &&
-        worker.stackTrace.any { it.className == AgentRunController::class.java.name && it.methodName == "awaitWorkAvailable" }
 }

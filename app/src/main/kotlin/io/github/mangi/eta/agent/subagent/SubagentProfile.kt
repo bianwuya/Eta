@@ -4,7 +4,6 @@ import io.github.mangi.eta.agent.context.PersonalSearchTools
 import io.github.mangi.eta.agent.model.AgentFileToolCatalog
 import io.github.mangi.eta.agent.model.AgentPhoneToolCatalog
 import io.github.mangi.eta.agent.model.AgentTerminalToolCatalog
-import io.github.mangi.eta.local.subagentcontext.SubagentMailbox
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -14,6 +13,7 @@ import org.json.JSONObject
  * 所有 Subagent 均剥夺 `subagent` / `subagent_profile` 自身（禁止递归派发与自修改）
  * 以及独占式物理屏幕 GUI 与交互式浏览器工具，确保多个 Subagent 并发运行时互不干扰。
  */
+@kotlinx.serialization.Serializable
 internal data class SubagentProfile(
     val name: String,
     val summary: String,
@@ -51,7 +51,6 @@ internal data class SubagentProfile(
                 ("personal_data" in customAllowlist && (toolName in PersonalSearchTools.names || toolName in AgentPhoneToolCatalog.reads))
         }
         // Built-in roles may exchange passive INFO. An explicit allowlist or deny above still wins.
-        if (toolName == SubagentMailbox.TOOL_NAME || toolName == SubagentDecisionBroker.ASK) return true
         if (toolName in READ_ONLY_TOOLS || toolName in PersonalSearchTools.names || toolName in AgentPhoneToolCatalog.reads) {
             return true
         }
@@ -76,8 +75,6 @@ internal data class SubagentProfile(
             AgentSubagentToolCatalog.TOOL_NAME,
             AgentSubagentToolCatalog.PROFILE_TOOL_NAME,
             AgentSubagentToolCatalog.CONTROL_TOOL_NAME,
-            AgentSubagentToolCatalog.SEAL_GROUP_TOOL_NAME,
-            SubagentDecisionBroker.RESPOND,
             // Cross-conversation messaging stays a parent-only capability; children must not message
             // other conversations or recursively wake each other.
             "conversation_list",

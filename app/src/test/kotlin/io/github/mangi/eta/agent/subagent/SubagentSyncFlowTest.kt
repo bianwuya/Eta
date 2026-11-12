@@ -20,22 +20,20 @@ class SubagentSyncFlowTest {
             tools.getJSONObject(index).getJSONObject("function").getString("name")
         }
         assertEquals(listOf(AgentSubagentToolCatalog.TOOL_NAME, AgentSubagentToolCatalog.PROFILE_TOOL_NAME, AgentSubagentToolCatalog.CONTROL_TOOL_NAME), names)
-        assertEquals(setOf("subagent", "subagent_profile", "subagent_control", "subagent_seal_group", "subagent_respond"), AgentSubagentToolCatalog.names)
+        assertEquals(setOf("subagent", "subagent_profile", "subagent_control"), AgentSubagentToolCatalog.names)
         assertFalse("subagent_respond" in names) // No durable parent owner in the legacy schema.
         assertTrue("subagent_control" in AgentSubagentToolCatalog.names)
         assertFalse("subagent_report" in AgentSubagentToolCatalog.names)
 
         val schema = AgentSubagentToolCatalog.schema(SubagentProfile.BUILTIN_PROFILES).toString()
-        assertTrue(schema.contains("subagent_control"))
+        assertTrue(AgentSubagentToolCatalog.names.contains("subagent_control"))
         assertFalse(schema.contains("subagent_report"))
         assertFalse(schema.contains("max_time_seconds"))
         assertFalse(schema.contains("max_rounds"))
         assertFalse(schema.contains("max_tokens"))
         assertFalse(schema.contains("budget"))
-        assertTrue(schema.contains("accepted receipt"))
-        assertTrue(schema.contains("not completion"))
-        assertTrue(schema.contains("no new user guidance is required"))
-        assertTrue(schema.contains("When no independent work remains"))
+        assertFalse(schema.contains("accepted receipt"))
+        assertTrue(schema.contains("runtime executes them concurrently"))
         assertFalse(schema.contains("delegate again after guidance"))
     }
 
