@@ -8,13 +8,13 @@
 
 所有图片使用假 URL、假 Key、假模型与假统计。截图由 Robolectric 4.17 native graphics 绘制真实 Compose 组件；不是设备截图，也不是 HTML 仿制。
 
-![页面总览](../../../ui-preview/v1/overview.png)
+![页面总览](F:/eta/projects/eta-official-g0-g5-20261112/ui-preview/v1/overview.png)
 
-![子代理详情](../../../ui-preview/v1/detail-overview.png)
+![子代理详情](F:/eta/projects/eta-official-g0-g5-20261112/ui-preview/v1/detail-overview.png)
 
-![关键状态](../../../ui-preview/v1/states-overview.png)
+![关键状态](F:/eta/projects/eta-official-g0-g5-20261112/ui-preview/v1/states-overview.png)
 
-![转场分镜](../../../ui-preview/v1/motion-overview.png)
+![转场分镜](F:/eta/projects/eta-official-g0-g5-20261112/ui-preview/v1/motion-overview.png)
 
 原始图片、分镜和逐文件 SHA256：`F:/eta/projects/eta-official-g0-g5-20261112/ui-preview/v1/ASSETS.json`。`navigation.gif` 是相同关键帧的循环展示，播放间隔为便于查看而设，不能证明实际动画速度。
 
