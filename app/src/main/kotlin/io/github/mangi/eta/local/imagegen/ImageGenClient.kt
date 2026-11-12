@@ -20,6 +20,7 @@ import org.json.JSONObject
 
 internal class ImageGenClient(private val context: Context, client: OkHttpClient = AgentHttpClient.client,
     private val credentials: ImageGenCredentials = ImageGenCredentials(context),
+    private val saveImage: (String, AgentRunController) -> ImageGenOutput.Saved = { encoded, controller -> ImageGenOutput.save(encoded, controller) },
 ) {
     private val http = client.newBuilder()
         .readTimeout(300, TimeUnit.SECONDS).callTimeout(360, TimeUnit.SECONDS)
@@ -31,7 +32,8 @@ internal class ImageGenClient(private val context: Context, client: OkHttpClient
         controller.throwIfCancelled()
         val subscription = config.source == ImageGenSource.CODEX_SUBSCRIPTION
         val profile = ProviderConnectionProfile.OPENAI_CODEX
-        val url = if (subscription) requireNotNull(profile.imageGenerationUrl) else config.endpoint
+        val url = if (subscription) requireNotNull(profile.imageGenerationUrl)
+            else ImageGenEndpoint.resolve(config.endpoint, config.endpointOverride).toString()
         val binding = try {
             if (subscription) ProviderCredentialRepository.codexAccountBinding(config.credentialPoolId, config.accountId) else null
         } catch (_: ProviderAuthException) {
@@ -39,7 +41,7 @@ internal class ImageGenClient(private val context: Context, client: OkHttpClient
         }
         val body = requestBody(prompt, config)
         val headers = okhttp3.Headers.Builder()
-        ProviderRequestHeaders.mergeInto(headers, if (subscription) profile.baseUrl else config.endpoint,
+        ProviderRequestHeaders.mergeInto(headers, if (subscription) profile.baseUrl else url,
             emptyList(), authMode = if (subscription) ProviderAuthModes.OPENAI_CHATGPT else ProviderAuthModes.API_KEY,
             model = config.model)
         val token = try {
@@ -106,7 +108,7 @@ internal class ImageGenClient(private val context: Context, client: OkHttpClient
         val encoded = data?.optJSONObject(0)?.optString("b64_json").orEmpty()
         if (data?.length() != 1 || encoded.isBlank()) return failure("IMAGE_GEN_EMPTY",
             "接口未返回一张Base64图片；本入口支持兼容Images生成协议，不会将文本或URL冒充图片。", unknown = true)
-        val saved = ImageGenOutput.save(encoded, controller)
+        val saved = saveImage(encoded, controller)
         return JSONObject().put("ok", true).put("path", saved.file.absolutePath).put("mime", saved.mime)
             .put("width", saved.width).put("height", saved.height).put("model", config.model).put("source", config.source)
             .put("markdown", "![生成图片](<${saved.file.absolutePath}>)")

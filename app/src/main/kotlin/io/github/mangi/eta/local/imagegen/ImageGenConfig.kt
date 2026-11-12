@@ -27,16 +27,17 @@ internal data class ImageGenConfig(
     val keyConfigured: Boolean = false,
     val credentialId: String = "",
     val retiredCredentialIds: List<String> = emptyList(),
+    val endpointOverride: String = "",
+    val protocol: String = "openai_images",
 ) {
     val credentialPoolId: String get() = if (profileId.isBlank()) providerId else "imagegen:$profileId"
     val keySlotId: String get() = credentialId.ifBlank { profileId }
     fun validate(): String? = when {
         source !in setOf(ImageGenSource.CODEX_SUBSCRIPTION, ImageGenSource.OPENAI_API) -> "请先选择生图来源"
         profileId.isBlank() -> "旧生图配置需要手动创建独立连接；不会继承语言服务商的计费来源"
-        source == ImageGenSource.OPENAI_API && endpoint.toHttpUrlOrNull()?.let {
-            it.isHttps && it.username.isEmpty() && it.password.isEmpty() && it.fragment == null &&
-                it.query == null && it.encodedPath.endsWith("/images/generations")
-        } != true -> "请填写完整 HTTPS Images endpoint（以 /images/generations 结尾）"
+        source == ImageGenSource.OPENAI_API && protocol != "openai_images" -> "当前仅支持 OpenAI Images 兼容协议"
+        source == ImageGenSource.OPENAI_API && runCatching { ImageGenEndpoint.resolve(endpoint, endpointOverride) }.isFailure ->
+            "生图地址无效：请填写根 URL、/v1 或完整 endpoint；特殊路径使用高级设置"
         source == ImageGenSource.OPENAI_API && !keyConfigured -> "请填写独立生图 API Key"
         source == ImageGenSource.CODEX_SUBSCRIPTION && accountId.isBlank() -> "请选择固定 Codex 账号"
         model.isBlank() || model.length > 120 -> "请填写生图模型"
