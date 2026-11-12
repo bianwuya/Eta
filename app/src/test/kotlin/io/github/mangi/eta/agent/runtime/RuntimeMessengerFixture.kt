@@ -22,7 +22,7 @@ import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
 
 /** Real service/registry and client Messenger protocol; only Android binding is supplied by the fixture. */
-internal class RuntimeMessengerFixture : AutoCloseable {
+internal class RuntimeMessengerFixture(afterBindingReset: () -> Unit = {}) : AutoCloseable {
     private val host = Robolectric.buildService(AgentRuntimeService::class.java)
     val service = host.get()
     val registry = AgentRuntimeService::class.java.getDeclaredField("runs").apply { isAccessible = true }
@@ -54,6 +54,7 @@ internal class RuntimeMessengerFixture : AutoCloseable {
         application.setComponentNameAndServiceForBindService(
             ComponentName(context, AgentRuntimeService::class.java), messenger.binder)
         resetBinding()
+        afterBindingReset()
         host.create()
         io.github.mangi.eta.config.Prefs.initLocal(context)
         io.github.mangi.eta.data.datastore.SettingsDataStore.init(context)

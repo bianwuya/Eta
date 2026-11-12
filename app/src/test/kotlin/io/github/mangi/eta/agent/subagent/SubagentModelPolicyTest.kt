@@ -17,6 +17,45 @@ class SubagentModelPolicyTest {
     }
     private fun response() = ProviderResponse(JSONObject().put("role", "assistant").put("content", "done").put("finish_reason", "stop"))
 
+    @Test fun failoverAndLaterTurnsKeepTheOriginalAccountBinding() {
+        val first = io.github.mangi.eta.agent.auth.ProviderCredentialBinding("relay", "fixture", 1, "fixture-account-a")
+        val changed = first.copy(generation = 2, credentialSlotId = "fixture-account-b")
+        val bindings = mutableListOf<io.github.mangi.eta.agent.auth.ProviderCredentialBinding?>()
+        val client = SubagentModelPolicy.provider(listOf(top, next), { config -> provider { request, _ ->
+            bindings += request.accountBinding
+            if (config.model == top.model) throw AgentModelFailure("HTTP_404", false, "fixture unavailable model")
+            response()
+        } }) { _, _ -> }
+        client.complete(ProviderRequest(top, JSONArray(), JSONArray(), "child", credentialBinding = first), AgentRunController())
+        client.complete(ProviderRequest(top, JSONArray(), JSONArray(), "child", credentialBinding = changed), AgentRunController())
+        assertEquals(listOf(first, first, first), bindings)
+    }
+
+    @Test fun independentCompactionConfigIsNeverOverriddenByChatCandidate() {
+        val seen = mutableListOf<String>()
+        val client = SubagentModelPolicy.provider(listOf(top, next), { _ -> provider { request, _ ->
+            seen += request.config.model
+            response()
+        } }) { _, _ -> fail("compaction must not fail over") }
+        val compact = top.copy(model = "summary-model")
+        client.complete(ProviderRequest(compact, JSONArray(), JSONArray(), "child", ProviderRequestPurpose.COMPACTION), AgentRunController())
+        assertEquals(listOf("summary-model"), seen)
+    }
+
+    @Test fun callbackFailureCannotBeMistakenForAnUnavailableModel() {
+        var factories = 0
+        val client = SubagentModelPolicy.provider(listOf(top, next), { _ ->
+            factories++
+            provider { _, emit -> emit(ProviderEvent.RequestStarted); response() }
+        }) { _, _ -> fail("callback persistence failure must not change model") }
+        assertThrows(AgentModelFailure::class.java) {
+            client.complete(ProviderRequest(top, JSONArray(), JSONArray(), "child"), AgentRunController()) {
+                throw AgentModelFailure("HTTP_401", false, "fixture callback failure")
+            }
+        }
+        assertEquals(1, factories)
+    }
+
     @Test fun filtersDisabledIncompatibleShortContextAndOtherAccountWhilePreservingOrder() {
         val candidates = listOf(SubagentModelPolicy.Candidate(top), SubagentModelPolicy.Candidate(next.copy(model = "disabled"), enabled = false),
             SubagentModelPolicy.Candidate(next.copy(model = "no-tools"), toolsSupported = false),

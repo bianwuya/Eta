@@ -25,6 +25,11 @@ import org.robolectric.annotation.Config
 @Config(sdk = [36], application = Application::class)
 class RuntimeMessengerFixtureTest {
     @Before fun resetDatabase() {
+        // This test starts with its deliberately pending bind before it creates a fixture.
+        // Drain callbacks from the previous sandbox, then discard that singleton binding.
+        shadowOf(Looper.getMainLooper()).idle()
+        AgentRuntimeConnection::class.java.getDeclaredMethod("resetDeadBinding").apply { isAccessible = true }
+            .invoke(AgentRuntimeConnection)
         EtaDatabase.closeForTests()
         RuntimeEnvironment.getApplication().deleteDatabase("eta.db")
     }
@@ -51,9 +56,11 @@ class RuntimeMessengerFixtureTest {
                 Thread.sleep(5)
             }
             assertTrue(bindingStarted.get())
-            RuntimeMessengerFixture().use { fixture ->
-                fixture.await { staleResult.isDone }
-                assertEquals(AgentRuntimeClient.ActiveRunsQuery.Unavailable, staleResult.get())
+            RuntimeMessengerFixture(afterBindingReset = {
+                // Let the old waiter observe the reset before the new service can connect.
+                // Otherwise it may validly acquire the new messenger and race this assertion.
+                assertEquals(AgentRuntimeClient.ActiveRunsQuery.Unavailable, staleResult.get(1, TimeUnit.SECONDS))
+            }).use { fixture ->
                 val current = fixture.result(fixture.worker { fixture.client.queryActiveRuns() })
                 assertTrue(current is AgentRuntimeClient.ActiveRunsQuery.Known)
                 assertTrue((current as AgentRuntimeClient.ActiveRunsQuery.Known).runs.isEmpty())

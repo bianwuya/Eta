@@ -10,4 +10,12 @@ Fresh validation: runs/g3-fresh-final in the task root, source tree b255c8cb7d35
 
 An earlier overlapping test launch corrupted Gradle result collection (EOF/missing in-progress binary). Those results are invalidated and retained as failed logs. A task-local flock now prevents overlapping exports/tests; final run started only after ps confirmed no remaining JVM. The old snapshots and original WIP were untouched. Original local/integration protection was rechecked with all fields true.
 
-Rollback: create a new checkout at codex/eta-official-g2-checkpoint for pre-G3 behavior, or at codex/eta-official-g3-checkpoint for this stage. Never reset original local/integration. See task CHECKPOINTS.json for full SHAs. No APK, key changes, paid calls, push or stable-branch merge.
+Rollback: create a new checkout at codex/eta-official-g2-checkpoint for pre-G3 behavior, or at codex/eta-official-g3-checkpoint for this stage. Never reset original local/integration. See [CHECKPOINTS.json](../../../CHECKPOINTS.json) for full SHAs. No APK, key changes, paid calls, push or stable-branch merge.
+
+## G3 supplement
+
+The ordered-chat provider previously replaced an independently selected compaction model with its chat candidate. It also treated an event callback throwing an auth-shaped persistence failure as a model rejection. Both were reproduced by `SubagentModelPolicyTest` in `runs/g3-extra-red` (2 failures) and fixed at the provider policy: non-chat requests retain their own config/provider; callback failures propagate without selecting another candidate.
+
+OAuth child requests pin a `ProviderCredentialBinding` before running; persisted identity includes the credential slot, so changing the selected account cannot silently resume an interrupted task under another account. Regression fixtures cover a changed binding across failover/later turns, restart after a committed tool, independent compaction and restoration of the last committed summary. The actual provider/key stores were not initialized with real credentials.
+
+The final full-run receipts and the separate test-fixture correction are documented in `FINAL-VALIDATION.md`. This supplement adds no production UI or new execution bus.

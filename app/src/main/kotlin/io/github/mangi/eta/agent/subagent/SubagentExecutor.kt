@@ -216,8 +216,12 @@ internal class SubagentExecutor(
                 command = latestSnapshots[toolCall.id],
             ))
         }
+        val accountBinding = if (io.github.mangi.eta.data.model.ProviderAuthModes.isOAuth(orderedConfigs.first().authMode))
+            io.github.mangi.eta.data.repository.ProviderCredentialRepository.binding(orderedConfigs.first().providerId, orderedConfigs.first().authMode)
+            else null
+        val accountSlot = accountBinding?.credentialSlotId.orEmpty()
         val resolvedConfig = entry.modelIdentity?.takeUnless { entry.completed }?.let { bound ->
-            orderedConfigs.firstOrNull { SubagentSessionStore.modelIdentity(it) == bound }
+            orderedConfigs.firstOrNull { SubagentSessionStore.modelIdentity(it, accountSlot) == bound }
                 ?: throw IllegalStateException("原子代理模型或账号不可用；未切换账号或重跑旧任务")
         } ?: orderedConfigs.first()
         val runCandidates = if (isResume) listOf(resolvedConfig) else SubagentModelPolicy.eligible(
@@ -379,11 +383,11 @@ internal class SubagentExecutor(
             }) { selected, reason ->
                 modelLabel = selected.modelDisplayName.ifBlank { selected.model }
                 tracker.selectModel(selected, reason)
-                entry.modelIdentity = SubagentSessionStore.modelIdentity(selected)
+                entry.modelIdentity = SubagentSessionStore.modelIdentity(selected, accountSlot)
                 SubagentSessionStore.persist(conversationKey, entry)
                 publishSnapshot(force = true)
             }
-            entry.modelIdentity = SubagentSessionStore.modelIdentity(resolvedConfig)
+            entry.modelIdentity = SubagentSessionStore.modelIdentity(resolvedConfig, accountSlot)
             SubagentSessionStore.persist(conversationKey, entry)
             val resultProvider = object : io.github.mangi.eta.agent.model.AgentProviderClient by delegate {
                 override fun complete(
@@ -391,7 +395,7 @@ internal class SubagentExecutor(
                     runController: AgentRunController,
                     onEvent: (io.github.mangi.eta.agent.model.ProviderEvent) -> Unit,
                 ): io.github.mangi.eta.agent.model.ProviderResponse =
-                    delegate.complete(request, runController, onEvent).also {
+                    delegate.complete(request.copy(credentialBinding = accountBinding), runController, onEvent).also {
                         if (request.purpose == io.github.mangi.eta.agent.model.ProviderRequestPurpose.CHAT) finalStopReason = it.stopReason
                     }
             }

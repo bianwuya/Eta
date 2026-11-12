@@ -28,8 +28,8 @@ internal object SubagentSessionStore {
         java.io.File(it, "$owner-$id.json")
     }
 
-    fun modelIdentity(config: AgentModelClient.ModelConfig): String = java.security.MessageDigest.getInstance("SHA-256")
-        .digest(listOf(config.providerId, config.baseUrl, config.model, config.authMode, config.apiKey).joinToString("\n").toByteArray())
+    fun modelIdentity(config: AgentModelClient.ModelConfig, accountSlot: String = ""): String = java.security.MessageDigest.getInstance("SHA-256")
+        .digest(listOf(config.providerId, config.baseUrl, config.model, config.authMode, config.apiKey, accountSlot).joinToString("\n").toByteArray())
         .joinToString("") { "%02x".format(it) }
 
     fun persist(conversationKey: String, entry: Entry) = synchronized(lock) {

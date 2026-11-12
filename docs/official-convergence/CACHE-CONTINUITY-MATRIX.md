@@ -8,6 +8,8 @@
 | Image steering with complete tool batch | MultimodalSteeringCacheTest | No in-flight cancel; prefix/key/session unchanged; durable image privacy retained |
 | New run after completed tool / handoff / continuation | AgentContinuationBuilderTest; PendingQueueRestartTest; VoiceSteeringRecoveryTest | Same effective logical session; ACK/query prevents duplicate input |
 | Compaction / manual prompt changes | Existing compaction implementation | Intentional prefix change, not a promised cache hit; G3 retains compaction settings |
-| Child instance | G3 pending | Must have distinct stable session and preserve nullable usage |
+| Two child instances, five turns and memory recreation | OfficialSubagentRecoveryTest.twoChildrenKeepDistinctCacheIdentityAcrossFiveTurnsAndMemoryRecreation | Distinct keys across children, stable per-child prefix/key across turns |
+| Interrupted child after account change | OfficialSubagentRecoveryTest.interruptedInstanceCannotResumeWithChangedAccountOrReplayItsTool | Rejected before another provider/tool call; original history retained |
+| Chat failover versus independent compaction | SubagentModelPolicyTest; durable compaction recovery fixture | Account binding pinned for chat; compaction model/config retained; committed summary restored |
 
 Fake providers establish client request stability only. No production request, paid token or server cache percentage was measured.

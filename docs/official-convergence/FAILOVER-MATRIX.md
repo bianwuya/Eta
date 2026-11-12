@@ -10,5 +10,9 @@
 | Completed child receives explicit new prompt | Reuse child identity and history; selected model change is an intentional cold-cache boundary and actual model is reported | SubagentActivityStatsTest.realExecutorResumeCarriesHistoricalReportUntilNewUsageArrives |
 | Different completion times | Official awaitAll joins all calls once; completed results checkpoint immediately, canonical order before next model turn | SubagentTest.agentLoopExecutesMultipleSubagentCallsInParallelAndPreservesOrder |
 | Missing usage fields | Null remains unknown; original statistics store/projection shared by instance and settings page | Existing local/subagentstats tests retained |
+| Independently selected compaction request | Own config/provider, no chat candidate substitution or failover | independentCompactionConfigIsNeverOverriddenByChatCandidate; persisted compaction recovery fixture |
+| Event callback/persistence throws an auth-shaped failure | Propagate original failure; never downgrade because local persistence failed | callbackFailureCannotBeMistakenForAnUnavailableModel |
+| User changes OAuth selection after the first request | Original request binding remains fixed across start-only failover and later turns | failoverAndLaterTurnsKeepTheOriginalAccountBinding |
+| Interrupted child and changed model/account after process-memory recreation | Reject before provider/tool call; preserve original history and release running claim | interruptedInstanceCannotResumeWithChangedAccountOrReplayItsTool |
 
 No account rotation, quota polling, synthetic budget, new scheduling framework or production UI added. Profile/model ordered settings are additive and default empty; old settings retain original single-model behavior.

@@ -8,3 +8,5 @@
 - Retired plan flags no longer block steering or create a second execution state machine. Persistent user data is not removed.
 
 Actual results: task runs/g2-pass. G3 child recovery is separately verified after removal of the custom delegation bus; no claim of entire-project completion at G2.
+
+G3 supplement: the real child executor fixture persists a completed file-tool result, loses its worker, clears process memory and rejects a changed account before any new provider/tool invocation. A separate fixture restores the last committed compaction summary. `SubagentModelPolicyTest` covers pinned binding across failover/later turns and callback failure propagation. Final whole-tree results and known host limitations are in `FINAL-VALIDATION.md`.

@@ -34,10 +34,19 @@ internal object SubagentModelPolicy {
             private var index = 0
             private var started = false
             private var delegate = factory(candidates.first())
+            private var pinnedBinding: io.github.mangi.eta.agent.auth.ProviderCredentialBinding? = null
+            private var bindingResolved = false
             override val id get() = delegate.id
             override val capabilities get() = delegate.capabilities
             override fun complete(request: ProviderRequest, runController: AgentRunController,
                 onEvent: (ProviderEvent) -> Unit): ProviderResponse {
+                if (request.purpose != io.github.mangi.eta.agent.model.ProviderRequestPurpose.CHAT) {
+                    return factory(request.config).complete(request, runController, onEvent)
+                }
+                if (!bindingResolved) {
+                    pinnedBinding = request.accountBinding
+                    bindingResolved = true
+                }
                 while (true) {
                     runController.throwIfCancelled()
                     val config = candidates[index]
@@ -51,11 +60,12 @@ internal object SubagentModelPolicy {
                             }
                         }
                     }
+                    var callbackFailed = false
                     try {
-                        val response = delegate.complete(request.copy(config = config, credentialBinding = request.accountBinding), runController) { event ->
+                        val response = delegate.complete(request.copy(config = config, credentialBinding = pinnedBinding), runController) { event ->
                             // Once output or a hosted tool begins, outcome is no longer known to be empty.
                             if (event !is ProviderEvent.RequestStarted && event !is ProviderEvent.ResponseHeaders) started = true
-                            onEvent(event)
+                            try { onEvent(event) } catch (failure: Throwable) { callbackFailed = true; throw failure }
                         }
                         started = true
                         return response
@@ -63,7 +73,7 @@ internal object SubagentModelPolicy {
                         // HTTP status is explicit rejection before execution; transient429 stays in ModelRetry.
                         val rejected = failure.code in setOf("HTTP_401", "HTTP_403", "HTTP_404", "PROVIDER_AUTH_FAILED", "API_KEY_INVALID", "API_KEY_EXPIRED") ||
                             (failure.code == "HTTP_429" && !failure.retryable)
-                        if (started || !rejected || index == candidates.lastIndex) throw failure
+                        if (callbackFailed || started || !rejected || index == candidates.lastIndex) throw failure
                         index += 1
                         delegate = factory(candidates[index])
                         selected(candidates[index], failure.code)
