@@ -44,6 +44,8 @@ internal object RuntimeConfigRepository {
         SettingsDataStore.setSubagentSettings(settings)
     }
 
+    suspend fun setSubagentModelPriority(ids: List<String>) = SettingsDataStore.setSubagentModelPriority(ids)
+
     /**
      * 解析 Subagent 实际运行所用的模型配置。
      *

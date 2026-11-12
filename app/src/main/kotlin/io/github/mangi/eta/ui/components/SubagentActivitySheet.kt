@@ -56,6 +56,10 @@ import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.subagent.SubagentActivitySnapshot
 import io.github.mangi.eta.agent.subagent.SubagentStepSnapshot
 import io.github.mangi.eta.local.subagentdisplay.SubagentReadableText
+import io.github.mangi.eta.local.subagentstats.rememberSubagentSettingsSummary
+import io.github.mangi.eta.ui.components.coui.CouiPreference
+import com.itos.coui.text.CouiTextKind
+import com.itos.coui.text.Text as CouiText
 import io.github.mangi.eta.data.model.AppearanceUiStyle
 import io.github.mangi.eta.ui.app.LocalUiStyle
 import io.github.mangi.eta.ui.components.coui.rememberCouiDialogMaterial
@@ -257,6 +261,7 @@ internal fun SubagentInspectorContent(
     val maxSheetHeight = with(density) { LocalWindowInfo.current.containerSize.height.toDp() } * 0.76f
     var showInformation by rememberSaveable(snapshot.subagentId) { mutableStateOf(false) }
     val isCoui = LocalUiStyle.current == AppearanceUiStyle.COUI
+    val requestStats = rememberSubagentSettingsSummary(snapshot.subagentId)
     val stepKeys = remember(snapshot.steps) {
         val occurrences = mutableMapOf<String, Int>()
         snapshot.steps.map { step ->
@@ -310,9 +315,16 @@ internal fun SubagentInspectorContent(
         }
         // This entry remains visible for running, failed and cancelled tasks, including old
         // snapshots with no detail ID. The destination explains unavailable records instead.
-        ArrowPreference(title = "历史记录",
-            summary = if (snapshot.historyIncomplete) "部分记录保存失败，历史可能不完整" else null,
-            onClick = onOpenDetails)
+        if (isCoui) {
+            CouiText(text = requestStats, kind = CouiTextKind.Description)
+            CouiPreference(title = "历史记录",
+                summary = if (snapshot.historyIncomplete) "部分记录保存失败，历史可能不完整" else null, onClick = onOpenDetails)
+        } else {
+            Text(requestStats, style = MiuixTheme.textStyles.footnote2,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
+            ArrowPreference(title = "历史记录",
+                summary = if (snapshot.historyIncomplete) "部分记录保存失败，历史可能不完整" else null, onClick = onOpenDetails)
+        }
         AnimatedVisibility(visible = showInformation) {
             Column(
                 modifier = Modifier

@@ -28,8 +28,9 @@ class SubagentSteeringWakeTest {
         for (count in listOf(1, 2)) {
             val controller = AgentRunController()
             val childrenStarted = CountDownLatch(count)
-            val release = CountDownLatch(1)
+            val releases = List(count) { CountDownLatch(1) }
             val awakened = CountDownLatch(1)
+            val firstResultConsumed = CountDownLatch(1)
             val calls = AtomicInteger()
             val childCalls = AtomicInteger()
             val transcripts = CopyOnWriteArrayList<String>()
@@ -48,11 +49,14 @@ class SubagentSteeringWakeTest {
                             }))
                         2 -> {
                             assertTrue(request.messages.toString().contains("respond while children work"))
-                            assertEquals("children must still be running", 1L, release.count)
+                            assertTrue("children must still be running", releases.all { it.count == 1L })
                             awakened.countDown()
                             answer("responded to guidance")
                         }
-                        else -> answer("all child results received")
+                        else -> {
+                            if (request.messages.toString().contains("result-child-0")) firstResultConsumed.countDown()
+                            answer("all child results received")
+                        }
                     }
                 }
             }
@@ -63,6 +67,7 @@ class SubagentSteeringWakeTest {
                     AgentModelClient.ToolExecutor { call ->
                         childCalls.incrementAndGet()
                         childrenStarted.countDown()
+                        val release = releases[call.id.substringAfterLast('-').toInt()]
                         val binding = controller.register { release.countDown() }
                         try {
                             check(release.await(10, TimeUnit.SECONDS))
@@ -79,7 +84,13 @@ class SubagentSteeringWakeTest {
                 assertTrue("steering must reach the parent before a child finishes", awakened.await(2, TimeUnit.SECONDS))
                 assertFalse(controller.isCancelled)
                 assertFalse("the run must retain live children after the parent responds", future.isDone)
-                release.countDown()
+                releases.first().countDown()
+                if (count == 2) {
+                    assertTrue("first completion must reach parent while other child runs", firstResultConsumed.await(3, TimeUnit.SECONDS))
+                    assertFalse(future.isDone)
+                    assertEquals(1L, releases.last().count)
+                    releases.last().countDown()
+                }
                 val result = future.get(5, TimeUnit.SECONDS)
                 assertEquals("all child results received", result.content)
                 assertEquals(count, childCalls.get())
@@ -88,9 +99,9 @@ class SubagentSteeringWakeTest {
                 assertEquals(count, reports.map { it.messageId }.distinct().size)
                 assertEquals(count, result.transcript.count { it.role == "tool" })
                 assertTrue(transcripts.any { it.contains("SUBAGENT_RUNNING") })
-                assertEquals(3, calls.get())
+                assertEquals(2 + count, calls.get())
             } finally {
-                release.countDown(); controller.cancel(); executor.shutdownNow(); executor.awaitTermination(5, TimeUnit.SECONDS)
+                releases.forEach { it.countDown() }; controller.cancel(); executor.shutdownNow(); executor.awaitTermination(5, TimeUnit.SECONDS)
             }
         }
     }

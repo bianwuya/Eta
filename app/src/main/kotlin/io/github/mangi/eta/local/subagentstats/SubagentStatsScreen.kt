@@ -7,6 +7,8 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.Lifecycle
@@ -32,6 +34,14 @@ import io.github.mangi.eta.data.db.EtaDatabase
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
 import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.ListEmptyState
+import io.github.mangi.eta.data.model.AppearanceUiStyle
+import io.github.mangi.eta.ui.app.LocalUiStyle
+import io.github.mangi.eta.ui.components.coui.*
+import com.itos.coui.layout.Group
+import com.itos.coui.layout.Footer
+import com.itos.coui.text.CouiTextKind
+import com.itos.coui.text.Text as CouiText
+import com.itos.coui.theme.CouiTheme
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -107,35 +117,45 @@ internal fun SubagentStatsScreen(
             exportStatus = if (result.isSuccess) "已导出 ${snapshot.size} 条统计" else "导出失败，请重试"
         }
     }
-    MiuixScaffoldPage(
+    StatsPage(
         title = if (selected == null) "子代理请求统计" else "会话请求明细",
         onBack = onBack,
         actions = {
-            IconButton(onClick = { export.launch("eta-subagent-stats.json") }, enabled = visible.isNotEmpty()) {
+            if (LocalUiStyle.current == AppearanceUiStyle.COUI) CouiTopAppBarIconButton(
+                icon = Icons.Rounded.FileDownload, contentDescription = "导出请求统计", enabled = visible.isNotEmpty(),
+                onClick = { export.launch("eta-subagent-stats.json") })
+            else IconButton(onClick = { export.launch("eta-subagent-stats.json") }, enabled = visible.isNotEmpty()) {
                 Icon(Icons.Rounded.FileDownload, contentDescription = "导出请求统计")
             }
         },
         overlay = {
-            WindowDialog(show = confirmClear, title = "清除历史统计", onDismissRequest = { confirmClear = false }) {
+            val clearRecords = {
+                confirmClear = false
+                scope.launch {
+                    runCatching { withContext(Dispatchers.IO) { SubagentStatsStore.get(context).clear() } }
+                        .onSuccess { records = emptyList() }.onFailure { loadError = true }
+                }
+                Unit
+            }
+            if (LocalUiStyle.current == AppearanceUiStyle.COUI) CouiConfirmDialog(
+                visible = confirmClear, title = "清除历史统计", message = "删除本机保留的全部请求统计，不影响聊天记录。",
+                confirmText = "清除", destructive = true, onConfirm = clearRecords, onDismissRequest = { confirmClear = false })
+            else WindowDialog(show = confirmClear, title = "清除历史统计", onDismissRequest = { confirmClear = false }) {
                 Column(verticalArrangement = Arrangement.spacedBy(20.dp)) {
                     Text("删除本机保留的全部请求统计，不影响聊天记录。")
                     MiuixDialogActions(confirmText = "清除", destructive = true,
-                        onCancel = { confirmClear = false }, onConfirm = {
-                            confirmClear = false
-                            scope.launch {
-                                runCatching { withContext(Dispatchers.IO) { SubagentStatsStore.get(context).clear() } }
-                                    .onSuccess { records = emptyList() }.onFailure { loadError = true }
-                            }
-                        })
+                        onCancel = { confirmClear = false }, onConfirm = clearRecords)
                 }
             }
         },
     ) {
         if (selected == null) {
             item(key = "collection") {
-                SmallTitle("采集设置")
-                Card(Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
-                    SwitchPreference(
+                StatsGroup("采集设置") {
+                    if (LocalUiStyle.current == AppearanceUiStyle.COUI) CouiSwitchPreference(
+                        title = "采集请求统计", summary = "默认关闭，历史记录仍可查看", checked = settings.collectRequestStats,
+                        onCheckedChange = { enabled -> scope.launch { SettingsDataStore.setRequestStatsEnabled(enabled) } })
+                    else SwitchPreference(
                         title = "采集请求统计",
                         summary = "默认关闭，历史记录仍可查看",
                         checked = settings.collectRequestStats,
@@ -143,23 +163,22 @@ internal fun SubagentStatsScreen(
                             SettingsDataStore.setRequestStatsEnabled(enabled)
                         } },
                     )
-                    ArrowPreference(title = "清除历史统计", enabled = records.isNotEmpty(), onClick = { confirmClear = true })
+                    StatsRow(title = "清除历史统计", enabled = records.isNotEmpty(), onClick = { confirmClear = true })
                 }
             }
         }
         item(key = "explanation") {
             Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text("缓存用量来自服务商响应，未知不计入命中率。保留最近 5000 条。",
-                    style = MiuixTheme.textStyles.footnote2, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
-                exportStatus?.let { Text(it, style = MiuixTheme.textStyles.footnote1) }
-                if (loadError) Text("统计读取失败，请稍后重试。")
+                StatsText("缓存用量来自服务商响应，未知不计入命中率。保留最近 5000 条。")
+                exportStatus?.let { StatsText(it) }
+                if (loadError) StatsText("统计读取失败，请稍后重试。")
                 if (visible.isEmpty()) ListEmptyState(title = "暂无请求统计")
             }
         }
         if (selected == null) {
             items(groups, key = { it.first }) { (conversationId, summary) ->
-                Card(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
-                    ArrowPreference(
+                StatsGroup {
+                    StatsRow(
                         title = titles[conversationId] ?: conversationId,
                         summary = summary,
                         onClick = { onOpenConversation(conversationId) },
@@ -168,44 +187,62 @@ internal fun SubagentStatsScreen(
             }
         } else {
             item(key = "summary") {
-                SmallTitle(titles[selected] ?: selected.orEmpty())
-                Text(visibleTotals, modifier = Modifier.padding(horizontal = 16.dp))
+                StatsText(titles[selected] ?: selected.orEmpty())
+                StatsText(visibleTotals)
             }
             items(modelTotals, key = { "model-${it.first}" }) { (model, summary) ->
-                Text("$model · $summary", modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
-                    style = MiuixTheme.textStyles.footnote1)
+                StatsText("$model · $summary")
             }
             items(visible, key = { it.id }) { record ->
-                Card(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
+                StatsGroup {
                     Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                        Text("${time(record.startedAt)} · ${record.subagentId} · ${record.model}",
-                            style = MiuixTheme.textStyles.body2)
-                        Text("${record.profile} · 第 ${record.ordinal} 次 · ${status(record.status)} · ${record.purpose}" +
+                        StatsText("${time(record.startedAt)} · ${record.subagentId} · ${record.model}")
+                        StatsText("${record.profile} · 第 ${record.ordinal} 次 · ${status(record.status)} · ${record.purpose}" +
                             (if (record.resumed) " · 续接" else "") +
-                            (if (record.contextSummaryCount > 0) " · 历史含压缩摘要" else ""),
-                            style = MiuixTheme.textStyles.footnote1)
-                        Text("输入 ${number(record.inputTokens)} · 缓存 ${number(record.cachedTokens)} · 输出 ${number(record.outputTokens)}")
+                            (if (record.contextSummaryCount > 0) " · 历史含压缩摘要" else ""))
+                        StatsText("输入 ${number(record.inputTokens)} · 缓存 ${number(record.cachedTokens)} · 输出 ${number(record.outputTokens)}")
                         val inputDelta = record.inputTokens?.let { current -> record.previousInputTokens?.let { current - it } }
-                        if (inputDelta != null) Text("相对上次输入 ${if (inputDelta >= 0) "+" else ""}$inputDelta token",
-                            style = MiuixTheme.textStyles.footnote1)
-                        Text("历史：${history(record.historyChange)} · 消息 ${record.previousMessageCount ?: "—"} → ${record.messageCount ?: "未知"}",
-                            style = MiuixTheme.textStyles.footnote1)
-                        Text("旧消息相同前缀 ${record.commonPrefixMessages ?: "—"} 条 · 请求 ${record.previousRequestBytes ?: "—"} → ${record.requestBytes ?: "未知"} 字节",
-                            style = MiuixTheme.textStyles.footnote1)
-                        Text("前缀/配置变化：${record.changedFields.joinToString { fieldLabel(it) }.ifBlank { if (record.baselineId == null) "首次，无对照" else "未发现" }}",
-                            style = MiuixTheme.textStyles.footnote1)
-                        Text("HTTP ${record.httpCode ?: "未知"} · ${record.httpAttempts} 次发送 · ${record.elapsedMs / 1000.0} 秒" +
-                            record.errorCode?.let { " · $it" }.orEmpty(), style = MiuixTheme.textStyles.footnote1)
-                        if (record.historyChange == "unavailable") Text("此协议尚未取得可比较的历史指纹，不能据此归因。",
-                            style = MiuixTheme.textStyles.footnote1)
-                        Text("${record.host}${record.path}\n请求 ${record.id.take(8)} · 上次 ${record.baselineId?.take(8) ?: "—"}" +
-                            record.requestId?.let { "\n服务端请求 ID $it" }.orEmpty(),
-                            style = MiuixTheme.textStyles.footnote2.copy(fontFamily = FontFamily.Monospace))
+                        if (inputDelta != null) StatsText("相对上次输入 ${if (inputDelta >= 0) "+" else ""}$inputDelta token")
+                        StatsText("历史：${history(record.historyChange)} · 消息 ${record.previousMessageCount ?: "—"} → ${record.messageCount ?: "未知"}")
+                        StatsText("旧消息相同前缀 ${record.commonPrefixMessages ?: "—"} 条 · 请求 ${record.previousRequestBytes ?: "—"} → ${record.requestBytes ?: "未知"} 字节")
+                        StatsText("前缀/配置变化：${record.changedFields.joinToString { fieldLabel(it) }.ifBlank { if (record.baselineId == null) "首次，无对照" else "未发现" }}")
+                        StatsText("HTTP ${record.httpCode ?: "未知"} · ${record.httpAttempts} 次发送 · ${record.elapsedMs / 1000.0} 秒" + record.errorCode?.let { " · $it" }.orEmpty())
+                        if (record.historyChange == "unavailable") StatsText("此协议尚未取得可比较的历史指纹，不能据此归因。")
+                        StatsText("${record.host}${record.path}\n请求 ${record.id.take(8)} · 上次 ${record.baselineId?.take(8) ?: "—"}" + record.requestId?.let { "\n服务端请求 ID $it" }.orEmpty())
                     }
                 }
             }
         }
     }
+}
+
+@Composable
+private fun StatsPage(title: String, onBack: () -> Unit, actions: @Composable RowScope.() -> Unit,
+    overlay: @Composable () -> Unit, content: LazyListScope.() -> Unit) {
+    if (LocalUiStyle.current == AppearanceUiStyle.COUI)
+        CouiLazyScaffoldPage(title, onBack, actions = actions, overlay = overlay, content = content)
+    else MiuixScaffoldPage(title, onBack, actions = actions, overlay = overlay, content = content)
+}
+
+@Composable
+private fun StatsGroup(title: String? = null, content: @Composable () -> Unit) {
+    if (LocalUiStyle.current == AppearanceUiStyle.COUI) Group(title = title) { content() }
+    else {
+        title?.let { SmallTitle(it) }
+        Card(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) { content() }
+    }
+}
+
+@Composable
+private fun StatsRow(title: String, summary: String? = null, enabled: Boolean = true, onClick: () -> Unit) {
+    if (LocalUiStyle.current == AppearanceUiStyle.COUI) CouiPreference(title = title, summary = summary, enabled = enabled, onClick = onClick)
+    else ArrowPreference(title = title, summary = summary, enabled = enabled, onClick = onClick)
+}
+
+@Composable
+private fun StatsText(text: String) {
+    if (LocalUiStyle.current == AppearanceUiStyle.COUI) CouiText(text = text, kind = CouiTextKind.Description)
+    else Text(text, style = MiuixTheme.textStyles.footnote1, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
 }
 
 private fun totalsText(records: List<SubagentRequestStat>): String {

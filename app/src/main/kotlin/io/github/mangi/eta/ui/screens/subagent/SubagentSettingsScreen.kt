@@ -63,6 +63,9 @@ import io.github.mangi.eta.config.Prefs
 import io.github.mangi.eta.data.model.AppearanceUiStyle
 import io.github.mangi.eta.data.model.ReasoningEffort
 import io.github.mangi.eta.data.model.SubagentSettings
+import io.github.mangi.eta.local.subagent.SubagentPriorityRows
+import io.github.mangi.eta.local.subagentstats.rememberSubagentSettingsSummary
+import com.itos.coui.layout.Footer
 import io.github.mangi.eta.data.model.enabledModel
 import io.github.mangi.eta.data.repository.ProviderRepository
 import io.github.mangi.eta.data.repository.RuntimeConfigRepository
@@ -161,6 +164,22 @@ internal fun SubagentSettingsScreen(
         resolvedSecondary != null -> "${resolvedSecondary.provider.name} / ${resolvedSecondary.model.displayName}"
         !primaryModelName.isNullOrBlank() -> "跟随主模型 ($primaryModelName)"
         else -> "跟随主模型"
+    }
+    val requestSummary = rememberSubagentSettingsSummary()
+    val priorityModels = remember(providers, resolvedSecondary, primaryProviderId) {
+        val providerId = resolvedSecondary?.provider?.id ?: primaryProviderId
+        providers.firstOrNull { it.id == providerId && it.isEnabled }?.models.orEmpty()
+            .filter { it.isEnabled && it.supportsTools }.sortedBy { it.sortOrder }
+    }
+    var priorityError by remember { mutableStateOf<String?>(null) }
+    val savePriority: (List<String>) -> Unit = { ids ->
+        scope.launch {
+            try {
+                RuntimeConfigRepository.setSubagentModelPriority(ids)
+                priorityError = null
+            } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+            catch (_: Exception) { priorityError = "顺序保存失败，请重新调整；原配置保留" }
+        }
     }
 
     val effectiveCapabilities = remember(providers, resolvedSecondary, primaryProviderId, primaryModelId) {
@@ -411,7 +430,7 @@ internal fun SubagentSettingsScreen(
                     Divider()
                     CouiPreference(
                         title = "子代理请求统计",
-                        summary = "按会话查看输入、缓存命中与历史前缀变化",
+                        summary = requestSummary,
                         onClick = onOpenRequestStats,
                     )
                     Divider()
@@ -432,6 +451,12 @@ internal fun SubagentSettingsScreen(
                         )
                     }
                 }
+
+                Group(title = "模型优先级") {
+                    SubagentPriorityRows(priorityModels, subagentSettings.modelPriority, subagentEnabled, savePriority)
+                    if (priorityModels.isEmpty()) CouiText(text = "暂无同连接的可用工具模型", kind = CouiTextKind.PreferenceSummary)
+                }
+                Footer(text = priorityError ?: "长按右侧拖动柄调整，松手保存。仅同连接/账号可安全降级；已运行的子代理继续使用原模型。")
 
                 Group(title = "Built-in Subagents") {
                     SubagentProfile.BUILTIN_PROFILES.forEachIndexed { index, profile ->
@@ -649,7 +674,7 @@ internal fun SubagentSettingsScreen(
                         )
                         ArrowPreference(
                             title = "子代理请求统计",
-                            summary = "按会话查看输入、缓存命中与历史前缀变化",
+                            summary = requestSummary,
                             onClick = onOpenRequestStats,
                         )
                         ArrowPreference(
@@ -668,6 +693,16 @@ internal fun SubagentSettingsScreen(
                             )
                         }
                     }
+                }
+
+                item(key = "model_priority") {
+                    SmallTitle("模型优先级")
+                    Card(Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)) {
+                        SubagentPriorityRows(priorityModels, subagentSettings.modelPriority, subagentEnabled, savePriority)
+                        if (priorityModels.isEmpty()) Text("暂无同连接的可用工具模型", modifier = Modifier.padding(16.dp))
+                    }
+                    Text(priorityError ?: "长按右侧拖动柄调整，松手保存。仅同连接/账号可安全降级；已运行的子代理继续使用原模型。",
+                        style = MiuixTheme.textStyles.footnote2, modifier = Modifier.padding(horizontal = 28.dp, vertical = 8.dp))
                 }
 
                 item(key = "builtin_group") {

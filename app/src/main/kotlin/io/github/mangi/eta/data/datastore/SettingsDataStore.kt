@@ -94,6 +94,16 @@ internal object SettingsDataStore {
         dataStore.edit { it[SUBAGENT_SETTINGS] = speechJson.encodeToString(settings) }
     }
 
+    suspend fun setSubagentModelPriority(ids: List<String>) {
+        ensureInitialized()
+        dataStore.edit { prefs ->
+            val current = prefs[SUBAGENT_SETTINGS]?.let {
+                speechJson.decodeFromString<SubagentSettings>(it)
+            } ?: SubagentSettings()
+            prefs[SUBAGENT_SETTINGS] = speechJson.encodeToString(current.copy(modelPriority = ids.distinct()))
+        }
+    }
+
     suspend fun setRequestStatsEnabled(enabled: Boolean) {
         ensureInitialized()
         dataStore.edit { prefs ->
