@@ -1,5 +1,7 @@
 # G0–G5 执行验证
 
+后续 G6：用户已明确批准 v2 并授权实施，当前权威最终回执为 `G6-FINAL-VALIDATION.md`。下面为 G0–G5 历史，不代表当前仍在等待审批。
+
 后续用户反馈修订已完成：最新逻辑与 v2 预览验证在 `REVISION-V2.md`，`runs/revision-v2-final` 为 **440 suites / 2734 tests / 0 failed / 1 skipped**，Lint 0 errors / 438 warnings。以下原 G0–G5 记录保留为历史，不替代最新回执。视觉仍 WAITING_UI_APPROVAL。
 
 本轮已到 **WAITING_UI_APPROVAL**。G0–G4 的隔离逻辑和 G5 预览已提交候选；正式可见 UI、G6、APK 和手机验收未开始。分支 `codex/eta-official-g0-g5-20261112`，工作树 `F:/eta/projects/eta-official-g0-g5-20261112/worktree`。

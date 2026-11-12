@@ -1,6 +1,6 @@
 # G5 集中预览 v2
 
-状态：**REVIEWING / WAITING_UI_APPROVAL**。仅测试目录中的真实 Compose 候选；正式业务设置页未接线，G6 未开始。v1 图片和审核原文保留在 `ui-preview/v1` 与 `UI-REVIEW-v1.md`。
+本包后续状态：**APPROVED v2**，用户明确回复「可以开始 g6 了」。实施与验证见 `G6-IMPLEMENTATION.md`、`UI-VALIDATION.md`，批准来源见 `UI-APPROVAL.md`。下面保留 G5 当时的候选说明与限制；其中“尚未接线/等待审核/G6 未开始”是历史状态，不替代已获授权的 G6 实施结果。v1 图片和审核原文保留在 `ui-preview/v1` 与 `UI-REVIEW-v1.md`。
 
 ## 按本轮反馈修订
 
