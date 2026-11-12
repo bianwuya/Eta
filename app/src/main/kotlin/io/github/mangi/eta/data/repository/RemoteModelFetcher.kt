@@ -106,6 +106,37 @@ internal object RemoteModelFetcher {
                 ?: error("服务商模型目录包含无效模型项")
         }
 
+    /** Image connections reuse the catalog parser/transport without the chat-only filter. */
+    internal suspend fun fetchOpenAiImageModels(baseUrl: String, apiKey: String,
+        client: OkHttpClient = AgentHttpClient.client): Result<List<Model>> = withContext(Dispatchers.IO) {
+        suspendCancellableCoroutine { continuation ->
+            val controller = AgentRunController()
+            continuation.invokeOnCancellation { controller.cancel() }
+            try {
+                val provider = io.github.mangi.eta.data.model.OpenAiCompatibleProviderSetting(
+                    id = "independent-image-catalog", name = "", baseUrl = baseUrl, apiKey = apiKey)
+                val safeClient = client.newBuilder().callTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+                    .followRedirects(false).followSslRedirects(false)
+                    .retryOnConnectionFailure(false).build()
+                val request = Request.Builder().url(ProviderUrls.openAiModelsUrl(baseUrl))
+                    .header("Authorization", "Bearer $apiKey").header("Accept", "application/json").get().build()
+                val body = executeJson(request, provider, controller, safeClient, StoredCredentials, null)
+                val models = parseOpenAiModels(body).distinctBy { it.modelId }.filter { model ->
+                    model.outputModalities.any { it.equals("image", ignoreCase = true) } ||
+                        IMAGE_MODEL_MARKERS.any { it in model.modelId.lowercase() }
+                }
+                controller.throwIfCancelled()
+                continuation.resume(Result.success(models))
+            } catch (cancelled: CancellationException) { continuation.cancel(cancelled) }
+            catch (cancelled: AgentRunCancelledException) { continuation.cancel(CancellationException("生图模型目录读取已取消", cancelled)) }
+            catch (_: Exception) {
+                continuation.resume(Result.failure(IllegalStateException("无法读取生图模型目录，请检查连接和权限；可手动添加模型。")))
+            }
+        }
+    }
+
+    private val IMAGE_MODEL_MARKERS = listOf("gpt-image", "dall-e", "flux", "stable-diffusion", "wanx", "hidream", "qwen-image", "seedream")
+
     internal fun parseCodexModels(body: String): List<Model> = CodexModelCatalog.parse(modelArray(body, "models"))
 
     internal fun parseGrokModels(body: String, onUnsupportedProtocols: (Int) -> Unit = {}): List<Model> =

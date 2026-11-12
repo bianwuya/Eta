@@ -33,6 +33,16 @@ internal object AgentSubagentCheckpoint {
                 }
             }
         }
-        AgentToolBatchRecovery.completeInterrupted(transcript) + compatibilityReports
+        AgentToolBatchRecovery.completeInterrupted(if (finalize) interruptRunningReceipts(transcript) else transcript) + compatibilityReports
     }
+
+    /** A process-local worker cannot still be running after its owning Runtime was lost. */
+    internal fun interruptRunningReceipts(messages: List<AgentModelClient.ConversationMessage>): List<AgentModelClient.ConversationMessage> =
+        messages.map { message ->
+            val receipt = if (message.role == "tool") runCatching { JSONObject(message.content) }.getOrNull() else null
+            if (receipt?.optString("code") != "SUBAGENT_RUNNING") message else message.copy(content = receipt
+                .put("ok", false).put("code", "SUBAGENT_INTERRUPTED").put("status", "unknown")
+                .put("message", "原运行已中断，不能确认该子代理最终结果。请核实保存的子代理记录；不要自动重新派发或重放工具。")
+                .toString())
+        }
 }

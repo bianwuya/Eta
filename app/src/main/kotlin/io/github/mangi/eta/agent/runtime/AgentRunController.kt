@@ -173,6 +173,15 @@ internal class AgentRunController {
 
     fun signalWorkAvailable() = lock.withLock { pauseCondition.signalAll() }
 
+    /** Wait for child completion or user steering without polling or cancelling in-flight work. */
+    fun awaitWorkAvailable(isReady: () -> Boolean) = lock.withLock {
+        while (!cancelled && steeringMessages.isEmpty() && !isReady()) {
+            try { pauseCondition.await() }
+            catch (_: InterruptedException) { Thread.currentThread().interrupt(); throw AgentRunCancelledException() }
+        }
+        if (cancelled) throw AgentRunCancelledException()
+    }
+
     /**
      * 暂停执行：后续 [throwIfCancelled] 调用会阻塞挂起，直到 [resume] 或 [cancel]。
      * 在工作线程的检查点调用，不会阻塞调用方线程。
