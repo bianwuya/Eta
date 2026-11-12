@@ -378,8 +378,7 @@ internal object AgentRuntimeWire {
         putString(KEY_ASSISTANT_SCREEN_CONTEXT, request.assistantScreenContext)
         putString(KEY_MODEL_SESSION_ID, request.modelSessionId)
         if (request.origin.isNotBlank()) putString(KEY_ORIGIN, request.origin)
-        putString(KEY_REQUEST_MODE, request.requestMode)
-        if (request.planLineageId.isNotBlank()) putString(KEY_PLAN_LINEAGE_ID, request.planLineageId)
+        putString(KEY_REQUEST_MODE, "normal")
         putString(KEY_PROVIDER_ID, request.config.providerId)
         putString(KEY_PROVIDER_NAME, request.config.providerName)
         putString(KEY_PROVIDER_TYPE, request.config.providerType)
@@ -516,8 +515,8 @@ internal object AgentRuntimeWire {
             },
             modelSessionId = bundle.getString(KEY_MODEL_SESSION_ID).orEmpty(),
             origin = bundle.getString(KEY_ORIGIN).orEmpty(),
-            requestMode = bundle.getString(KEY_REQUEST_MODE) ?: "normal",
-            planLineageId = bundle.getString(KEY_PLAN_LINEAGE_ID).orEmpty(),
+            requestMode = "normal",
+            planLineageId = "",
             config = AgentModelClient.ModelConfig(
                 providerId = bundle.getString(KEY_PROVIDER_ID).orEmpty(),
                 providerName = bundle.getString(KEY_PROVIDER_NAME).orEmpty(),

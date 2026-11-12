@@ -116,7 +116,6 @@ internal object AgentModelClient {
         onContextSnapshot: (AgentContextSnapshot) -> Unit = {},
         onTranscript: (List<ConversationMessage>) -> Unit = {},
         yieldableSubagents: io.github.mangi.eta.agent.subagent.YieldableSubagents? = null,
-        planGate: io.github.mangi.eta.local.planmode.PlanRunGate? = null,
         runRole: AgentRunRole = AgentRunRole.PRIMARY,
         onEvent: (AgentEvent) -> Unit = {}
     ): ModelResponse.Text {
@@ -146,7 +145,7 @@ internal object AgentModelClient {
         val tools = toolsFor(initialCapabilities)
         val messages = AgentPromptBuilder.buildInitialMessages(
             config,
-            if (planGate != null && !compactOnly && !rewriteReply) "$prompt\n\n[计划模式运行约束]\n${io.github.mangi.eta.local.planmode.PlanRunGate.PROMPT}" else prompt,
+            prompt,
             images,
             history,
             skillContext,
@@ -215,7 +214,6 @@ internal object AgentModelClient {
         val loop = AgentLoop(
             transcript = transcript,
             yieldableSubagents = yieldableSubagents,
-            planGate = planGate,
             compactionTarget = compactionTarget,
             systemCount = systemCount,
             operationId = operationId,

@@ -38,7 +38,7 @@ class PendingQueueRestartTest {
                 val app = AgentAppState(f.context, scope)
                 f.await { app.conversationPaneState.tasksConnected }
                 assertEquals(listOf("a", "b"), app.homeState.queuedMessages.map { it.id })
-                assertEquals("plan", app.homeState.queuedMessages.last().requestMode)
+                assertEquals("normal", app.homeState.queuedMessages.last().requestMode)
                 assertTrue(app.homeState.queuedMessages.all { it.restoredFromStorage })
                 assertFalse(AgentRuntimeWire.MSG_START_RUN in f.messages)
                 assertFalse(AgentRuntimeWire.MSG_STEER_RUN in f.messages)

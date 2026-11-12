@@ -27,10 +27,8 @@ internal object AgentRunCheckpointStore {
         val transcript: List<AgentModelClient.ConversationMessage> = emptyList(),
         val rewriteTargetMessageId: String? = null,
     ) {
-        val requestMode: String get() = if (handoff.source == AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE)
-            AgentUiHandoffPayload.from(handoff.payload).requestMode else "normal"
-        val planLineageId: String get() = if (requestMode == "plan")
-            AgentUiHandoffPayload.from(handoff.payload).planLineageId.ifBlank { runId } else ""
+        val requestMode: String get() = "normal"
+        val planLineageId: String get() = ""
     }
 
     fun start(
@@ -52,8 +50,7 @@ internal object AgentRunCheckpointStore {
                     rewriteTargetMessageId = request.rewriteTargetMessageId,
                     handoffId = handoff.id,
                     handoffSource = handoff.source,
-                    handoffPayload = if (request.requestMode == "plan" && handoff.source == AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE)
-                        AgentUiHandoffPayload.from(handoff.payload).copy(requestMode = "plan", planLineageId = request.planLineageId.ifBlank { request.runId }).toJson() else handoff.payload,
+                    handoffPayload = handoff.payload,
                     dismissEntrySurface = handoff.dismissEntrySurfaceOnForegroundOperation,
                     createdAt = now,
                     updatedAt = now,

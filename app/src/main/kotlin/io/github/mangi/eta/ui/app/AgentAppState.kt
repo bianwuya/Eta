@@ -1737,8 +1737,8 @@ internal class AgentAppState(
                 content = prompt,
                 pendingImages = pendingImages,
                 pendingFileReferences = pendingFileReferences,
-                immediateInterrupt = immediateInterrupt && requestMode != "plan",
-                requestMode = requestMode,
+                immediateInterrupt = immediateInterrupt,
+                requestMode = "normal",
             )
             updateCurrentConversation(
                 state = AgentMessageQueueReducer.enqueue(homeState, queued),
@@ -1773,7 +1773,7 @@ internal class AgentAppState(
             pendingImages = pendingImages,
             pendingFileReferences = pendingFileReferences,
             editBoundary = editBoundary,
-            requestMode = requestMode,
+            requestMode = "normal",
         )
     }
 
@@ -1808,7 +1808,7 @@ internal class AgentAppState(
             pendingFileReferences = item.pendingFileReferences,
             editBoundary = null,
             preserveCurrentDraft = true,
-            requestMode = item.requestMode,
+            requestMode = "normal",
         )
     }
 
@@ -1884,7 +1884,7 @@ internal class AgentAppState(
                 )
             },
             reasoningEffort = state.reasoningEffort,
-            requestMode = requestMode,
+            requestMode = "normal",
         )
     }
 
@@ -2206,7 +2206,7 @@ internal class AgentAppState(
                         rewriteTargetMessageId = rewriteTargetMessageId,
                         runId = runId,
                         prompt = prompt,
-                        requestMode = requestMode,
+                        requestMode = "normal",
                         config = config.copy(supportsSearchSuggestions = true),
                         images = modelImages,
                         history = history,
@@ -2479,7 +2479,6 @@ internal class AgentAppState(
         val conversationId = selectedConversationId ?: return
         val runId = runStore.activeRunId(conversationId) ?: return
         val item = conversationsById[conversationId]?.queuedMessages?.firstOrNull { it.id == queueMessageId } ?: return
-        if (item.requestMode == "plan") return // Never drop a plan mode by steering it into an existing run.
         // Original attachment references use the same bounded FD ingestion as a normal send.
         if (runStore.isStopRequested(runId) ||
             queueMessageId in steeringJobs || queueMessageId in unconfirmedSteering) return

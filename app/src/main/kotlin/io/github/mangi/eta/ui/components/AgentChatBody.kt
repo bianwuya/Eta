@@ -909,14 +909,6 @@ internal fun AgentConversationMessages(
                     }
                 }
             }
-            if (!conversationId.isNullOrBlank()) {
-                item(key = "plan-panel-$conversationId", contentType = "plan-panel") {
-                    io.github.mangi.eta.local.planmode.PlanConversationPanel(
-                        conversationId = conversationId,
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-                    )
-                }
-            }
             item(key = ChatBottomSentinelKey) {
                 Spacer(
                     modifier = Modifier

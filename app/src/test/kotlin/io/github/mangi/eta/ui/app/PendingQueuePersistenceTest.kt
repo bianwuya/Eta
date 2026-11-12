@@ -34,7 +34,7 @@ class PendingQueuePersistenceTest {
         val restored = AgentConversationStore.loadConversation(context, "conversation")!!.queuedMessages
         assertEquals(queue.map { it.id }, restored.map { it.id })
         assertEquals(queue.map { it.content }, restored.map { it.content })
-        assertEquals(queue.map { it.requestMode }, restored.map { it.requestMode })
+        assertEquals(queue.map { "normal" }, restored.map { it.requestMode })
     }
 
     @Test fun overlayPendingQueueSurvivesStaleMainSaveAndIsConsumedByIdOnly() = runBlocking {

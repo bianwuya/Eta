@@ -56,7 +56,7 @@ class RelayStreamFailureTest {
     }
 
     @Test
-    fun persistentRelaySseErrorStopsAtExistingThreeRetryBudget() {
+    fun persistentRelaySseErrorStopsAtTwoRetryBudget() {
         val requests = mutableListOf<String>()
         withServer({ "data: {\"error\":{\"code\":\"upstream_http2_stream_error\",\"message\":\"Upstream HTTP/2 stream failed\"}}\n\n" }, requests) { request ->
             val failure = assertThrows(AgentModelFailure::class.java) {
@@ -64,9 +64,9 @@ class RelayStreamFailureTest {
                     1, request, OpenAiChatCompletionsProvider, AgentRunController(), {}, { _, _ -> }, {},
                 )
             }
-            assertEquals(4, requests.size)
+            assertEquals(3, requests.size)
             assertFalse(failure.retryable)
-            assertTrue(failure.message.orEmpty().contains("已重试 3 次"))
+            assertTrue(failure.message.orEmpty().contains("已重试 2 次"))
         }
     }
 

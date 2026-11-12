@@ -35,8 +35,8 @@ internal object AgentContinuationBuilder {
                 payload = AgentUiHandoffPayload(
                     conversationId = payload.conversationId,
                     promptSupplement = nextSupplement,
-                    requestMode = request.requestMode,
-                    planLineageId = if (request.requestMode == "plan") request.planLineageId.ifBlank { request.runId } else "",
+                    requestMode = "normal",
+                    planLineageId = "",
                 ).toJson(),
             )
         }
@@ -46,7 +46,8 @@ internal object AgentContinuationBuilder {
             rewriteTargetMessageId = null,
             modelSessionId = request.effectiveModelSessionId,
             prompt = supplement,
-            planLineageId = if (request.requestMode == "plan") request.planLineageId.ifBlank { request.runId } else "",
+            requestMode = "normal",
+            planLineageId = "",
             images = emptyList(),
             history = baseHistory,
             handoff = handoff,

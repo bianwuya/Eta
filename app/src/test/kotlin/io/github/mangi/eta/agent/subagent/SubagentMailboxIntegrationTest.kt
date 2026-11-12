@@ -7,7 +7,6 @@ import io.github.mangi.eta.agent.runtime.AgentTokenUsage
 import io.github.mangi.eta.agent.runtime.AgentRunCancelledException
 import io.github.mangi.eta.agent.skill.SkillContext
 import io.github.mangi.eta.agent.tool.AgentToolCapabilities
-import io.github.mangi.eta.local.planmode.PlanRunGate
 import io.github.mangi.eta.local.subagentcontext.MailboxMemoryStorage
 import io.github.mangi.eta.local.subagentcontext.SubagentMailbox
 import java.util.Collections
@@ -53,14 +52,13 @@ class SubagentMailboxIntegrationTest {
     }
     private fun executor(parent: AgentRunController, store: SubagentMailbox.Storage?, model: AgentProviderClient,
         ordinary: AgentModelClient.ToolExecutor = AgentModelClient.ToolExecutor { error("unexpected ordinary tool") },
-        gate: PlanRunGate? = null, conversation: String = "mailbox-${UUID.randomUUID()}", registry: SubagentControlRegistry? = null,
+        conversation: String = "mailbox-${UUID.randomUUID()}", registry: SubagentControlRegistry? = null,
         childConfig: AgentModelClient.ModelConfig = config,
         compactionTarget: ((AgentModelClient.ModelConfig) -> AgentCompactionTarget)? = null) =
         SubagentExecutor(conversationKey = conversation, parentController = parent, parentRunId = "parent",
             configProvider = { childConfig }, capabilitiesProvider = { AgentToolCapabilities(rootAvailable = false) },
             baseToolExecutor = ordinary, skillContext = SkillContext.EMPTY, memoryContext = AgentMemoryContext.DISABLED,
             mcpTools = JSONArray(), executionContext = null, onProgress = {}, mailboxStorage = store, controlRegistry = registry,
-            mailboxToolGate = { tool, delegate -> if (gate == null) delegate() else gate.executeChild(tool, delegate) },
             compactionTarget = compactionTarget,
             providerFactory = { model })
     private fun toolResult(request: ProviderRequest, id: String) = (0 until request.messages.length()).map(request.messages::getJSONObject)
@@ -224,28 +222,6 @@ class SubagentMailboxIntegrationTest {
                 if (denied) assertFalse(store.members.getValue("task").allowed)
             } finally { parent.cancel() }
         }
-    }
-
-    @Test fun planModeGateBlocksMailboxInsteadOfBypassingChildWriteRestrictions() {
-        val parent = AgentRunController(); val store = MailboxMemoryStorage(); val gate = PlanRunGate("fixture", "parent", parent)
-        val invocation = SubagentMailbox.Invocation(SubagentMailbox.Scope("parent", "batch"), "task")
-        store.reserveGroupMember("task", "launch", 1, "fixture", "batch")
-        var round = 0
-        val model = provider { request ->
-            if (++round == 1) tools(call("mailbox-plan", "agent_mailbox", JSONObject().put("action", "list")))
-            else {
-                assertEquals("PLAN_CHILD_BLOCKED", JSONObject(toolResult(request, "mailbox-plan").getString("content")).getString("code"))
-                answer()
-            }
-        }
-        try {
-            val result = executor(parent, store, model, gate = gate).execute(1,
-                AgentModelClient.ToolCall("launch", "subagent", args("fixture", false).toString()), invocation) { id, _ ->
-                store.started("task", "launch", 1, id, "fixture", "accepted")
-            }
-            assertTrue(JSONObject(result.content).getBoolean("ok")); assertEquals(2, round)
-            assertEquals(0, store.messages.length())
-        } finally { gate.end(); parent.cancel() }
     }
 
     @Test fun parentRevisionRejectsStaleMailboxCallAndDoesNotCreateInfoOrReplanFromInfo() {

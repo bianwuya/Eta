@@ -26,9 +26,9 @@ class AgentModelRetryTest {
         val failure = assertThrows(AgentModelFailure::class.java) {
             complete(retry, provider { _, _ -> calls++; throw SocketTimeoutException("timeout") })
         }
-        assertEquals(4, calls)
-        assertEquals(listOf(2_000L, 4_000L, 8_000L), delays)
-        assertTrue(failure.message.orEmpty().contains("已重试 3 次"))
+        assertEquals(3, calls)
+        assertEquals(listOf(2_000L, 4_000L), delays)
+        assertTrue(failure.message.orEmpty().contains("已重试 2 次"))
         delays.clear()
         calls = 0
         val result = complete(retry, provider { _, _ ->
@@ -115,7 +115,7 @@ class AgentModelRetryTest {
                 throw AgentModelFailure.incompleteStream("模型接口 SSE 流未正常结束")
             })
         }
-        assertEquals(4, calls)
+        assertEquals(3, calls)
         assertFalse(failure.retryable)
         assertEquals("STREAM_INCOMPLETE", failure.code)
     }

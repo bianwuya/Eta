@@ -29,7 +29,6 @@ internal data class AgentUiHandoffPayload(
             .put("type", TYPE)
             .put("version", VERSION)
             .put("conversationId", conversationId)
-            .also { if (requestMode == "plan") it.put("requestMode", "plan") }
             .also { if (requestMode == "plan" && planLineageId.isNotBlank()) it.put("planLineageId", planLineageId) }
             .also { json ->
                 promptSupplement?.let { json.put("promptSupplement", it.toJson()) }
@@ -63,8 +62,8 @@ internal data class AgentUiHandoffPayload(
                 val supplementsJson = json.optJSONArray("supplements") ?: JSONArray()
                 AgentUiHandoffPayload(
                     conversationId = json.optString("conversationId"),
-                    requestMode = json.optString("requestMode", "normal").let { if (it == "plan") it else "normal" },
-                    planLineageId = json.optString("planLineageId").take(256),
+                    requestMode = "normal",
+                    planLineageId = "",
                     promptSupplement = json.optJSONObject("promptSupplement")
                         ?.toSupplement(defaultIndex = 1),
                     supplements = (0 until supplementsJson.length()).mapNotNull { index ->

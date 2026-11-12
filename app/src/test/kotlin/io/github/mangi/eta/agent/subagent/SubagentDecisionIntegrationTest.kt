@@ -339,41 +339,6 @@ class SubagentDecisionIntegrationTest {
         }
     }
 
-    @Test fun realChildPlanGateBlocksExplicitlyAllowedAsk() {
-        val parent = AgentRunController(); val gate = io.github.mangi.eta.local.planmode.PlanRunGate("fixture", "parent", parent)
-        val memory = DecisionMemory()
-        val broker = SubagentDecisionBroker("parent", parent, memory, timeoutMs = 3000)
-        val failure = AtomicReference<Throwable?>(); val round = AtomicInteger()
-        val model = provider(failure) { request ->
-            when (round.incrementAndGet()) {
-                1 -> tools(call("gated-ask", "ask_parent", JSONObject().put("request_id", "gated").put("question", "blocker")))
-                2 -> {
-                    val result = (0 until request.messages.length()).map(request.messages::getJSONObject)
-                        .single { it.optString("role") == "tool" && it.optString("tool_call_id") == "gated-ask" }
-                    assertEquals("PLAN_CHILD_BLOCKED", JSONObject(result.getString("content")).getString("code"))
-                    answer("task_status: blocked\nsummary: blocked\nevidence: fixture\nremaining: -\nnext_action: -")
-                }
-                else -> error("unexpected child round")
-            }
-        }
-        val worker = SubagentExecutor(conversationKey = "gate-${UUID.randomUUID()}", parentController = parent,
-            parentRunId = "parent", configProvider = { config }, capabilitiesProvider = { AgentToolCapabilities(rootAvailable = false) },
-            baseToolExecutor = AgentModelClient.ToolExecutor { error("unexpected side effect") }, skillContext = SkillContext.EMPTY,
-            memoryContext = AgentMemoryContext.DISABLED, mcpTools = JSONArray(), executionContext = null,
-            onProgress = {}, decisionBroker = broker, mailboxToolGate = { c, delegate -> gate.executeChild(c, delegate) },
-            providerFactory = { model })
-        try {
-            val launch = AgentModelClient.ToolCall("launch", "subagent", JSONObject().put("prompt", "task")
-                .put("description", "task").put("subagent_type", "decision-fixture")
-                .put("tools", JSONArray(listOf("ask_parent"))).toString())
-            worker.execute(1, launch, decisionTaskId = "task")
-            failure.get()?.let { throw AssertionError("provider callback failed", it) }
-            assertEquals(2, round.get())
-            assertTrue(broker.pendingBatch().isEmpty())
-            assertEquals(0, memory.records.length())
-        } finally { gate.end(); broker.close(); parent.cancel(); failure.get()?.let { throw AssertionError("provider callback failed", it) } }
-    }
-
     private fun paired(request: ProviderRequest, id: String): JSONObject =
         (0 until request.messages.length()).map(request.messages::getJSONObject)
             .single { it.optString("role") == "tool" && it.optString("tool_call_id") == id }

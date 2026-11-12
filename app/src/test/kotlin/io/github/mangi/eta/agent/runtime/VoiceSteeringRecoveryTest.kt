@@ -87,13 +87,17 @@ class VoiceSteeringRecoveryTest {
                 "external" to f.request("other").let { it.copy(handoff = it.handoff!!.copy(source = "other")) },
                 "compact" to f.request("compact").copy(operation = AgentRuntimeWire.OP_COMPACT),
                 "rewrite" to f.request("rewrite").copy(operation = AgentRuntimeWire.OP_REWRITE_REPLY),
-                "plan" to f.request("plan").copy(requestMode = "plan"),
             )) {
                 val unsupported = f.admit(request); unsupported.prepared(request)
                 assertEquals(id, AgentRuntimeClient.SteeringOutcome.Unsupported,
                     f.result(f.worker { f.client.steerRun(unsupported.runId, "q", "text") }))
                 assertFalse(unsupported.session.controller.hasPendingSteering)
             }
+            val legacy = f.admit(f.request("legacy-plan").copy(requestMode = "plan"))
+            legacy.prepared(legacy.request)
+            assertEquals(AgentRuntimeClient.SteeringOutcome.Accepted,
+                f.result(f.worker { f.client.steerRun(legacy.runId, "legacy-q", "text") }))
+            assertEquals("text", legacy.session.controller.pollSteeringMessage())
         }
     }
 

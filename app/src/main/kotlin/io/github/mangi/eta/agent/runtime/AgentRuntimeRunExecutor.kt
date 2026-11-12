@@ -97,14 +97,6 @@ internal class AgentRuntimeRunExecutor(
         val childController = AgentRunController()
         val childCancellation = runController.registerChild(childController)
         val timing = AgentRunTiming(AndroidAgentLogger)
-        var planGate: io.github.mangi.eta.local.planmode.PlanRunGate? = null
-        fun endPlan(completedRun: Boolean) {
-            if (planGate == null) return
-            runCatching { io.github.mangi.eta.local.planmode.PlanModeStore.end(request.runId, completedRun) }
-                .onFailure { AndroidAgentLogger.error("Plan run final state persistence failed: type=${it.safeLogType()}") }
-            io.github.mangi.eta.local.planmode.PlanModeStore.unlisten(request.runId)
-        }
-
         val result = try {
             val contextWindow = request.config.knownContextWindow
             checkpointRecorder = session.initializePersistence(appContext, request)
@@ -134,12 +126,6 @@ internal class AgentRuntimeRunExecutor(
             val conversationId = uiPayload?.conversationId
                 ?.takeIf { it.isNotBlank() }
             // 由跨会话消息启动的 run 不再获得通信工具，避免会话间自动互唤。
-            if (request.requestMode == "plan") {
-                require(request.operation == AgentRuntimeWire.OP_CHAT && !conversationId.isNullOrBlank()) { "计划模式需要聊天会话" }
-                io.github.mangi.eta.local.planmode.PlanModeStore.initialize(appContext)
-                planGate = io.github.mangi.eta.local.planmode.PlanRunGate(conversationId, request.runId, runController, request.planLineageId.ifBlank { request.runId })
-                io.github.mangi.eta.local.planmode.PlanModeStore.listen(request.runId, runController::signalWorkAvailable) { planGate.mayAct() }
-            }
             val crossConversationOrigin =
                 request.origin == AgentRuntimeWire.RUN_ORIGIN_CONVERSATION_MESSAGE
             val conversationTools = conversationMessaging
@@ -212,9 +198,7 @@ internal class AgentRuntimeRunExecutor(
                 logger = AndroidAgentLogger,
                 browserRunId = request.runId,
                 runController = toolController,
-                userQuestions = io.github.mangi.eta.local.userquestions.UserQuestionHost(appContext, conversationId, request.runId, toolController, planIdentity = {
-                    io.github.mangi.eta.local.planmode.PlanModeStore.current(request.runId)?.let { it.planId to it.revision }
-                }),
+                userQuestions = io.github.mangi.eta.local.userquestions.UserQuestionHost(appContext, conversationId, request.runId, toolController),
                 browserSession = BrowserSessionRegistry.get(browserKey),
                 guiControl = gui,
                 browserToolsEnabled = {
@@ -321,9 +305,6 @@ internal class AgentRuntimeRunExecutor(
                 controlRegistry = controlRegistry,
                 mailboxStorage = groupStore,
                 decisionBroker = decisionBroker,
-                mailboxToolGate = { call, delegate ->
-                    if (planGate == null) delegate() else planGate.executeChild(call, delegate)
-                },
                 configProvider = {
                     val rawSubagentConfig = runBlocking {
                         RuntimeConfigRepository.subagentRuntimeConfig(request.config)
@@ -333,12 +314,7 @@ internal class AgentRuntimeRunExecutor(
                 capabilitiesProvider = { AgentToolCapabilities.capture(appContext) },
                 baseToolExecutor = routingExecutor,
                 childToolFactory = { child ->
-                    val childRouting = RoutingToolExecutor(localTools(null, toolController = child), McpToolExecutor(mcpSnapshot))
-                    if (planGate == null) childRouting else object : AgentModelClient.ToolExecutor, AutoCloseable {
-                        override fun execute(toolCall: AgentModelClient.ToolCall): AgentModelClient.ToolResult =
-                            planGate.executeChild(toolCall) { childRouting.execute(toolCall) }
-                        override fun close() = childRouting.close()
-                    }
+                    RoutingToolExecutor(localTools(null, toolController = child), McpToolExecutor(mcpSnapshot))
                 },
                 detailStoreFactory = { io.github.mangi.eta.agent.subagent.SubagentDetailStore(appContext) },
                 skillContext = skillContext,
@@ -369,7 +345,6 @@ internal class AgentRuntimeRunExecutor(
                         }
                     }
                 }
-                if (planGate != null) io.github.mangi.eta.local.planmode.PlanRunGate.schemas(tools)
             }
             val runToolExecutor = AgentModelClient.ToolExecutor { call ->
                 if (crossConversationOrigin && ConversationMessagingPolicy.isOriginBlockedTool(call.name)) {
@@ -490,7 +465,6 @@ internal class AgentRuntimeRunExecutor(
                 history = request.history,
                 runController = runController,
                 yieldableSubagents = childOwner,
-                planGate = planGate,
                 skillContext = skillContext,
                 memoryContext = memoryContext,
                 additionalTools = runTools,
@@ -577,7 +551,6 @@ internal class AgentRuntimeRunExecutor(
                 rewriteTargetMessageId = request.rewriteTargetMessageId,
             )
         } finally {
-            planGate?.end()
             runCatching { childOwner?.close() }
             runCatching { childController.cancel() }
             childCancellation.close()
@@ -588,7 +561,6 @@ internal class AgentRuntimeRunExecutor(
         }
 
         if (cancelled && session.isTerminal) {
-            endPlan(completedRun = false)
             runCatching {
                 persistArtifacts(snapshotRequest(request), result, archivedEvents.orEmpty())
             }.onFailure { throwable ->
@@ -614,7 +586,6 @@ internal class AgentRuntimeRunExecutor(
         var committedResult = result
         val committed = session.complete(result) { resolved ->
             committedResult = resolved
-            endPlan(completedRun = resolved.ok)
             runCatching { session.sealPersistence() }
                 .onFailure { throwable ->
                     AndroidAgentLogger.error(
@@ -632,7 +603,6 @@ internal class AgentRuntimeRunExecutor(
                     )
                 }
         }
-        if (!committed) endPlan(completedRun = false)
         return Outcome(
             result = committedResult,
             entrySurfaceGuard = entrySurfaceGuard,

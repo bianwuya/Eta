@@ -475,7 +475,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
             active == null -> "ended"
             source != AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE &&
                 (source != AgentRuntimeWire.ETA_VOICE_HANDOFF_SOURCE || AgentExternalArchivePayload.from(active.request.handoff!!.payload) == null) -> "unsupported"
-            active.request.operation != AgentRuntimeWire.OP_CHAT || active.request.requestMode == "plan" -> "unsupported"
+            active.request.operation != AgentRuntimeWire.OP_CHAT -> "unsupported"
             active.preparing -> "preparing"
             else -> ""
         }

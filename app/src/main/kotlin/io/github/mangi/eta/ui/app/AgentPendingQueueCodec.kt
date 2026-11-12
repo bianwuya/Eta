@@ -32,7 +32,7 @@ internal object AgentPendingQueueCodec {
         val rows = JSONArray()
         queue.forEach { item ->
             rows.put(JSONObject().put("id", item.id).put("text", item.content)
-                .put("mode", item.requestMode).put("interrupt", item.immediateInterrupt)
+                .put("mode", "normal").put("interrupt", item.immediateInterrupt)
                 .put("run", item.steeringRunId).put("unknown", item.steeringUnconfirmed)
                 .put("images", JSONArray().also { images -> item.pendingImages.forEach { image ->
                     val stable = previousImages[image.id]?.uri ?: stableImage(context, image)
@@ -98,7 +98,7 @@ internal object AgentPendingQueueCodec {
                 } },
                 immediateInterrupt = false, steeringRunId = run,
                 steeringUnconfirmed = run.isNotBlank() || row.optBoolean("unknown"),
-                requestMode = mode, restoredFromStorage = true,
+                requestMode = "normal", restoredFromStorage = true,
             )
         }
     }

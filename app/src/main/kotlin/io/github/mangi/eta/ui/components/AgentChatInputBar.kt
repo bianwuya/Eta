@@ -185,27 +185,6 @@ internal fun AgentChatInputBar(
     val hapticFeedback = LocalHapticFeedback.current
     val focusRequester = remember { FocusRequester() }
     val textFieldState = rememberTextFieldState(initialText = input)
-    // Mode and slash state stay in the input subtree: ordinary typing does not recompose history.
-    var requestMode by remember(conversationId) {
-        mutableStateOf(if (onSubmitWithMode != null) normalizedRequestMode(restoredRequestMode) else "normal")
-    }
-    var slashTrigger by remember(conversationId) { mutableStateOf<SlashTrigger?>(null) }
-    val slashTracker = remember(conversationId) { SlashCommandTracker() }
-    val slashTransformation = remember(slashTracker) {
-        InputTransformation { slashTracker.userEdit(asCharSequence().toString(), originalText.toString()) }
-    }
-    LaunchedEffect(textFieldState, conversationId) {
-        snapshotFlow { Triple(textFieldState.text.toString(), textFieldState.selection, textFieldState.composition) }
-            .collect { (text, _, composition) ->
-                val candidate = slashTracker.takeCandidate()
-                if (candidate != null && composition == null && text == candidate.text) {
-                    slashTrigger = candidate
-                } else if (slashTrigger?.text != text || composition != null) {
-                    slashTrigger = null
-                }
-            }
-    }
-    BackHandler(enabled = slashTrigger != null) { slashTrigger = null; slashTracker.clear() }
     val speechSettings by remember { SpeechSettingsRepository.settingsFlow() }.collectAsState(initial = null)
     val recognitionEnabled = speechSettings?.recognitionEnabled == true
     val dictation = rememberSpeechInput { recognized ->
@@ -234,12 +213,8 @@ internal fun AgentChatInputBar(
         // 的消息流、滚动和 Markdown 一起带入重组。
         val versionChanged = inputSyncVersion != syncedVersion
         if (isEditingMessage || wasEditingMessage || versionChanged) {
-            slashTracker.clear()
-            slashTrigger = null
             textFieldState.setTextAndPlaceCursorAtEnd(input)
         }
-        if (versionChanged) requestMode = if (onSubmitWithMode != null) normalizedRequestMode(restoredRequestMode) else "normal"
-        if (isEditingMessage) requestMode = "normal"
         if (isEditingMessage || (versionChanged && input.isNotEmpty() && focusInputOnSync)) {
             focusRequester.requestFocus()
             keyboard?.show()
@@ -277,7 +252,7 @@ internal fun AgentChatInputBar(
                 onSteer = onSteerQueuedMessage,
                 onRecall = { id ->
                     val draft = textFieldState.text.toString()
-                    val mode = if (isEditingMessage) "normal" else requestMode
+                    val mode = "normal"
                     recallQueuedDraft(id, draft, mode, onRecallQueuedMessage, onRecallQueuedMessageWithMode)
                 },
                 onRemove = onRemoveQueuedMessage,
@@ -442,31 +417,11 @@ internal fun AgentChatInputBar(
                             color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                         )
                     }
-                    SlashInputSession(textFieldState, slashTracker, !isEditingMessage && onSubmitWithMode != null) {
                     BasicTextField(
                         state = textFieldState,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .onPreviewKeyEvent { event ->
-                                if (event.type == KeyEventType.KeyDown) {
-                                    val native = event.nativeKeyEvent
-                                    if (!isEditingMessage && onSubmitWithMode != null && native.unicodeChar == '/'.code &&
-                                        !native.isCtrlPressed && !native.isAltPressed && !native.isMetaPressed &&
-                                        native.repeatCount == 0
-                                    ) {
-                                        slashTracker.arm(textFieldState.text.toString(), textFieldState.selection.start,
-                                            textFieldState.selection.end, textFieldState.composition != null)
-                                    } else {
-                                        slashTracker.clear()
-                                        slashTrigger = null
-                                    }
-                                } else if (event.type == KeyEventType.KeyUp) {
-                                    slashTracker.clearArm()
-                                }
-                                false
-                            }
                             .focusRequester(focusRequester),
-                        inputTransformation = slashTransformation,
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Default),
                         textStyle = inputTextStyle.copy(color = MiuixTheme.colorScheme.onSurface),
                         cursorBrush = SolidColor(MiuixTheme.colorScheme.primary),
@@ -474,16 +429,6 @@ internal fun AgentChatInputBar(
                             minHeightInLines = 1,
                             maxHeightInLines = 6,
                         ),
-                    )
-                    }
-                }
-
-                if (requestMode == "plan" && !isEditingMessage) {
-                    Text(
-                        text = "下一条：计划模式（发送后恢复普通执行）",
-                        style = MiuixTheme.textStyles.footnote2,
-                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                        modifier = Modifier.padding(start = 8.dp, end = 8.dp, bottom = 4.dp),
                     )
                 }
 
@@ -549,11 +494,8 @@ internal fun AgentChatInputBar(
                             if (canSend) {
                                 dictation.cancel()
                                 val submittedText = textFieldState.text.toString()
-                                val submittedMode = if (isEditingMessage) "normal" else requestMode
+                                val submittedMode = "normal"
                                 textFieldState.clearText()
-                                slashTracker.clear()
-                                slashTrigger = null
-                                requestMode = "normal"
                                 if (interrupt) {
                                     if (!isEditingMessage && onInterruptAndSubmitWithMode != null) onInterruptAndSubmitWithMode(submittedText, submittedMode)
                                     else onInterruptAndSubmit(submittedText)
@@ -668,44 +610,7 @@ internal fun AgentChatInputBar(
                         }
                 }
             }
-            val slashPopupPosition = remember(inputContainerTopPx) { InputPopupPositionProvider(inputContainerTopPx) }
-            WindowListPopup(
-                show = slashTrigger != null && !isEditingMessage && inputContainerTopPx > 0,
-                popupPositionProvider = slashPopupPosition,
-                alignment = PopupPositionProvider.Align.TopStart,
-                onDismissRequest = { slashTrigger = null; slashTracker.clear() },
-                maxHeight = thinkingPopupMaxHeight,
-            ) {
-                val dismiss = LocalDismissState.current
-                ListPopupColumn {
-                    listOf("计划模式" to "plan", "普通执行" to "normal").forEachIndexed { index, (label, mode) ->
-                        DropdownImpl(
-                            text = label,
-                            optionSize = 2,
-                            isSelected = requestMode == mode,
-                            index = index,
-                            onSelectedIndexChange = {
-                                val trigger = slashTrigger
-                                val removed = trigger?.let {
-                                    removeSlashTrigger(it, textFieldState.text.toString(),
-                                        textFieldState.selection.start, textFieldState.selection.end,
-                                        textFieldState.composition != null)
-                                }
-                                if (removed != null) {
-                                    textFieldState.edit {
-                                        replace(trigger.offset, trigger.offset + 1, "")
-                                        selection = TextRange(removed.selectionStart, removed.selectionEnd)
-                                    }
-                                    requestMode = mode
-                                }
-                                slashTrigger = null
-                                slashTracker.clear()
-                                dismiss?.invoke()
-                            },
-                        )
-                    }
-                }
-            }
+
         }
     }
 

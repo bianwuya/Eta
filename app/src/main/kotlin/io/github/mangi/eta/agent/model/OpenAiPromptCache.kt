@@ -13,7 +13,12 @@ internal object OpenAiPromptCache {
         if (!model.startsWith("gpt-") && !model.startsWith("codex-")) return
         // 尊重显式配置，不把不同用途或不同服务商的会话归入同一键。
         if (body.has("prompt_cache_key")) return
-        val identity = "${config.providerId}\n${request.purpose.name}\n${request.sessionId}"
+        // Partition intentional model/account/endpoint changes without exposing a credential.
+        val credential = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(config.apiKey.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+        val identity = listOf(config.providerId, config.baseUrl, config.model, config.authMode,
+            credential, request.purpose.name, request.sessionId).joinToString("\n")
         body.put("prompt_cache_key", "eta-${UUID.nameUUIDFromBytes(identity.toByteArray(Charsets.UTF_8))}")
     }
 }

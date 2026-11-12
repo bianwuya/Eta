@@ -25,7 +25,7 @@ internal object AgentMessageQueueReducer {
         state: AgentChatUiState,
         item: QueuedMessageUi,
     ): AgentChatUiState {
-        val queuedItem = if (item.requestMode == "plan") item.copy(immediateInterrupt = false) else item
+        val queuedItem = item.copy(requestMode = "normal")
         val nextQueue = if (queuedItem.immediateInterrupt) {
             listOf(queuedItem) + state.queuedMessages.map { it.copy(immediateInterrupt = false) }
         } else {
@@ -45,8 +45,6 @@ internal object AgentMessageQueueReducer {
         id: String,
     ): Pair<AgentChatUiState, QueuedMessageUi?> {
         val target = state.queuedMessages.firstOrNull { it.id == id } ?: return state to null
-        // A queued plan is a new restricted request, never steering for the running request.
-        if (state.isStreaming && target.requestMode == "plan") return state to null
         val rest = state.queuedMessages
             .filterNot { it.id == id }
             .map { it.copy(immediateInterrupt = false) }
@@ -78,7 +76,7 @@ internal object AgentMessageQueueReducer {
         val mergedFiles = (state.pendingFileReferences + target.pendingFileReferences).distinctBy { it.id }
         return state.copy(
             input = mergedInput,
-            draftRequestMode = if (target.requestMode == "plan" || currentRequestMode == "plan") "plan" else "normal",
+            draftRequestMode = "normal",
             pendingImages = mergedImages,
             pendingFileReferences = mergedFiles,
             queuedMessages = rest,
