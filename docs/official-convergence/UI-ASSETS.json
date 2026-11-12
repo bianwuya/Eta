@@ -1,21 +1,29 @@
 {
-  "version": "v1",
+  "version": "v2",
   "carrier": "Robolectric 4.17 native graphics; real Compose components with fake state",
   "approval": "REVIEWING; no user approval recorded",
   "sourceSnapshot": {
-    "source": "a5131bb6b92cfa65621fdd1d6b04e16b83611811",
-    "head": "9d9cb28088b12a19b97d5f61c9e460e2b9eb8470",
-    "tree": "a5131bb6b92cfa65621fdd1d6b04e16b83611811",
-    "archiveSha256": "c2f52ea431257bdff4c4c840faa93a76840ffa4e3e3aafa038cc14ec61b4c66c",
-    "archive": "F:\\eta\\projects\\eta-official-g0-g5-20261112\\snapshots\\g3-g5-clean-fixture.tar"
+    "source": "f715867b6bbafb9409ceb8c64ec73787f67b96b3",
+    "head": "cc4577be8323bbf38bd0c8a1e182ca30863ca514",
+    "tree": "f715867b6bbafb9409ceb8c64ec73787f67b96b3",
+    "archiveSha256": "ac3a2dfd57b656cc7429ca0ef8e2c4dac6f156cd60f26ea618aa0478ce13ec02",
+    "archive": "F:\\eta\\projects\\eta-official-g0-g5-20261112\\snapshots\\revision-v2-final.tar"
   },
-  "reviewSourceSha256": "6f8fa5b3dfefbfa9d69ca90dddaac9aef10b53bfceeb3e1503ed22b018126e08",
+  "reviewSourceSha256": "26d521049423bd590ffaf46180aaa99ba1875aebaa604d4376991c86ffc54cbf",
   "limitations": [
     "No installed APK or real device",
-    "Shader contour and squircle effects disabled for software Canvas",
-    "Programmatic navigation/list changes; touch, IME, TalkBack and interrupted gestures not validated"
+    "Contour glow/shader squircle disabled; navigation radius uses a labelled 32dp device fixture",
+    "Real long-press/move/up events tested in Robolectric; device drag, IME and interrupted navigation remain unvalidated"
   ],
   "assets": {
+    "corner-overview.png": {
+      "sha256": "57bb5a657a31a1805b645ba01d5249bdb64276d183644d2f73591dc0f5298a6c",
+      "bytes": 409331,
+      "size": [
+        900,
+        1660
+      ]
+    },
     "coui-dark-detail.png": {
       "sha256": "ec872548f8730b2e71924be0f019b0e011512c0c88ef23f46018e6bf7ae9d6c7",
       "bytes": 113240,
@@ -25,48 +33,48 @@
       ]
     },
     "coui-dark-image-dialog-end.png": {
-      "sha256": "56d2957e052a56c537e1210eb1c45eb9aa8796dd1cd17c49f4191ec0ee1761de",
-      "bytes": 117689,
+      "sha256": "8206b21dd7d3d560a323e3a11d106b281a60266167a6568d054d0323b321ca0a",
+      "bytes": 123574,
       "size": [
         720,
         1800
       ]
     },
     "coui-dark-image-dialog-mid.png": {
-      "sha256": "aa6f1b5b326cff0372e3460c80605d7426100f38c9505fd493bf8a7c00dcfad9",
-      "bytes": 132977,
+      "sha256": "23e4f374184b79085a194e32411e2824f405e17d6843d73f238ad88cc41e52e3",
+      "bytes": 132332,
       "size": [
         720,
         1800
       ]
     },
     "coui-dark-image-dialog-return.png": {
-      "sha256": "69020cc2d279189eee7f4c6f898ca3d9fedbc967aa21dfeb0db210ad57d957e0",
-      "bytes": 106575,
+      "sha256": "dfac48da8722388f7d3336b689632d9a257ebc8ef7043907494676655d5b7609",
+      "bytes": 116808,
       "size": [
         720,
         1800
       ]
     },
     "coui-dark-image-dialog-start.png": {
-      "sha256": "69020cc2d279189eee7f4c6f898ca3d9fedbc967aa21dfeb0db210ad57d957e0",
-      "bytes": 106575,
+      "sha256": "dfac48da8722388f7d3336b689632d9a257ebc8ef7043907494676655d5b7609",
+      "bytes": 116808,
       "size": [
         720,
         1800
       ]
     },
     "coui-dark-image.png": {
-      "sha256": "69020cc2d279189eee7f4c6f898ca3d9fedbc967aa21dfeb0db210ad57d957e0",
-      "bytes": 106575,
+      "sha256": "dfac48da8722388f7d3336b689632d9a257ebc8ef7043907494676655d5b7609",
+      "bytes": 116808,
       "size": [
         720,
         1800
       ]
     },
     "coui-dark-subagent.png": {
-      "sha256": "736a7691f5927878d7d3ec46ca77dafcd427b7c5988b9eea8956ec204132f773",
-      "bytes": 134757,
+      "sha256": "16cc31fc61a238c8a837e396814f0306ee1bcc605d6d973792856e19d3350e32",
+      "bytes": 129830,
       "size": [
         720,
         1800
@@ -81,152 +89,288 @@
       ]
     },
     "coui-light-failover-back-mid.png": {
-      "sha256": "f16607fdef8e5f66a1b807a3c88397413ec426badd6c7ef5fe738fe4f7919a3b",
-      "bytes": 141855,
+      "sha256": "25112ee08a09301eb0ec86cbe8e3ed2f8bf4f6320320d427f7db3c2b213834d7",
+      "bytes": 136981,
       "size": [
         720,
         1800
       ]
     },
     "coui-light-failover-back-start.png": {
-      "sha256": "f16607fdef8e5f66a1b807a3c88397413ec426badd6c7ef5fe738fe4f7919a3b",
-      "bytes": 141855,
+      "sha256": "25112ee08a09301eb0ec86cbe8e3ed2f8bf4f6320320d427f7db3c2b213834d7",
+      "bytes": 136981,
       "size": [
         720,
         1800
       ]
     },
     "coui-light-failover-end.png": {
-      "sha256": "e1ab327e396e7a62480875fbeaa118fe9d0f9a0d531405ebb4a533a2738eaead",
-      "bytes": 151473,
+      "sha256": "ac97198c89c3c492b3f5ff950a94c6a0eec03f491ea9f8275533146f033e947f",
+      "bytes": 147432,
       "size": [
         720,
         1800
       ]
     },
     "coui-light-failover-mid.png": {
-      "sha256": "e1ab327e396e7a62480875fbeaa118fe9d0f9a0d531405ebb4a533a2738eaead",
-      "bytes": 151473,
+      "sha256": "ac97198c89c3c492b3f5ff950a94c6a0eec03f491ea9f8275533146f033e947f",
+      "bytes": 147432,
       "size": [
         720,
         1800
       ]
     },
     "coui-light-failover-return.png": {
-      "sha256": "f16607fdef8e5f66a1b807a3c88397413ec426badd6c7ef5fe738fe4f7919a3b",
-      "bytes": 141855,
+      "sha256": "25112ee08a09301eb0ec86cbe8e3ed2f8bf4f6320320d427f7db3c2b213834d7",
+      "bytes": 136981,
       "size": [
         720,
         1800
       ]
     },
     "coui-light-failover-start.png": {
-      "sha256": "e1ab327e396e7a62480875fbeaa118fe9d0f9a0d531405ebb4a533a2738eaead",
-      "bytes": 151473,
+      "sha256": "ac97198c89c3c492b3f5ff950a94c6a0eec03f491ea9f8275533146f033e947f",
+      "bytes": 147432,
       "size": [
         720,
         1800
       ]
     },
     "coui-light-failover.png": {
-      "sha256": "f16607fdef8e5f66a1b807a3c88397413ec426badd6c7ef5fe738fe4f7919a3b",
-      "bytes": 141855,
+      "sha256": "25112ee08a09301eb0ec86cbe8e3ed2f8bf4f6320320d427f7db3c2b213834d7",
+      "bytes": 136981,
       "size": [
         720,
         1800
       ]
     },
     "coui-light-image-dialog-end.png": {
-      "sha256": "28c91ff8213d09b5e7a10356e63d90f5daf7dfc5a8a4ce9993a73bd987af0f96",
-      "bytes": 131798,
+      "sha256": "e6ecd29d3f2124996077355832c3e5fa64e3a7542925ba3fb62fa6de6fae4431",
+      "bytes": 138523,
       "size": [
         720,
         1800
       ]
     },
     "coui-light-image-dialog-mid.png": {
-      "sha256": "0dea9ea8175c7c190986a34285f87da987077e6dabdd75bce9e8831e63b88406",
-      "bytes": 148589,
+      "sha256": "687b1382b7529878e15731f709ab158ef47c846bc9e9203fba253b5bbcb18882",
+      "bytes": 146966,
       "size": [
         720,
         1800
       ]
     },
     "coui-light-image-dialog-return.png": {
-      "sha256": "2e0af941fbf51754bbdd72a48c331ee83d03d9a198b18961ec59be65a0f75532",
-      "bytes": 112551,
+      "sha256": "0f22f1b92d58e0f6bb4876b2f22344d47f09da47c9f1fca4b01894b0e4e95cf5",
+      "bytes": 122726,
       "size": [
         720,
         1800
       ]
     },
     "coui-light-image-dialog-start.png": {
-      "sha256": "2e0af941fbf51754bbdd72a48c331ee83d03d9a198b18961ec59be65a0f75532",
-      "bytes": 112551,
+      "sha256": "0f22f1b92d58e0f6bb4876b2f22344d47f09da47c9f1fca4b01894b0e4e95cf5",
+      "bytes": 122726,
       "size": [
         720,
         1800
       ]
     },
     "coui-light-image-error.png": {
-      "sha256": "8e123fa4611a5d1cfb378b3c559e9419e1d1a348aab2f2bcd878a056bf2c3616",
-      "bytes": 118938,
+      "sha256": "3a7627a5f7d39ab0b8b1b0c09f7fa69cd087853b30967d2434c24835285fa749",
+      "bytes": 128840,
       "size": [
         720,
         1800
       ]
     },
     "coui-light-image-large-text.png": {
-      "sha256": "5509752603855300ead8b924274c490d36b0d261f087b557528d42512ce48352",
-      "bytes": 134565,
+      "sha256": "be35a2ac6715df51ab06d10164152df86b03d5c124f033dde6d4b12b47367d5f",
+      "bytes": 137857,
       "size": [
         720,
         1800
       ]
     },
     "coui-light-image-loading.png": {
-      "sha256": "c2c83116525c2e09d1800589b1f3e71c363e23269052b238920d7826fd634d70",
-      "bytes": 107536,
+      "sha256": "7df32718e48b8f8798ea1e745c4a80402bdeacfc505c8f9dcd0fad699aafc8ba",
+      "bytes": 117489,
       "size": [
         720,
         1800
       ]
     },
     "coui-light-image-narrow.png": {
-      "sha256": "24c032f26ea349852551a516cf722f49bcb62dd83770807580536d684099ea8e",
-      "bytes": 110387,
+      "sha256": "7093a01c8e978109a396e64931661577bd5499a9c948e165a9c46b4d1884aaac",
+      "bytes": 115902,
       "size": [
         640,
         1600
       ]
     },
     "coui-light-image.png": {
-      "sha256": "2e0af941fbf51754bbdd72a48c331ee83d03d9a198b18961ec59be65a0f75532",
-      "bytes": 112551,
+      "sha256": "0f22f1b92d58e0f6bb4876b2f22344d47f09da47c9f1fca4b01894b0e4e95cf5",
+      "bytes": 122726,
+      "size": [
+        720,
+        1800
+      ]
+    },
+    "coui-light-models-back-mid.png": {
+      "sha256": "0f22f1b92d58e0f6bb4876b2f22344d47f09da47c9f1fca4b01894b0e4e95cf5",
+      "bytes": 122726,
+      "size": [
+        720,
+        1800
+      ]
+    },
+    "coui-light-models-back-start.png": {
+      "sha256": "0f22f1b92d58e0f6bb4876b2f22344d47f09da47c9f1fca4b01894b0e4e95cf5",
+      "bytes": 122726,
+      "size": [
+        720,
+        1800
+      ]
+    },
+    "coui-light-models-end.png": {
+      "sha256": "33785446fb236d2247d99feef03568f68364f47421d5374014243a92512fff0e",
+      "bytes": 81663,
+      "size": [
+        720,
+        1800
+      ]
+    },
+    "coui-light-models-mid.png": {
+      "sha256": "33785446fb236d2247d99feef03568f68364f47421d5374014243a92512fff0e",
+      "bytes": 81663,
+      "size": [
+        720,
+        1800
+      ]
+    },
+    "coui-light-models-return.png": {
+      "sha256": "0f22f1b92d58e0f6bb4876b2f22344d47f09da47c9f1fca4b01894b0e4e95cf5",
+      "bytes": 122726,
+      "size": [
+        720,
+        1800
+      ]
+    },
+    "coui-light-models-start.png": {
+      "sha256": "33785446fb236d2247d99feef03568f68364f47421d5374014243a92512fff0e",
+      "bytes": 81663,
+      "size": [
+        720,
+        1800
+      ]
+    },
+    "coui-light-models.png": {
+      "sha256": "0f22f1b92d58e0f6bb4876b2f22344d47f09da47c9f1fca4b01894b0e4e95cf5",
+      "bytes": 122726,
+      "size": [
+        720,
+        1800
+      ]
+    },
+    "coui-light-reorder-back-mid.png": {
+      "sha256": "ebb126b05bb17fd1ad8555686d101ab59cb28aab73b2eb038e477df305db33b6",
+      "bytes": 136977,
+      "size": [
+        720,
+        1800
+      ]
+    },
+    "coui-light-reorder-back-start.png": {
+      "sha256": "ebb126b05bb17fd1ad8555686d101ab59cb28aab73b2eb038e477df305db33b6",
+      "bytes": 136977,
+      "size": [
+        720,
+        1800
+      ]
+    },
+    "coui-light-reorder-drag-end.png": {
+      "sha256": "ebb126b05bb17fd1ad8555686d101ab59cb28aab73b2eb038e477df305db33b6",
+      "bytes": 136977,
+      "size": [
+        720,
+        1800
+      ]
+    },
+    "coui-light-reorder-drag-mid.png": {
+      "sha256": "d62b316348cb263a1361191b039136b274458b99497c2b964f829734db1629ad",
+      "bytes": 137044,
+      "size": [
+        720,
+        1800
+      ]
+    },
+    "coui-light-reorder-drag-start.png": {
+      "sha256": "25112ee08a09301eb0ec86cbe8e3ed2f8bf4f6320320d427f7db3c2b213834d7",
+      "bytes": 136981,
+      "size": [
+        720,
+        1800
+      ]
+    },
+    "coui-light-reorder-end.png": {
+      "sha256": "ebb126b05bb17fd1ad8555686d101ab59cb28aab73b2eb038e477df305db33b6",
+      "bytes": 136977,
+      "size": [
+        720,
+        1800
+      ]
+    },
+    "coui-light-reorder-mid.png": {
+      "sha256": "ebb126b05bb17fd1ad8555686d101ab59cb28aab73b2eb038e477df305db33b6",
+      "bytes": 136977,
+      "size": [
+        720,
+        1800
+      ]
+    },
+    "coui-light-reorder-return.png": {
+      "sha256": "ebb126b05bb17fd1ad8555686d101ab59cb28aab73b2eb038e477df305db33b6",
+      "bytes": 136977,
+      "size": [
+        720,
+        1800
+      ]
+    },
+    "coui-light-reorder-start.png": {
+      "sha256": "ebb126b05bb17fd1ad8555686d101ab59cb28aab73b2eb038e477df305db33b6",
+      "bytes": 136977,
+      "size": [
+        720,
+        1800
+      ]
+    },
+    "coui-light-reorder.png": {
+      "sha256": "25112ee08a09301eb0ec86cbe8e3ed2f8bf4f6320320d427f7db3c2b213834d7",
+      "bytes": 136981,
       "size": [
         720,
         1800
       ]
     },
     "coui-light-subagent-downgrade.png": {
-      "sha256": "e1ab327e396e7a62480875fbeaa118fe9d0f9a0d531405ebb4a533a2738eaead",
-      "bytes": 151473,
+      "sha256": "ac97198c89c3c492b3f5ff950a94c6a0eec03f491ea9f8275533146f033e947f",
+      "bytes": 147432,
       "size": [
         720,
         1800
       ]
     },
     "coui-light-subagent-reordered.png": {
-      "sha256": "aadd5281a6d30d833663acbd7268c61385eb67956b68bc14e5e5b8388e05870e",
-      "bytes": 141839,
+      "sha256": "ebb126b05bb17fd1ad8555686d101ab59cb28aab73b2eb038e477df305db33b6",
+      "bytes": 136977,
       "size": [
         720,
         1800
       ]
     },
     "coui-light-subagent.png": {
-      "sha256": "f16607fdef8e5f66a1b807a3c88397413ec426badd6c7ef5fe738fe4f7919a3b",
-      "bytes": 141855,
+      "sha256": "25112ee08a09301eb0ec86cbe8e3ed2f8bf4f6320320d427f7db3c2b213834d7",
+      "bytes": 136981,
       "size": [
         720,
         1800
@@ -240,6 +384,14 @@
         830
       ]
     },
+    "drag-overview.png": {
+      "sha256": "1956bc420d04199fedd2cdfa15e0d74057717d66272da4a63c074f87ef50d6b0",
+      "bytes": 174091,
+      "size": [
+        900,
+        1660
+      ]
+    },
     "miuix-dark-detail.png": {
       "sha256": "71a318646272e72c523c1e4931f3c7cdd4bf2998826d9cf0380aa42c8fa7b792",
       "bytes": 117158,
@@ -249,56 +401,56 @@
       ]
     },
     "miuix-dark-image-dialog-end.png": {
-      "sha256": "f823af4e28432100b69c63e48026a888b2a027056327799e5c22e205c5bc72dc",
-      "bytes": 102935,
+      "sha256": "2452912ab643d74864004359c1c3ea2b481279b2979c1af218e3d26cbc704400",
+      "bytes": 101740,
       "size": [
         720,
         1800
       ]
     },
     "miuix-dark-image-dialog-mid.png": {
-      "sha256": "77e98bc213c5129d1e16a8bf5e6c3b391d49ca58ba2e1009cbd73f335b371d5a",
-      "bytes": 110933,
+      "sha256": "0ce25d9dfb13b67a0eb90db27293e1f7284b72da72eb1f4f2e69e9a87863cd03",
+      "bytes": 109251,
       "size": [
         720,
         1800
       ]
     },
     "miuix-dark-image-dialog-return.png": {
-      "sha256": "ece361977bac769a4ebcdcb19a38308deb1df6b27ab830d170559652506b6ee2",
-      "bytes": 106720,
+      "sha256": "12da92ff18d8d70cdc4a0c2958e911ffdec37468d127eb48e4cdb084650acd63",
+      "bytes": 117005,
       "size": [
         720,
         1800
       ]
     },
     "miuix-dark-image-dialog-start.png": {
-      "sha256": "ece361977bac769a4ebcdcb19a38308deb1df6b27ab830d170559652506b6ee2",
-      "bytes": 106720,
+      "sha256": "12da92ff18d8d70cdc4a0c2958e911ffdec37468d127eb48e4cdb084650acd63",
+      "bytes": 117005,
       "size": [
         720,
         1800
       ]
     },
     "miuix-dark-image.png": {
-      "sha256": "ece361977bac769a4ebcdcb19a38308deb1df6b27ab830d170559652506b6ee2",
-      "bytes": 106720,
+      "sha256": "12da92ff18d8d70cdc4a0c2958e911ffdec37468d127eb48e4cdb084650acd63",
+      "bytes": 117005,
       "size": [
         720,
         1800
       ]
     },
     "miuix-dark-subagent-unavailable.png": {
-      "sha256": "7a10be8d03f270c37d94a4f4e9397cd3edb27afcb3a631e96c5e9de3475df0e0",
-      "bytes": 132286,
+      "sha256": "6f8f826a5c171732a6657969591af032cbb48ae02074b410d646ee001f2361ab",
+      "bytes": 126048,
       "size": [
         720,
         1800
       ]
     },
     "miuix-dark-subagent.png": {
-      "sha256": "5417004580dd55d13831c801fd3ef950fe64a0e5fade422482953ac8ff7078d3",
-      "bytes": 133844,
+      "sha256": "99d4f10c9d6e18e3a62b895c9ed7a86d3281ba89b4b9305c11e1a12ca0581bb7",
+      "bytes": 125088,
       "size": [
         720,
         1800
@@ -313,192 +465,280 @@
       ]
     },
     "miuix-light-image-dialog-end.png": {
-      "sha256": "770edff5a0887bf11a03e8592bc9cc90f8513504672b37cdb8e920828e9c7bf3",
-      "bytes": 113454,
+      "sha256": "ba104b7b2a76336b89b2ca55d2f8a5de81b02f402cbb13d69ec6e676842e531f",
+      "bytes": 112550,
       "size": [
         720,
         1800
       ]
     },
     "miuix-light-image-dialog-mid.png": {
-      "sha256": "f8e5b1f58640d1a12269336b0a7381f3e25dd098558712f90975281379cdce53",
-      "bytes": 121231,
+      "sha256": "c04dfd9cefa6e64e75b229ed231fedfbf773eec8fbc2d6ce852a5ffdb8e1425a",
+      "bytes": 119477,
       "size": [
         720,
         1800
       ]
     },
     "miuix-light-image-dialog-return.png": {
-      "sha256": "5416878cf2f2c12807a6d92991bd73ccb15759326e2cddf94c5fe91826af0386",
-      "bytes": 105490,
+      "sha256": "2e400b8d3d538ef031eede73daafd2f43f59596bce26f1a569dbfadb3d08c145",
+      "bytes": 115473,
       "size": [
         720,
         1800
       ]
     },
     "miuix-light-image-dialog-start.png": {
-      "sha256": "5416878cf2f2c12807a6d92991bd73ccb15759326e2cddf94c5fe91826af0386",
-      "bytes": 105490,
+      "sha256": "2e400b8d3d538ef031eede73daafd2f43f59596bce26f1a569dbfadb3d08c145",
+      "bytes": 115473,
       "size": [
         720,
         1800
       ]
     },
     "miuix-light-image-landscape.png": {
-      "sha256": "482ea4cc7df29d3ed833ad7e2db8d94e233a5cba930a5a583e32a362fef76260",
-      "bytes": 54218,
+      "sha256": "1ec18179def0ed7bca43c0ff08fd6c20f406f673ce6e6596efeb383e9cb609c5",
+      "bytes": 47733,
       "size": [
         1600,
         800
       ]
     },
     "miuix-light-image.png": {
-      "sha256": "5416878cf2f2c12807a6d92991bd73ccb15759326e2cddf94c5fe91826af0386",
-      "bytes": 105490,
+      "sha256": "2e400b8d3d538ef031eede73daafd2f43f59596bce26f1a569dbfadb3d08c145",
+      "bytes": 115473,
+      "size": [
+        720,
+        1800
+      ]
+    },
+    "miuix-light-models-back-mid.png": {
+      "sha256": "2e400b8d3d538ef031eede73daafd2f43f59596bce26f1a569dbfadb3d08c145",
+      "bytes": 115473,
+      "size": [
+        720,
+        1800
+      ]
+    },
+    "miuix-light-models-back-start.png": {
+      "sha256": "2e400b8d3d538ef031eede73daafd2f43f59596bce26f1a569dbfadb3d08c145",
+      "bytes": 115473,
+      "size": [
+        720,
+        1800
+      ]
+    },
+    "miuix-light-models-end.png": {
+      "sha256": "16b8304bb1a4666b59c1a17896a79365ed50b03e6adb39849a83e6d18c8dbff8",
+      "bytes": 69566,
+      "size": [
+        720,
+        1800
+      ]
+    },
+    "miuix-light-models-mid.png": {
+      "sha256": "16b8304bb1a4666b59c1a17896a79365ed50b03e6adb39849a83e6d18c8dbff8",
+      "bytes": 69566,
+      "size": [
+        720,
+        1800
+      ]
+    },
+    "miuix-light-models-return.png": {
+      "sha256": "2e400b8d3d538ef031eede73daafd2f43f59596bce26f1a569dbfadb3d08c145",
+      "bytes": 115473,
+      "size": [
+        720,
+        1800
+      ]
+    },
+    "miuix-light-models-start.png": {
+      "sha256": "16b8304bb1a4666b59c1a17896a79365ed50b03e6adb39849a83e6d18c8dbff8",
+      "bytes": 69566,
+      "size": [
+        720,
+        1800
+      ]
+    },
+    "miuix-light-models.png": {
+      "sha256": "2e400b8d3d538ef031eede73daafd2f43f59596bce26f1a569dbfadb3d08c145",
+      "bytes": 115473,
       "size": [
         720,
         1800
       ]
     },
     "miuix-light-navigation-back-mid.png": {
-      "sha256": "0cd7cf9ed8b3918c047e2d6b73e747b2721661682a121d5326350c5b3d23ba08",
-      "bytes": 159660,
+      "sha256": "c2e2814266889a80ccd13ece6a06d9660bb428095abfc4fa555fe7ca22192b44",
+      "bytes": 158108,
       "size": [
         720,
         1800
       ]
     },
     "miuix-light-navigation-back-start.png": {
-      "sha256": "5416878cf2f2c12807a6d92991bd73ccb15759326e2cddf94c5fe91826af0386",
-      "bytes": 105490,
+      "sha256": "2e400b8d3d538ef031eede73daafd2f43f59596bce26f1a569dbfadb3d08c145",
+      "bytes": 115473,
       "size": [
         720,
         1800
       ]
     },
     "miuix-light-navigation-end.png": {
-      "sha256": "5416878cf2f2c12807a6d92991bd73ccb15759326e2cddf94c5fe91826af0386",
-      "bytes": 105490,
+      "sha256": "2e400b8d3d538ef031eede73daafd2f43f59596bce26f1a569dbfadb3d08c145",
+      "bytes": 115473,
       "size": [
         720,
         1800
       ]
     },
     "miuix-light-navigation-mid.png": {
-      "sha256": "c789453bc7ae73f9acd571eb1ae5302a58681fda129c46cbbc657deb6ff1feb6",
-      "bytes": 151317,
+      "sha256": "15f5571b4d73b17587b46761839f69d907e40e8b420e655c3e44071286da2855",
+      "bytes": 158631,
       "size": [
         720,
         1800
       ]
     },
     "miuix-light-navigation-return.png": {
-      "sha256": "042ebf07e12cf6633ddbb78338f012db341c23b531291330341c750f6c13956b",
-      "bytes": 133990,
+      "sha256": "b8d52ac5fe345d24968f1ead8a5081d95087ca02e8f1ad532c844d04df6fca96",
+      "bytes": 125028,
       "size": [
         720,
         1800
       ]
     },
     "miuix-light-navigation-start.png": {
-      "sha256": "042ebf07e12cf6633ddbb78338f012db341c23b531291330341c750f6c13956b",
-      "bytes": 133990,
+      "sha256": "b8d52ac5fe345d24968f1ead8a5081d95087ca02e8f1ad532c844d04df6fca96",
+      "bytes": 125028,
       "size": [
         720,
         1800
       ]
     },
     "miuix-light-navigation.png": {
-      "sha256": "042ebf07e12cf6633ddbb78338f012db341c23b531291330341c750f6c13956b",
-      "bytes": 133990,
+      "sha256": "b8d52ac5fe345d24968f1ead8a5081d95087ca02e8f1ad532c844d04df6fca96",
+      "bytes": 125028,
       "size": [
         720,
         1800
       ]
     },
     "miuix-light-reorder-back-mid.png": {
-      "sha256": "1b9915b6b22897086336cf9c068ff2aa5724ccb59c10acbc4d208917768799b8",
-      "bytes": 37981,
+      "sha256": "812ee22e0e60c21de8ce9bf8f5068b97c700fb1ef946a07fb9667e8fb1636884",
+      "bytes": 125012,
       "size": [
         720,
         1800
       ]
     },
     "miuix-light-reorder-back-start.png": {
-      "sha256": "decd58836e768313b96c9a867a945dbddb100075ef234bbfebb17297bce0866e",
-      "bytes": 46416,
+      "sha256": "812ee22e0e60c21de8ce9bf8f5068b97c700fb1ef946a07fb9667e8fb1636884",
+      "bytes": 125012,
+      "size": [
+        720,
+        1800
+      ]
+    },
+    "miuix-light-reorder-drag-end.png": {
+      "sha256": "812ee22e0e60c21de8ce9bf8f5068b97c700fb1ef946a07fb9667e8fb1636884",
+      "bytes": 125012,
+      "size": [
+        720,
+        1800
+      ]
+    },
+    "miuix-light-reorder-drag-mid.png": {
+      "sha256": "737ce0d9a155f47cdf2a5b10bf5f331eea2185f1992aa8b5ce902e92ec43914b",
+      "bytes": 125090,
+      "size": [
+        720,
+        1800
+      ]
+    },
+    "miuix-light-reorder-drag-start.png": {
+      "sha256": "b8d52ac5fe345d24968f1ead8a5081d95087ca02e8f1ad532c844d04df6fca96",
+      "bytes": 125028,
       "size": [
         720,
         1800
       ]
     },
     "miuix-light-reorder-end.png": {
-      "sha256": "decd58836e768313b96c9a867a945dbddb100075ef234bbfebb17297bce0866e",
-      "bytes": 46416,
+      "sha256": "812ee22e0e60c21de8ce9bf8f5068b97c700fb1ef946a07fb9667e8fb1636884",
+      "bytes": 125012,
       "size": [
         720,
         1800
       ]
     },
     "miuix-light-reorder-mid.png": {
-      "sha256": "f5f3a58e7c4ee9dfd522bb6ca11f46433ee3221d8c9e0e8b33babe6213248da2",
-      "bytes": 38239,
+      "sha256": "812ee22e0e60c21de8ce9bf8f5068b97c700fb1ef946a07fb9667e8fb1636884",
+      "bytes": 125012,
       "size": [
         720,
         1800
       ]
     },
     "miuix-light-reorder-return.png": {
-      "sha256": "2fe1d53aad13eeed38651ebcf7b113518f8c406c4a60ca36c16b46887a909566",
-      "bytes": 46416,
+      "sha256": "812ee22e0e60c21de8ce9bf8f5068b97c700fb1ef946a07fb9667e8fb1636884",
+      "bytes": 125012,
       "size": [
         720,
         1800
       ]
     },
     "miuix-light-reorder-start.png": {
-      "sha256": "2fe1d53aad13eeed38651ebcf7b113518f8c406c4a60ca36c16b46887a909566",
-      "bytes": 46416,
+      "sha256": "812ee22e0e60c21de8ce9bf8f5068b97c700fb1ef946a07fb9667e8fb1636884",
+      "bytes": 125012,
       "size": [
         720,
         1800
       ]
     },
     "miuix-light-reorder.png": {
-      "sha256": "2fe1d53aad13eeed38651ebcf7b113518f8c406c4a60ca36c16b46887a909566",
-      "bytes": 46416,
+      "sha256": "b8d52ac5fe345d24968f1ead8a5081d95087ca02e8f1ad532c844d04df6fca96",
+      "bytes": 125028,
       "size": [
         720,
         1800
       ]
     },
     "miuix-light-subagent.png": {
-      "sha256": "042ebf07e12cf6633ddbb78338f012db341c23b531291330341c750f6c13956b",
-      "bytes": 133990,
+      "sha256": "b8d52ac5fe345d24968f1ead8a5081d95087ca02e8f1ad532c844d04df6fca96",
+      "bytes": 125028,
       "size": [
         720,
         1800
       ]
     },
     "motion-overview.png": {
-      "sha256": "efd3ea9893134bf6953c5d3bd5cb21279f6ef31953696b43f9b74f72dfa6a287",
-      "bytes": 890717,
+      "sha256": "9f35ec5d939fdbbcda4df523cc4fb56ed05f15fdf9467c9092a294ebd42426df",
+      "bytes": 934023,
       "size": [
         900,
         4980
       ]
     },
     "overview.png": {
-      "sha256": "d7544f70e344ea722a104caffbaacd2874c309c2f9ca5258c495b3369439a3b6",
-      "bytes": 258698,
+      "sha256": "15b639a4fe61a0218826f0b0fda0806a43d439de61d0c85d5cd860f666602591",
+      "bytes": 258460,
+      "size": [
+        1200,
+        830
+      ]
+    },
+    "revision-overview.png": {
+      "sha256": "71d871612cf9c506b4f5320617c96469519f14d002e280688a0f6ea650a5480e",
+      "bytes": 214530,
       "size": [
         1200,
         830
       ]
     },
     "states-overview.png": {
-      "sha256": "c11a5a7c35e9e73f3f4012223c0ce70c5423ac10894e0953cab1396e0d36efe5",
-      "bytes": 459271,
+      "sha256": "9a9417dd088c151238f59ac6ef8f55a1dbc98e311080e95c419126a352ab122c",
+      "bytes": 459082,
       "size": [
         1200,
         1660
@@ -507,7 +747,7 @@
   },
   "keyframeSlideshow": {
     "file": "navigation.gif",
-    "sha256": "ca12ff00b49c8d7e52974bc533b3996477f62f09d96631dcf08bf0a676441ff8",
+    "sha256": "f5484c5e6e62235285364975fb0e2c923dab802a45da6c27d5b03ce805410442",
     "timing": "Illustrative pauses, not real-time animation speed"
   }
 }

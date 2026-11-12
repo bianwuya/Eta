@@ -6,6 +6,15 @@ import android.graphics.Canvas
 import android.os.Looper
 import android.os.SystemClock
 import android.view.View
+import android.view.ViewGroup
+import android.view.MotionEvent
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.*
+import androidx.compose.ui.platform.ViewRootForTest
+import androidx.compose.ui.Alignment
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -49,12 +58,65 @@ import top.yukonga.miuix.kmp.squircle.LocalSquircleEnabled
 import top.yukonga.miuix.kmp.nav.core.NavDisplay
 import top.yukonga.miuix.kmp.nav.core.NavDisplayEffects
 import top.yukonga.miuix.kmp.nav.core.rememberNavBackStack
+import top.yukonga.miuix.kmp.nav.core.rememberNavSystemCornerRadius
 import java.io.File
 import java.time.Duration
 
 /** Isolated review composition. Never referenced by the application or backed by real settings. */
-private enum class ReviewPage { IMAGE, SUBAGENT, DETAIL }
+private enum class ReviewPage { IMAGE, SUBAGENT, DETAIL, MODELS }
 private enum class ReviewState { READY, LOADING, ERROR, UNAVAILABLE, RECOVERED }
+
+/** Test-only interactive candidate. Order stays in this composition, never real settings. */
+@Composable
+private fun ReviewPriorityRows(initialReversed: Boolean = false) {
+    val names = remember { mutableStateListOf<String>().apply { addAll(if (initialReversed)
+        listOf("model-low", "model-high") else listOf("model-high", "model-low")) } }
+    var dragged by remember { mutableStateOf<String?>(null) }
+    var offset by remember { mutableFloatStateOf(0f) }
+    val rowHeight = with(LocalDensity.current) { 64.dp.toPx() }
+    names.toList().forEachIndexed { index, model ->
+        key(model) {
+            val handle = Modifier.size(48.dp).semantics {
+                contentDescription = "拖动调整 $model 的优先级"
+                customActions = listOf(CustomAccessibilityAction("上移") {
+                    val at = names.indexOf(model)
+                    if (at > 0) { names.removeAt(at); names.add(at - 1, model); true } else false
+                }, CustomAccessibilityAction("下移") {
+                    val at = names.indexOf(model)
+                    if (at < names.lastIndex) { names.removeAt(at); names.add(at + 1, model); true } else false
+                })
+            }.pointerInput(model) {
+                detectDragGesturesAfterLongPress(
+                    onDragStart = { dragged = model; offset = 0f },
+                    onDragEnd = { dragged = null; offset = 0f },
+                    onDragCancel = { dragged = null; offset = 0f },
+                ) { change, delta ->
+                    change.consume(); offset += delta.y
+                    val at = names.indexOf(model)
+                    val target = when { offset > rowHeight / 2 && at < names.lastIndex -> at + 1
+                        offset < -rowHeight / 2 && at > 0 -> at - 1; else -> at }
+                    if (at != target) { names.removeAt(at); names.add(target, model); offset -= (target - at) * rowHeight }
+                }
+            }
+            val trailing: @Composable () -> Unit = {
+                Box(handle, contentAlignment = Alignment.Center) { ReviewLabel("≡") }
+            }
+            val body: @Composable () -> Unit = {
+                if (LocalUiStyle.current == AppearanceUiStyle.COUI)
+                    CouiPreference(title = "${index + 1}  $model", summary = if (index == 0) "优先使用" else "备用模型",
+                        trailing = trailing, showChevron = false)
+                else BasicComponent(title = "${index + 1}  $model", summary = if (index == 0) "优先使用" else "备用模型",
+                    endActions = { trailing() })
+            }
+            Box(Modifier.fillMaxWidth().heightIn(min = 64.dp).graphicsLayer { translationY = if (dragged == model) offset else 0f }) { body() }
+        }
+    }
+}
+
+@Composable private fun ReviewLabel(text: String) {
+    if (LocalUiStyle.current == AppearanceUiStyle.COUI) CouiText(text = text, kind = CouiTextKind.PreferenceTitle)
+    else Text(text)
+}
 
 @Composable
 private fun ReviewGroup(title: String, content: @Composable () -> Unit) {
@@ -99,12 +161,13 @@ private fun ReviewContent(page: ReviewPage, state: ReviewState, advanced: Boolea
     when (page) {
         ReviewPage.IMAGE -> {
             ReviewGroup("独立生图连接") {
-                ReviewRow("OpenAI Images 兼容协议", "独立于聊天模型与账号；请求只执行一次")
+                ReviewRow("OpenAI Images 兼容协议", "使用独立连接")
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     ReviewField("中转 URL", "https://relay.example")
                     ReviewField("独立 API Key", "preview-key-hidden", secret = true)
-                    ReviewField("生图模型", "image-model")
                 }
+                ReviewRow("生图模型", "image-model-a · 点按选择", openDialog)
+                ReviewRow("刷新模型列表", "从此连接读取可用模型", openDialog)
             }
             ReviewNote("地址支持根 URL、/v1 或完整 Images endpoint，会自动补齐生成路径。")
             ReviewGroup("高级设置") {
@@ -132,16 +195,9 @@ private fun ReviewContent(page: ReviewPage, state: ReviewState, advanced: Boolea
                 ReviewRow("缓存命中率", "75% · 按服务端实际返回统计；缺失显示未知")
             }
             ReviewGroup("模型优先级") {
-                val names = if (orderReversed) listOf("model-low", "model-high") else listOf("model-high", "model-low")
-                names.forEachIndexed { i, name -> ReviewRow("${i + 1}  $name", when {
-                    state == ReviewState.UNAVAILABLE -> "暂不可用 · 保留此顺序"
-                    state == ReviewState.ERROR && i == 0 -> "额度不足 · 本次已跳过"
-                    state == ReviewState.ERROR -> "正在使用 · 工具能力可用"
-                    i == 0 -> "优先启动 · 同账号 · 工具能力可用"
-                    else -> "下一级 · 明确不可用时启用"
-                }, openDialog) }
+                ReviewPriorityRows(orderReversed)
             }
-            ReviewNote("长按调整顺序；也可使用上移/下移。已开始的任务保留原模型与断点。")
+            ReviewNote("长按右侧拖动柄上下拖动，松手保存顺序。已运行的子代理继续使用原模型。")
             ReviewGroup("上下文与提示词") {
                 ReviewRow("压缩模型", "独立配置 · 完整历史单次摘要", openDialog)
                 ReviewRow("子代理提示词", "复用现有 profile 编辑器", openDialog)
@@ -168,6 +224,15 @@ private fun ReviewContent(page: ReviewPage, state: ReviewState, advanced: Boolea
             ReviewNote("未知工具副作用时停止自动重放。手动确认后再决定下一步。")
             ReviewAction("查看完整记录", openDialog)
         }
+        ReviewPage.MODELS -> {
+            Column(Modifier.padding(16.dp)) { ReviewField("搜索模型", "") }
+            ReviewGroup("此连接的生图模型") {
+                ReviewRow("image-model-a", "已选择")
+                ReviewRow("image-model-b", "可用模型", {})
+            }
+            ReviewGroup("其他") { ReviewRow("手动添加模型", "目录未列出时使用", {}) }
+            ReviewNote("模型列表来自此生图连接。选择后返回连接设置。")
+        }
     }
     Spacer(Modifier.height(32.dp))
 }
@@ -176,7 +241,7 @@ private fun ReviewContent(page: ReviewPage, state: ReviewState, advanced: Boolea
 private fun ReviewScreen(page: ReviewPage, state: ReviewState = ReviewState.READY,
     advanced: Boolean = false, reversed: Boolean = false, dialog: Boolean = false,
     onDialog: () -> Unit = {}) {
-    val title = when (page) { ReviewPage.IMAGE -> "生图配置"; ReviewPage.SUBAGENT -> "子代理设置"; ReviewPage.DETAIL -> "子代理详情" }
+    val title = when (page) { ReviewPage.IMAGE -> "生图配置"; ReviewPage.SUBAGENT -> "子代理设置"; ReviewPage.DETAIL -> "子代理详情"; ReviewPage.MODELS -> "选择生图模型" }
     val overlay: @Composable () -> Unit = {
         if (LocalUiStyle.current == AppearanceUiStyle.COUI) CouiConfirmDialog(visible = dialog, title = "完整 endpoint",
             message = "仅特殊路径需要覆盖；保留当前独立连接。", confirmText = "保存", onConfirm = {}, onDismissRequest = {},
@@ -200,7 +265,7 @@ private fun ReviewScreen(page: ReviewPage, state: ReviewState = ReviewState.READ
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class OfficialUiReviewTest {
     private val output = File(System.getProperty("eta.uiReview.output")
-        ?: System.getenv("ETA_UI_REVIEW_OUTPUT") ?: "build/official-preview/v1")
+        ?: System.getenv("ETA_UI_REVIEW_OUTPUT") ?: "build/official-preview/v2")
 
     private fun render(name: String, style: AppearanceUiStyle, dark: Boolean, fontScale: Float = 1f,
         page: ReviewPage, state: ReviewState = ReviewState.READY, advanced: Boolean = false, reversed: Boolean = false,
@@ -228,21 +293,18 @@ class OfficialUiReviewTest {
                             val stack = rememberNavBackStack<AppRoute>(AppRoute.Settings)
                             push = { stack.add(AppRoute.ImageGenSettings) }
                             pop = { if (stack.size > 1) stack.removeAt(stack.lastIndex) }
-                            NavDisplay(backStack = stack, onBack = pop, effects = NavDisplayEffects()) {
+                            val deviceRadius = rememberNavSystemCornerRadius()
+                            // Robolectric has no physical display corners; 32dp is a labelled fixture value.
+                            NavDisplay(backStack = stack, onBack = pop,
+                                effects = NavDisplayEffects(cornerClipRadius = if (deviceRadius.value > 0f) deviceRadius else 32.dp)) {
                                 entry<AppRoute.Settings> { ReviewScreen(ReviewPage.SUBAGENT) }
                                 entry<AppRoute.ImageGenSettings> { ReviewScreen(ReviewPage.IMAGE) }
                             }
                         } else if (interaction == "reorder") {
-                            val names = if (changed.value) listOf("model-low", "model-high") else listOf("model-high", "model-low")
-                            MiuixScaffoldPage("模型优先级", onBack = {}) {
-                                item { ReviewNote("同一账号内排序；下方演示复用官方列表 animateItem") }
-                                items(names, key = { it }) { model ->
-                                    Box(Modifier.animateItem()) { ReviewGroup(model) { ReviewRow(model, "同账号 · 工具能力可用") } }
-                                }
-                            }
-                        } else ReviewScreen(page,
+                            ReviewScreen(ReviewPage.SUBAGENT)
+                        } else ReviewScreen(if (interaction == "models" && showDialog.value) ReviewPage.MODELS else page,
                             if (interaction == "status" && changed.value) ReviewState.ERROR else state,
-                            advanced, reversed, showDialog.value) { showDialog.value = true }
+                            advanced, reversed, showDialog.value && interaction != "models") { showDialog.value = true }
                     }
                 }
             }
@@ -264,7 +326,10 @@ class OfficialUiReviewTest {
                             val x = ((width - window.width) / 2).coerceAtLeast(0)
                             val y = if (style == AppearanceUiStyle.COUI) (height - window.height).coerceAtLeast(0)
                                 else ((height - window.height) / 2).coerceAtLeast(0)
-                            canvas.save(); canvas.translate(x.toFloat(), y.toFloat()); window.draw(canvas); canvas.restore()
+                            val layer = Bitmap.createBitmap(window.width, window.height, Bitmap.Config.ARGB_8888)
+                            window.draw(Canvas(layer))
+                            canvas.drawBitmap(layer, x.toFloat(), y.toFloat(), null)
+                            layer.recycle()
                         }
                     }
                 File(output, "$name$suffix.png").outputStream().use { check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
@@ -281,11 +346,43 @@ class OfficialUiReviewTest {
                 repeat(35) { frame() }; capture("-dialog-return")
             }
             if (interaction.isNotBlank()) {
-                if (interaction == "navigation") push() else changed.value = true
+                if (interaction == "navigation") push()
+                else if (interaction == "reorder") {
+                    fun findRoot(view: View): ViewRootForTest? {
+                        if (view is ViewRootForTest) return view
+                        if (view is ViewGroup) for (i in 0 until view.childCount) findRoot(view.getChildAt(i))?.let { return it }
+                        return null
+                    }
+                    fun nodes(node: SemanticsNode): List<SemanticsNode> = listOf(node) + node.children.flatMap(::nodes)
+                    val all = nodes(requireNotNull(findRoot(host)).semanticsOwner.rootSemanticsNode)
+                    val handle = all.first { it.config.getOrNull(SemanticsProperties.ContentDescription)?.contains("拖动调整 model-high 的优先级") == true }.boundsInRoot.center
+                    val down = SystemClock.uptimeMillis()
+                    fun touch(action: Int, y: Float) {
+                        MotionEvent.obtain(down, SystemClock.uptimeMillis(), action, handle.x, y, 0).also {
+                            host.dispatchTouchEvent(it); it.recycle()
+                        }
+                        frame()
+                    }
+                    touch(MotionEvent.ACTION_DOWN, handle.y)
+                    repeat(40) { frame() }
+                    capture("-drag-start")
+                    touch(MotionEvent.ACTION_MOVE, handle.y + 20f)
+                    touch(MotionEvent.ACTION_MOVE, handle.y + 90f)
+                    capture("-drag-mid")
+                    touch(MotionEvent.ACTION_MOVE, handle.y + 145f)
+                    touch(MotionEvent.ACTION_UP, handle.y + 145f)
+                    repeat(12) { frame() }
+                    val after = nodes(requireNotNull(findRoot(host)).semanticsOwner.rootSemanticsNode)
+                    assertTrue("real pointer drag must reorder the list", after.any {
+                        it.config.getOrNull(SemanticsProperties.Text)?.any { text -> text.text == "1  model-low" } == true
+                    })
+                    capture("-drag-end")
+                } else if (interaction == "models") showDialog.value = true
+                else changed.value = true
                 frame(); capture("-start")
                 repeat(7) { frame() }; capture("-mid")
                 repeat(35) { frame() }; capture("-end")
-                if (interaction == "navigation") pop() else changed.value = false
+                if (interaction == "navigation") pop() else { changed.value = false; showDialog.value = false }
                 frame(); capture("-back-start")
                 repeat(7) { frame() }; capture("-back-mid")
                 repeat(35) { frame() }; capture("-return")
@@ -314,5 +411,8 @@ class OfficialUiReviewTest {
         render("miuix-light-navigation", AppearanceUiStyle.MIUIX, false, page = ReviewPage.IMAGE, interaction = "navigation")
         render("miuix-light-reorder", AppearanceUiStyle.MIUIX, false, page = ReviewPage.SUBAGENT, interaction = "reorder")
         render("coui-light-failover", AppearanceUiStyle.COUI, false, page = ReviewPage.SUBAGENT, interaction = "status")
+        render("coui-light-models", AppearanceUiStyle.COUI, false, page = ReviewPage.IMAGE, interaction = "models")
+        render("miuix-light-models", AppearanceUiStyle.MIUIX, false, page = ReviewPage.IMAGE, interaction = "models")
+        render("coui-light-reorder", AppearanceUiStyle.COUI, false, page = ReviewPage.SUBAGENT, interaction = "reorder")
     }
 }
