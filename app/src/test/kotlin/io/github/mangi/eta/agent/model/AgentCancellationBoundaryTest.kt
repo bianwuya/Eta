@@ -15,6 +15,25 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class AgentCancellationBoundaryTest {
+    @Test fun interruptedToolBatchReturnsPairedTranscriptWithoutReplayingTools() {
+        val tools = JSONArray().put(JSONObject().put("type", "function").put("function",
+            JSONObject().put("name", "fixture_read").put("parameters", JSONObject().put("type", "object"))))
+        val calls = JSONArray().put(JSONObject().put("id", "pending").put("type", "function")
+            .put("function", JSONObject().put("name", "fixture_read").put("arguments", "{}")))
+        var toolExecutions = 0
+        val failure = assertThrows(AgentModelExecutionException::class.java) {
+            AgentModelClient.complete(config, "inspect", { toolExecutions++; error("must not run") },
+                additionalTools = tools,
+                provider = provider { ProviderResponse(JSONObject().put("role", "assistant")
+                    .put("content", "").put("tool_calls", calls).put("finish_reason", "tool_calls")) },
+                onEvent = { if (it is AgentEvent.ToolStarted) throw IllegalStateException("fixture interrupted callback") })
+        }
+        assertEquals(0, toolExecutions)
+        val tool = failure.transcript.single { it.role == "tool" }
+        assertEquals("pending", tool.toolCallId)
+        assertTrue(tool.content.contains("TOOL_INTERRUPTED"))
+    }
+
     private val config = AgentModelClient.ModelConfig(
         baseUrl = "https://example.invalid", apiKey = "fixture", model = "fixture", systemPrompt = "stable",
     )

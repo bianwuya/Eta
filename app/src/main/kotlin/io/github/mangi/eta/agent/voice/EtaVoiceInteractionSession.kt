@@ -7,6 +7,9 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.os.Bundle
 import android.graphics.Bitmap
+import android.os.Handler
+import android.os.Looper
+import io.github.mangi.eta.agent.accessibility.AgentAccessibilityService
 import android.service.voice.VoiceInteractionSession
 import android.view.View
 
@@ -17,6 +20,7 @@ import android.view.View
  * TYPE_APPLICATION_OVERLAY 窗口承载，避免把厂商助手动画和输入层级绑定到系统会话窗口。
  */
 internal class EtaVoiceInteractionSession(context: Context) : VoiceInteractionSession(context) {
+    private val mainHandler = Handler(Looper.getMainLooper())
     private var screenContext: EtaAssistantScreenContext? = null
     private var shown = false
     private var captureHandedOff = false
@@ -60,7 +64,33 @@ internal class EtaVoiceInteractionSession(context: Context) : VoiceInteractionSe
         super.onShow(args, showFlags)
         shown = true
         captureHandedOff = true
-        EtaAssistantOverlayService.show(context, screenContext?.id)
+        val entry = screenContext
+        val entryId = entry?.id
+        if (entry == null || !entry.needsScreenshotFallback()) {
+            EtaAssistantOverlayService.show(context, entryId)
+        } else {
+            // Capture starts before the Eta overlay appears. The existing
+            // accessibility collector freezes window IDs before it signals readiness.
+            entry.captureFallbackIfMissing(
+                capture = { windowsSubmitted ->
+                    val result = AgentAccessibilityService.current()?.captureScreenshotExcludingOverlays(
+                        excludedPackages = setOf(context.packageName),
+                        onWindowsSubmitted = windowsSubmitted,
+                    )
+                    if (result?.complete == true) result.bitmap else {
+                        result?.bitmap?.takeUnless(Bitmap::isRecycled)?.recycle()
+                        null
+                    }
+                },
+                onWindowsSubmitted = {
+                    mainHandler.post {
+                        if (shown && captureHandedOff && screenContext?.id == entryId) {
+                            EtaAssistantOverlayService.show(context, entryId)
+                        }
+                    }
+                },
+            )
+        }
         // No invocation token exists on screenshot callbacks. Retire an ambiguous session
         // after handoff so the next wake gets a fresh callback endpoint, not permanent capture loss.
         if (ambiguousCaptureCallbacks) finish()

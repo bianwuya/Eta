@@ -73,6 +73,21 @@ class CodexResetRepositoryTest {
         assertNull(CodexResetRepository.pendingRedeemId(context, f.providerId, f.first))
     }
 
+    @Test fun explicitAuthorizationRejectionDoesNotInventPendingButPreservesEarlierUnknownOperation() = withFixture { f ->
+        CodexResetRepository.httpClientProvider = { client { throw java.net.SocketTimeoutException("fixture") } }
+        val earlier = CodexResetRepository.consumeBlocking(context, f.providerId, f.second) as CodexResetResult.Failed
+        assertTrue(earlier.unconfirmed)
+        val originalId = CodexResetRepository.pendingRedeemId(context, f.providerId, f.second)
+        CodexResetRepository.httpClientProvider = { client { response(it, "{}").newBuilder().code(403).build() } }
+        val fresh = CodexResetRepository.consumeBlocking(context, f.providerId, f.first) as CodexResetResult.Failed
+        assertFalse(fresh.unconfirmed)
+        assertNull(CodexResetRepository.pendingRedeemId(context, f.providerId, f.first))
+        assertEquals("HTTP_403", (fresh.error as io.github.mangi.eta.agent.model.AgentModelFailure).code)
+        val pending = CodexResetRepository.consumeBlocking(context, f.providerId, f.second) as CodexResetResult.Failed
+        assertTrue(pending.unconfirmed)
+        assertEquals(originalId, CodexResetRepository.pendingRedeemId(context, f.providerId, f.second))
+    }
+
     @Test fun timeoutRetainsSameUuidAcrossManualRetryAndRepositoryRead() = withFixture { f ->
         val ids = mutableListOf<String>()
         var fail = true

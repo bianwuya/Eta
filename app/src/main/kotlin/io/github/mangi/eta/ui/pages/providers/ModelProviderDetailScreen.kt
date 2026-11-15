@@ -300,7 +300,7 @@ private fun ProviderConfigTab(
     var showDeleteDialog by remember { mutableStateOf(false) }
     var showResetDialog by remember { mutableStateOf(false) }
     var isWorking by remember { mutableStateOf(false) }
-    var creationCommitted by remember { mutableStateOf(false) }
+    var creationCommitted by remember(provider.id) { mutableStateOf(false) }
     var loginInProgress by rememberSaveable(provider.id) { mutableStateOf(false) }
     var pendingInterruption by remember(provider.id) { mutableStateOf(loginInProgress) }
     val loginStore = remember(provider.id, scope) { ProviderLoginStore(provider.id, scope) }

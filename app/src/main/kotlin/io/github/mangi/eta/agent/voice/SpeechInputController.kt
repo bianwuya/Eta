@@ -12,6 +12,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.ReceiveChannel
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
@@ -45,6 +46,13 @@ internal class SpeechInputController(
         () -> Unit,
         Int,
     ) -> String = ::recognizeSpeechStream,
+    private val recognizeFile: suspend (
+        Context,
+        SpeechSettings,
+        SpeechCredentials,
+        ByteArray,
+        (String) -> Unit,
+    ) -> String = ::recognizeSpeechFile,
     private val onResult: (String) -> Unit,
 ) {
     private val mutableState = MutableStateFlow(SpeechInputState())
@@ -66,10 +74,11 @@ internal class SpeechInputController(
         mutableState.value = SpeechInputState(phase = EtaSpeechPhase.STARTING, progress = "正在连接")
         job = scope.launch(Dispatchers.Main.immediate) {
             try {
-                val config = settings ?: SpeechSettingsRepository.settings()
-                if (!config.recognitionEnabled) return@launch
+                val rawConfig = settings ?: SpeechSettingsRepository.settings()
+                if (!rawConfig.recognitionEnabled) return@launch
                 lease = SpeechAudioLease(context) { cancel() }.also { it.acquire(playback = false) }
-                val secrets = credentials ?: SpeechSettingsRepository.credentials(context)
+                val rawSecrets = credentials ?: SpeechSettingsRepository.credentials(context)
+                val (config, secrets) = SpeechSettingsRepository.resolveDeepSeekFallback(rawConfig, rawSecrets)
                 validateSpeechSettings(config, secrets, synthesis = false)
                 val endpointSilenceMs = if (automaticEndpoint && !holdToTalk) config.autoSendSilenceMs else 0
                 val audio = createRecorder()
@@ -113,7 +122,10 @@ internal class SpeechInputController(
                         } else {
                             begin()
                             val wav = withTimeout(65_000) { collectSpeechAudio(audio.frames) }
-                            recognizeSpeechFile(context, config, secrets, wav) { progress ->
+                            // 关闭通道可能同步唤醒收集器，旧会话不能在取消传播完成前启动请求。
+                            coroutineContext.ensureActive()
+                            if (generation != session) throw CancellationException("Speech session replaced")
+                            recognizeFile(context, config, secrets, wav) { progress ->
                                 update { it.copy(phase = EtaSpeechPhase.RECOGNIZING, progress = progress) }
                             }
                         }
@@ -174,9 +186,10 @@ internal class SpeechInputController(
     fun cancel() {
         generation++
         finishRequested = false
+        // 先取消识别协程，避免关闭录音通道被当作正常录音完成而提交请求。
+        job?.cancel(); job = null
         recorder?.cancel(); recorder = null
         releaseCapture()
-        job?.cancel(); job = null
         lease?.close(); lease = null
         mutableState.value = SpeechInputState()
     }

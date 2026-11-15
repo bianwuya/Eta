@@ -1,0 +1,18 @@
+#!/bin/sh
+set -eu
+if ! command -v autossh >/dev/null 2>&1; then
+  printf '%s\n' 'autossh is required; install the Debian autossh package first.' >&2
+  exit 127
+fi
+export AUTOSSH_GATETIME=0
+export AUTOSSH_POLL=30
+# Keep the supervised SSH process in the foreground with no reusable socket.
+# A killed master leaves its ControlPath behind and prevents reliable reuse.
+exec autossh -M 0 -N -T -S none \
+  -o ControlMaster=no \
+  -o ControlPersist=no \
+  -o ExitOnForwardFailure=yes \
+  -o ConnectTimeout=15 \
+  -o ConnectionAttempts=1 \
+  -R 127.0.0.1:2222:127.0.0.1:8022 \
+  eta-pc

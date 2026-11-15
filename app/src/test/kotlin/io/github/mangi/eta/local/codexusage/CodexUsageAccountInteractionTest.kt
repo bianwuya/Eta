@@ -80,6 +80,19 @@ class CodexUsageAccountInteractionTest(private val style: AppearanceUiStyle) {
         }
     }
 
+    @Test fun availableButNotApplicableCreditDisablesResetOnActualPanel() = withPanel { ui, accounts ->
+        val service = client { _, _ -> """{"rate_limit":{"primary_window":{"used_percent":50,"limit_window_seconds":18000}},"available_count":2,"applicable_available_count":0,"credits":[]}""" }
+        withClient(service) {
+            ui.render { CodexUsagePanel(accounts.providerId, accounts.first, true, false, true, {}) }
+            ui.awaitText("50.0% · codex · 5小时")
+            ui.click("展开额度详情")
+            ui.awaitText("当前适用：0 次")
+            assertTrue("inapplicable credit must disable the actual button", ui.isDisabled("重置额度"))
+            assertFalse(ui.hasText("确认重置"))
+            assertTrue(ui.hasText("当前没有可使用重置机会的额度窗口"))
+        }
+    }
+
     @Test fun doubleClickAndAccountSwitchKeepRedemptionAndResultsWithOriginalAccount() = withPanel { ui, accounts ->
         val posts = AtomicInteger()
         val entered = CountDownLatch(1)
@@ -187,6 +200,11 @@ class CodexUsageAccountInteractionTest(private val style: AppearanceUiStyle) {
             config.getOrNull(SemanticsProperties.Text)?.any { it.text == text } == true ||
                 config.getOrNull(SemanticsProperties.ContentDescription)?.contains(text) == true
         fun hasText(text: String) = nodes().any { it.matches(text) }
+        fun isDisabled(text: String): Boolean {
+            var node = nodes().first { it.matches(text) }
+            while (!node.config.contains(SemanticsActions.OnClick)) node = requireNotNull(node.parent)
+            return node.config.contains(SemanticsProperties.Disabled)
+        }
         fun clickAction(text: String): () -> Boolean {
             var node = nodes().first { it.matches(text) }
             while (!node.config.contains(SemanticsActions.OnClick)) node = requireNotNull(node.parent)

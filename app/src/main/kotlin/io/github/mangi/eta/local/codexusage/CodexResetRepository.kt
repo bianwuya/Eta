@@ -3,6 +3,8 @@ package io.github.mangi.eta.local.codexusage
 import android.content.Context
 import io.github.mangi.eta.agent.model.AgentHttpClient
 import io.github.mangi.eta.agent.model.AuthorizedProviderHttp
+import io.github.mangi.eta.agent.model.AgentModelFailure
+import io.github.mangi.eta.agent.auth.ProviderAuthException
 import io.github.mangi.eta.agent.runtime.AgentRunCancelledException
 import io.github.mangi.eta.agent.runtime.AgentRunController
 import io.github.mangi.eta.data.model.ProviderAuthModes
@@ -132,11 +134,11 @@ internal object CodexResetRepository {
             deferred.complete(result)
             result
         } catch (cancelled: CancellationException) {
-            val failed = CodexResetResult.Failed(cancelled, unconfirmed = true)
+            val failed = CodexResetResult.Failed(cancelled, unconfirmed = prefs(context).contains(opKey))
             deferred.complete(failed)
             throw cancelled
         } catch (cancelled: AgentRunCancelledException) {
-            val failed = CodexResetResult.Failed(cancelled, unconfirmed = true)
+            val failed = CodexResetResult.Failed(cancelled, unconfirmed = prefs(context).contains(opKey))
             deferred.complete(failed)
             throw cancelled
         } catch (t: Exception) {
@@ -173,11 +175,8 @@ internal object CodexResetRepository {
             "未配置重置接口地址"
         }
 
-        var redeemRequestId = pendingRedeemId(context, providerId, accountId)
-        if (redeemRequestId == null) {
-            redeemRequestId = UUID.randomUUID().toString()
-            recordPending(context, providerId, accountId, redeemRequestId)
-        }
+        val previousId = pendingRedeemId(context, providerId, accountId)
+        val redeemRequestId = previousId ?: UUID.randomUUID().toString()
 
         val mediaType = "application/json; charset=utf-8".toMediaType()
         val payload = JSONObject().put("redeem_request_id", redeemRequestId).toString()
@@ -195,6 +194,14 @@ internal object CodexResetRepository {
                 request = request,
                 controller = controller,
                 binding = binding,
+                accessToken = { bound, run, rejected ->
+                    val token = ProviderCredentialRepository.accessToken(bound, run, rejected)
+                    run.throwIfCancelled()
+                    if (previousId == null && !prefs(context).contains(key(providerId, accountId))) {
+                        recordPending(context, providerId, accountId, redeemRequestId)
+                    }
+                    token
+                },
             ) { response ->
                 controller.throwIfCancelled()
                 val code = response.code
@@ -210,15 +217,21 @@ internal object CodexResetRepository {
         } catch (cancelled: AgentRunCancelledException) {
             throw cancelled
         } catch (error: Exception) {
-            return CodexResetResult.Failed(error = error, unconfirmed = true)
+            if (previousId == null && (error is ProviderAuthException ||
+                error is AgentModelFailure && error.code == "OAUTH_UNAUTHORIZED")) clearPending(context, providerId, accountId)
+            return CodexResetResult.Failed(error = error,
+                unconfirmed = prefs(context).contains(key(providerId, accountId)))
         }
 
         controller.throwIfCancelled()
 
         if (rawResponse.code !in 200..299) {
+            val unauthorized = rawResponse.code == 401 || rawResponse.code == 403
+            if (unauthorized && previousId == null) clearPending(context, providerId, accountId)
             return CodexResetResult.Failed(
-                error = IOException("重置请求失败（HTTP " + rawResponse.code + "）"),
-                unconfirmed = true,
+                error = if (unauthorized) AgentModelFailure("HTTP_${rawResponse.code}", false, "账号授权失效，请重新登录")
+                    else IOException("重置请求失败（HTTP " + rawResponse.code + "）"),
+                unconfirmed = prefs(context).contains(key(providerId, accountId)),
             )
         }
 

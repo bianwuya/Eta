@@ -4,9 +4,11 @@ import io.github.mangi.eta.agent.memory.AgentMemoryContext
 import io.github.mangi.eta.agent.model.AgentCompactionTarget
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.agent.model.AgentModelExecutionException
+import io.github.mangi.eta.agent.model.AgentToolBatchRecovery
 import io.github.mangi.eta.agent.runtime.AgentEvent
 import io.github.mangi.eta.agent.runtime.AgentRunCancelledException
 import io.github.mangi.eta.agent.runtime.AgentRunController
+import io.github.mangi.eta.agent.runtime.AgentTokenUsage
 import io.github.mangi.eta.agent.skill.SkillContext
 import io.github.mangi.eta.agent.terminal.TerminalExecutionContext
 import io.github.mangi.eta.agent.tool.AgentToolCapabilities
@@ -16,6 +18,7 @@ import io.github.mangi.eta.local.subagentcontext.AgentRunRole
 import io.github.mangi.eta.local.subagentcontext.SubagentTaskResult
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -115,7 +118,12 @@ internal class SubagentExecutor(
                 )
             }
             entry = existing
-            priorHistory = io.github.mangi.eta.agent.model.AgentToolBatchRecovery.completeInterrupted(existing.history)
+            // A prior invocation can stop between the model's tool-call declaration
+            // and recording every result. Never resend that incomplete batch to
+            // Chat Completions, and never execute an unknown tool again as a repair.
+            // The existing recovery utility preserves completed results and marks
+            // only unresolved calls as TOOL_INTERRUPTED.
+            priorHistory = AgentToolBatchRecovery.completeInterrupted(existing.history)
         } else {
             val catalog = SubagentProfileCatalog.listAll()
             val customRole = args.optString("role").trim()
@@ -176,7 +184,34 @@ internal class SubagentExecutor(
         var detailStoreForCleanup: SubagentDetailStore? = null
         var historyRecorderForFailure: SubagentHistoryRecorder? = null
         try {
-        val orderedConfigs = runCatching { candidateConfigs?.invoke() ?: listOf(configProvider()) }.getOrElse { throwable ->
+        val prepared = runCatching {
+            val orderedConfigs = candidateConfigs?.invoke() ?: listOf(configProvider())
+            require(orderedConfigs.isNotEmpty()) { "没有可用的子代理模型配置" }
+            val primaryCandidate = orderedConfigs.first()
+            val accountBinding = if (io.github.mangi.eta.data.model.ProviderAuthModes.isOAuth(primaryCandidate.authMode))
+                io.github.mangi.eta.data.repository.ProviderCredentialRepository.binding(primaryCandidate.providerId, primaryCandidate.authMode)
+            else null
+            val accountSlot = accountBinding?.credentialSlotId.orEmpty()
+            // Resume carries the original transcript even after successful completion.
+            // Reordering candidates must never send that history to another model/account.
+            val boundIdentity = entry.modelIdentity
+            val resolvedCandidates = if (boundIdentity != null) {
+                val bound = orderedConfigs.firstOrNull { SubagentSessionStore.modelIdentity(it, accountSlot) == boundIdentity }
+                    ?: throw IllegalStateException("原子代理模型或账号不可用；未切换账号或重跑旧任务")
+                listOf(bound)
+            } else {
+                val minimumContext = if (orderedConfigs.size > 1) {
+                    taskPrompt.length + priorHistory.sumOf { it.content.length + it.contentJson.length }
+                } else {
+                    0
+                }
+                SubagentModelPolicy.eligible(
+                    orderedConfigs.map { SubagentModelPolicy.Candidate(it) },
+                    minimumContext,
+                ).also { require(it.isNotEmpty()) { "没有可用的子代理候选模型" } }
+            }
+            Triple(accountBinding, accountSlot, resolvedCandidates)
+        }.getOrElse { throwable ->
             if (throwable is AgentRunCancelledException || throwable is java.util.concurrent.CancellationException) throw throwable
             if (parentController.isCancelled || childController.isCancelled) throw AgentRunCancelledException()
             val previousCompactions = entry.compactionCount.get()
@@ -216,19 +251,10 @@ internal class SubagentExecutor(
                 command = latestSnapshots[toolCall.id],
             ))
         }
-        val accountBinding = if (io.github.mangi.eta.data.model.ProviderAuthModes.isOAuth(orderedConfigs.first().authMode))
-            io.github.mangi.eta.data.repository.ProviderCredentialRepository.binding(orderedConfigs.first().providerId, orderedConfigs.first().authMode)
-            else null
-        val accountSlot = accountBinding?.credentialSlotId.orEmpty()
-        val resolvedConfig = entry.modelIdentity?.takeUnless { entry.completed }?.let { bound ->
-            orderedConfigs.firstOrNull { SubagentSessionStore.modelIdentity(it, accountSlot) == bound }
-                ?: throw IllegalStateException("原子代理模型或账号不可用；未切换账号或重跑旧任务")
-        } ?: orderedConfigs.first()
-        val runCandidates = if (isResume) listOf(resolvedConfig) else SubagentModelPolicy.eligible(
-            orderedConfigs.map { SubagentModelPolicy.Candidate(it) },
-            if (orderedConfigs.size > 1) taskPrompt.length + priorHistory.sumOf { it.content.length + it.contentJson.length } else 0)
+        val (accountBinding, accountSlot, runCandidates) = prepared
+        val initialConfig = runCandidates.first()
         entry.completed = false
-        var modelLabel = resolvedConfig.modelDisplayName.ifBlank { resolvedConfig.model }
+        var modelLabel = initialConfig.modelDisplayName.ifBlank { initialConfig.model }
         val tracker = StepTracker(
             subagentId = subagentId,
             subagentType = profile.name,
@@ -236,11 +262,11 @@ internal class SubagentExecutor(
             prompt = prompt,
             model = modelLabel,
             resumed = isResume,
-            contextWindow = resolvedConfig.knownContextWindow,
+            contextWindow = initialConfig.knownContextWindow,
             successfulCompactions = entry.compactionCount,
             previousContext = if (isResume) entry.lastContext else null,
-            modelId = resolvedConfig.model,
-            providerId = resolvedConfig.providerId.ifBlank { resolvedConfig.baseUrl }, // In-memory comparison only.
+            modelId = initialConfig.model,
+            providerId = initialConfig.providerId.ifBlank { initialConfig.baseUrl }, // In-memory comparison only.
             onContextChanged = { entry.lastContext = it },
         )
 
@@ -358,11 +384,12 @@ internal class SubagentExecutor(
             }
         }
 
-        val subagentConfig = resolvedConfig.copy(
+        val subagentConfig = initialConfig.copy(
             systemPrompt = profile.buildSystemPrompt(),
             subagentTools = false,
             supportsSearchSuggestions = false,
         )
+        val activeSubagentConfig = AtomicReference(subagentConfig)
 
         var historyCommittedOnSuccess = false
         return try {
@@ -381,13 +408,14 @@ internal class SubagentExecutor(
                         model = selected.model, purpose = "CHAT", ordinal = 0, resumed = isResume),
                     baseline = entry.requestStatsBaseline, collectionEpoch = requestStatsEpoch, save = onRequestStat)
             }) { selected, reason ->
+                activeSubagentConfig.set(selected)
                 modelLabel = selected.modelDisplayName.ifBlank { selected.model }
                 tracker.selectModel(selected, reason)
                 entry.modelIdentity = SubagentSessionStore.modelIdentity(selected, accountSlot)
                 SubagentSessionStore.persist(conversationKey, entry)
                 publishSnapshot(force = true)
             }
-            entry.modelIdentity = SubagentSessionStore.modelIdentity(resolvedConfig, accountSlot)
+            entry.modelIdentity = SubagentSessionStore.modelIdentity(initialConfig, accountSlot)
             SubagentSessionStore.persist(conversationKey, entry)
             val resultProvider = object : io.github.mangi.eta.agent.model.AgentProviderClient by delegate {
                 override fun complete(
@@ -405,7 +433,7 @@ internal class SubagentExecutor(
                 provider = resultProvider,
                 compactionTarget = compactionTarget?.let { resolve ->
                     { ->
-                        val target = resolve(subagentConfig)
+                        val target = resolve(activeSubagentConfig.get())
                         target.copy(
                             provider = io.github.mangi.eta.local.subagentstats.SubagentRequestStats.provider(
                                 delegate = target.provider,
@@ -431,6 +459,16 @@ internal class SubagentExecutor(
                 prompt = taskPrompt,
                 toolExecutor = childToolExecutor,
                 history = priorHistory,
+                // A resumed child has no fresh usage until its first HTTP response. Reuse only
+                // a completed reading from the same model/provider to trigger safe compaction
+                // before a nearly full context is sent to the provider.
+                initialContextTokens = if (isResume &&
+                    entry.lastContext?.model == subagentConfig.model &&
+                    entry.lastContext?.providerId == subagentConfig.providerId &&
+                    entry.lastContext?.reading?.source == SubagentContextReading.SOURCE_USAGE &&
+                    entry.lastContext?.reading?.attempt == SubagentContextReading.ATTEMPT_COMPLETED &&
+                    entry.lastContext?.reading?.beforeCompaction == false
+                ) entry.lastContext?.reading?.tokens else null,
                 runController = childController,
                 skillContext = skillContext,
                 memoryContext = memoryContext,
@@ -774,7 +812,7 @@ internal class SubagentExecutor(
         private var currentAttemptHasReading = false
         private var contextRequestState = SubagentActivitySnapshot.REQUEST_UNKNOWN
         private var compactionCount = successfulCompactions.get()
-        private var lastCompletedCompactionId: String? = null
+        private val completedCompactionIds = hashSetOf<String>()
 
         private fun setContextState(state: SubagentSessionStore.ContextState) {
             contextState = state
@@ -795,6 +833,14 @@ internal class SubagentExecutor(
             contextRequestState = state
             currentAttemptHasReading = false
         }
+        private var latestTurnUsage: AgentTokenUsage? = null
+        private var latestStepUsage: AgentTokenUsage? = null
+        private var compactionInputTokens = 0
+        private var compactionCachedTokens = 0
+        private var compactionCacheWriteTokens = 0
+        private var compactionOutputTokens = 0
+        private var compactionReasoningTokens = 0
+        private var compactionLlmMs = 0L
 
         fun onChildEvent(event: AgentEvent): Boolean = synchronized(lock) {
             when (event) {
@@ -821,6 +867,11 @@ internal class SubagentExecutor(
                 }
 
                 is AgentEvent.UsageReceived -> {
+                    if (event.usage.stepCount != null) {
+                        latestTurnUsage = event.usage
+                    } else {
+                        latestStepUsage = event.usage
+                    }
                     val reported = event.usage.contextTokens?.takeIf { it >= 0 }
                     if (reported == null) {
                         false
@@ -852,11 +903,18 @@ internal class SubagentExecutor(
 
                 is AgentEvent.ContextCompaction -> {
                     if (event.phase == AgentEvent.ContextCompaction.PHASE_COMPLETED &&
-                        lastCompletedCompactionId != event.operationId
+                        completedCompactionIds.add(event.operationId)
                     ) {
-                        lastCompletedCompactionId = event.operationId
                         compactionCount = successfulCompactions.incrementAndGet()
                         currentAttemptHasReading = false
+                        event.usage?.let { usage ->
+                            compactionInputTokens += usage.inputTokens ?: 0
+                            compactionCachedTokens += usage.cachedTokens ?: 0
+                            compactionCacheWriteTokens += usage.cacheWriteTokens ?: 0
+                            compactionOutputTokens += usage.outputTokens ?: 0
+                            compactionReasoningTokens += usage.reasoningTokens ?: 0
+                            compactionLlmMs += usage.llmMs ?: 0L
+                        }
                         val after = event.tokensAfter?.takeIf { it >= 0 }
                         if (after != null) {
                             setContextState(SubagentSessionStore.ContextState(
@@ -1042,6 +1100,25 @@ internal class SubagentExecutor(
             } else {
                 roundTexts.values.lastOrNull()?.toString()?.trim().orEmpty().takeLast(MAX_OUTPUT_CHARS)
             }
+            val baseUsage = latestTurnUsage ?: latestStepUsage
+            val totalInput = (baseUsage?.inputTokens ?: 0) + compactionInputTokens
+            val totalCached = (baseUsage?.cachedTokens ?: 0) + compactionCachedTokens
+            val totalCacheWrite = (baseUsage?.cacheWriteTokens ?: 0) + compactionCacheWriteTokens
+            val totalOutput = (baseUsage?.outputTokens ?: 0) + compactionOutputTokens
+            val totalReasoning = (baseUsage?.reasoningTokens ?: 0) + compactionReasoningTokens
+            val totalLlmMs = (baseUsage?.llmMs ?: 0L) + compactionLlmMs
+            val usageSnapshot = if (
+                totalInput > 0 || totalCached > 0 || totalCacheWrite > 0 || totalOutput > 0 || totalLlmMs > 0L
+            ) {
+                SubagentUsageSnapshot(
+                    inputTokens = totalInput,
+                    cachedTokens = totalCached,
+                    cacheWriteTokens = totalCacheWrite,
+                    outputTokens = totalOutput,
+                    reasoningTokens = totalReasoning,
+                    llmMs = totalLlmMs,
+                )
+            } else null
             SubagentActivitySnapshot(
                 subagentId = subagentId,
                 subagentType = subagentType,
@@ -1063,6 +1140,7 @@ internal class SubagentExecutor(
                 compactionCount = compactionCount,
                 contextReading = contextState?.reading,
                 contextRequestState = contextRequestState,
+                usage = usageSnapshot,
             )
         }
 

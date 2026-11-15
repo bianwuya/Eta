@@ -337,15 +337,12 @@ internal object AgentConversationStore {
         val rows = dao.messagesBefore(conversationId, before, MESSAGE_LOAD_PAGE_SIZE)
         val startIndex = rows.firstOrNull()?.sortIndex ?: 0
         val prefix = SessionStatsAccumulator()
-        dao.assistantUsageBefore(conversationId, startIndex).use { cursor ->
-            while (cursor.moveToNext()) prefix.add(TokenUsageUi(
-                contextTokens = cursor.nullableInt(0), inputTokens = cursor.nullableInt(1),
-                outputTokens = cursor.nullableInt(2), reasoningTokens = cursor.nullableInt(3),
-                cachedTokens = cursor.nullableInt(4), stepCount = cursor.nullableInt(5),
-                llmMs = cursor.nullableLong(6), toolMs = cursor.nullableLong(7),
-                ttftMs = cursor.nullableLong(8), ttftSteps = cursor.nullableInt(9),
-                decodeMs = cursor.nullableLong(10), decodeTokens = cursor.nullableInt(11),
-            ).takeUnless { it.isEmpty })
+        var offset = 0
+        while (true) {
+            val page = dao.messagesPage(conversationId, MESSAGE_LOAD_PAGE_SIZE, offset)
+            page.takeWhile { it.sortIndex < startIndex }.mapNotNull { it.toMessageOrNull() }.forEach(prefix::add)
+            if (page.size < MESSAGE_LOAD_PAGE_SIZE || page.last().sortIndex >= startIndex) break
+            offset += page.size
         }
         return MessagePage(rows.mapNotNull { it.toMessageOrNull() }, startIndex,
             dao.hasMessagesBefore(conversationId, startIndex), prefix.summary())
@@ -469,6 +466,7 @@ internal object AgentConversationStore {
                         outputTokens = usage?.outputTokens,
                         reasoningTokens = usage?.reasoningTokens,
                         cachedTokens = usage?.cachedTokens,
+                        cacheWriteTokens = usage?.cacheWriteTokens,
                         stepCount = usage?.stepCount,
                         llmMs = usage?.llmMs,
                         toolMs = usage?.toolMs,
@@ -487,7 +485,26 @@ internal object AgentConversationStore {
                 type = TYPE_SYSTEM_NOTICE,
                 content = code.wireValue,
                 resultSummary = detail,
-                contextTokens = contextTokens,
+                contextTokens = contextTokens ?: tokensBefore,
+                inputTokens = usage?.inputTokens,
+                outputTokens = usage?.outputTokens,
+                reasoningTokens = usage?.reasoningTokens,
+                cachedTokens = usage?.cachedTokens,
+                cacheWriteTokens = usage?.cacheWriteTokens,
+                compactionArchiveId = archiveId.takeIf { it.isNotBlank() },
+                stepCount = usage?.stepCount,
+                llmMs = usage?.llmMs,
+                toolMs = usage?.toolMs,
+                ttftMs = usage?.ttftMs,
+                ttftSteps = usage?.ttftSteps,
+                decodeMs = usage?.decodeMs,
+                decodeTokens = usage?.decodeTokens,
+                // Reuse the otherwise-unused notice status column; no database migration needed.
+                toolStatus = when (compactionSucceeded) {
+                    true -> "compaction_succeeded"
+                    false -> "compaction_failed"
+                    null -> null
+                },
                 renderMarkdown = false,
             )
 
@@ -545,6 +562,7 @@ internal object AgentConversationStore {
                     outputTokens = outputTokens,
                     reasoningTokens = reasoningTokens,
                     cachedTokens = cachedTokens,
+                    cacheWriteTokens = cacheWriteTokens,
                     stepCount = stepCount,
                     llmMs = llmMs,
                     toolMs = toolMs,
@@ -556,11 +574,39 @@ internal object AgentConversationStore {
             )
 
             TYPE_SYSTEM_NOTICE -> SystemNoticeCode.fromWireValue(content)?.let { code ->
+                val noticeUsage = TokenUsageUi(
+                    inputTokens = inputTokens,
+                    outputTokens = outputTokens,
+                    reasoningTokens = reasoningTokens,
+                    cachedTokens = cachedTokens,
+                    cacheWriteTokens = cacheWriteTokens,
+                    requestKind = if (code == SystemNoticeCode.ContextCompaction) {
+                        io.github.mangi.eta.agent.runtime.AgentTokenUsage.REQUEST_KIND_COMPACTION
+                    } else null,
+                    stepCount = stepCount,
+                    llmMs = llmMs,
+                    toolMs = toolMs,
+                    ttftMs = ttftMs,
+                    ttftSteps = ttftSteps,
+                    decodeMs = decodeMs,
+                    decodeTokens = decodeTokens,
+                ).takeUnless { it.isEmpty }
+                val storedBefore = if (code == SystemNoticeCode.ContextCompaction && noticeUsage != null) {
+                    contextTokens
+                } else null
                 SystemNoticeMessageUi(
                     id = id,
                     code = code,
                     detail = resultSummary,
-                    contextTokens = contextTokens,
+                    contextTokens = if (storedBefore != null) null else contextTokens,
+                    usage = noticeUsage,
+                    archiveId = compactionArchiveId.orEmpty(),
+                    tokensBefore = storedBefore,
+                    compactionSucceeded = when (toolStatus) {
+                        "compaction_succeeded" -> true
+                        "compaction_failed" -> false
+                        else -> null
+                    },
                 )
             }
 

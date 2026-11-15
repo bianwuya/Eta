@@ -9,6 +9,7 @@ import io.github.mangi.eta.agent.model.EndpointKind
 import io.github.mangi.eta.agent.model.ProviderCapabilities
 import io.github.mangi.eta.agent.model.ProviderEvent
 import io.github.mangi.eta.agent.model.ProviderRequest
+import io.github.mangi.eta.agent.model.ProviderRequestPurpose
 import io.github.mangi.eta.agent.model.ProviderResponse
 import io.github.mangi.eta.agent.runtime.AgentEvent
 import io.github.mangi.eta.agent.runtime.AgentRunController
@@ -227,7 +228,6 @@ class SubagentActivityStatsTest {
     @Test
     fun realExecutorResumeCarriesHistoricalReportUntilNewUsageArrives() {
         val conversation = "activity-stats-real-resume"
-        var model = "model-a"
         var requests = 0
         val progress = mutableListOf<SubagentActivitySnapshot>()
         val provider = object : AgentProviderClient {
@@ -241,7 +241,7 @@ class SubagentActivityStatsTest {
         }
         val executor = SubagentExecutor(conversationKey = conversation, parentController = AgentRunController(),
             configProvider = { AgentModelClient.ModelConfig(baseUrl = "https://example.invalid", apiKey = "fixture",
-                model = model, providerId = "provider-a", systemPrompt = "system", autoCompactionEnabled = false) },
+                model = "model-a", providerId = "provider-a", systemPrompt = "system", autoCompactionEnabled = false) },
             capabilitiesProvider = { AgentToolCapabilities(rootAvailable = false) },
             baseToolExecutor = AgentModelClient.ToolExecutor { error("unexpected tool") },
             skillContext = SkillContext.EMPTY, memoryContext = AgentMemoryContext.DISABLED,
@@ -256,7 +256,6 @@ class SubagentActivityStatsTest {
         assertEquals(SubagentContextReading.ATTEMPT_COMPLETED, firstSnapshot.contextReading?.attempt)
         assertEquals(SubagentContextReading.ATTEMPT_COMPLETED,
             SubagentSessionStore.get(conversation, child)?.lastContext?.reading?.attempt)
-        model = "model-b"
         progress.clear()
         val second = executor.execute(2, AgentModelClient.ToolCall("second", "subagent", JSONObject()
             .put("resume", child).put("prompt", "continue").put("description", "resume").toString()))
@@ -266,7 +265,7 @@ class SubagentActivityStatsTest {
         assertNull(snapshot.contextTokens)
         assertEquals(24_000, snapshot.contextReading?.tokens)
         assertEquals(true, snapshot.contextReading?.previousInvocation)
-        assertEquals(true, snapshot.contextReading?.modelChanged)
+        assertEquals(false, snapshot.contextReading?.modelChanged)
         assertEquals(firstSnapshot.contextReading?.at, snapshot.contextReading?.at)
         assertEquals(SubagentContextReading.ATTEMPT_COMPLETED, snapshot.contextReading?.attempt)
         assertEquals(SubagentActivitySnapshot.REQUEST_COMPLETED, snapshot.contextRequestState)
@@ -380,5 +379,188 @@ class SubagentActivityStatsTest {
             assertTrue(preview!!.previewTruncated)
             assertTrue(preview.model.isEmpty() || preview.model == snapshot.model)
         }
+    }
+
+    @Test
+    fun trackerAccumulatesUsageAndDeduplicatesCompactionUsageByOperationId() {
+        val tracker = tracker()
+        assertNull(tracker.snapshot().usage)
+
+        assertTrue(tracker.onChildEvent(AgentEvent.UsageReceived(
+            round = 1,
+            usage = AgentTokenUsage(
+                contextTokens = 40_000,
+                inputTokens = 1_000,
+                cachedTokens = 500,
+                cacheWriteTokens = 100,
+                outputTokens = 80,
+                reasoningTokens = 20,
+                llmMs = 250L,
+            ),
+        )))
+        assertEquals(
+            SubagentUsageSnapshot(
+                inputTokens = 1_000,
+                cachedTokens = 500,
+                cacheWriteTokens = 100,
+                outputTokens = 80,
+                reasoningTokens = 20,
+                llmMs = 250L,
+            ),
+            tracker.snapshot().usage,
+        )
+
+        assertFalse(tracker.onChildEvent(AgentEvent.UsageReceived(
+            round = 2,
+            usage = AgentTokenUsage(
+                contextTokens = null,
+                inputTokens = 3_000,
+                cachedTokens = 1_500,
+                cacheWriteTokens = 200,
+                outputTokens = 180,
+                reasoningTokens = 45,
+                stepCount = 2,
+                llmMs = 600L,
+            ),
+        )))
+        assertEquals(40_000, tracker.snapshot().contextTokens)
+
+        val op1Usage = AgentTokenUsage(
+            inputTokens = 800,
+            cachedTokens = 400,
+            cacheWriteTokens = 50,
+            outputTokens = 90,
+            reasoningTokens = 15,
+            llmMs = 120L,
+        )
+        assertFalse(tracker.onChildEvent(AgentEvent.ContextCompaction(
+            operationId = "op-1",
+            phase = AgentEvent.ContextCompaction.PHASE_STARTED,
+            tokensBefore = 40_000,
+            usage = op1Usage,
+        )))
+        assertFalse(tracker.onChildEvent(AgentEvent.ContextCompaction(
+            operationId = "op-fail",
+            phase = "failed",
+            tokensBefore = 40_000,
+            usage = op1Usage,
+        )))
+        val completedOp1 = AgentEvent.ContextCompaction(
+            operationId = "op-1",
+            phase = AgentEvent.ContextCompaction.PHASE_COMPLETED,
+            tokensBefore = 40_000,
+            tokensAfter = 8_000,
+            usage = op1Usage,
+        )
+        assertTrue(tracker.onChildEvent(completedOp1))
+        assertFalse(tracker.onChildEvent(completedOp1))
+
+        val op2Usage = AgentTokenUsage(
+            inputTokens = 700,
+            cachedTokens = 300,
+            cacheWriteTokens = 25,
+            outputTokens = 70,
+            reasoningTokens = 10,
+            llmMs = 80L,
+        )
+        assertTrue(tracker.onChildEvent(AgentEvent.ContextCompaction(
+            operationId = "op-2",
+            phase = AgentEvent.ContextCompaction.PHASE_COMPLETED,
+            tokensBefore = 35_000,
+            tokensAfter = 6_000,
+            usage = op2Usage,
+        )))
+        // Non-adjacent duplicate completion for op-1 must also be ignored.
+        assertFalse(tracker.onChildEvent(completedOp1))
+
+        val snapshot = tracker.snapshot()
+        assertEquals(2, snapshot.compactionCount)
+        assertEquals(6_000, snapshot.contextTokens)
+        assertEquals(
+            SubagentUsageSnapshot(
+                inputTokens = 3_000 + 800 + 700,
+                cachedTokens = 1_500 + 400 + 300,
+                cacheWriteTokens = 200 + 50 + 25,
+                outputTokens = 180 + 90 + 70,
+                reasoningTokens = 45 + 15 + 10,
+                llmMs = 600L + 120L + 80L,
+            ),
+            snapshot.usage,
+        )
+    }
+
+    @Test
+    fun realExecutorPublishesSummedChatAndCompactionUsageInSnapshot() {
+        var chatRound = 0
+        var compactionCalls = 0
+        val publishedSnapshots = mutableListOf<SubagentActivitySnapshot>()
+        val provider = object : AgentProviderClient {
+            override val id = "fixture"
+            override val capabilities = ProviderCapabilities(EndpointKind.CHAT_COMPLETIONS, true, true, true, true, false, false)
+            override fun complete(request: ProviderRequest, runController: AgentRunController, onEvent: (ProviderEvent) -> Unit): ProviderResponse {
+                return if (request.purpose == ProviderRequestPurpose.COMPACTION) {
+                    compactionCalls++
+                    onEvent(ProviderEvent.Usage(AgentTokenUsage(
+                        inputTokens = 12_000, cachedTokens = 8_000, cacheWriteTokens = 500,
+                        outputTokens = 300, reasoningTokens = 60, llmMs = 150L,
+                    )))
+                    ProviderResponse(JSONObject().put("role", "assistant").put("content", "compact summary").put("finish_reason", "stop"))
+                } else {
+                    when (++chatRound) {
+                        1 -> {
+                            onEvent(ProviderEvent.Usage(AgentTokenUsage(
+                                contextTokens = 90_000, inputTokens = 88_000, cachedTokens = 50_000,
+                                cacheWriteTokens = 1_000, outputTokens = 200, reasoningTokens = 40,
+                            )))
+                            ProviderResponse(JSONObject().put("role", "assistant").put("content", "").put("finish_reason", "tool_calls")
+                                .put("tool_calls", JSONArray().put(JSONObject().put("id", "call-1").put("type", "function")
+                                    .put("function", JSONObject().put("name", "read_file").put("arguments", "{}")))))
+                        }
+                        2 -> {
+                            onEvent(ProviderEvent.Usage(AgentTokenUsage(
+                                contextTokens = 10_000, inputTokens = 10_000, cachedTokens = 6_000,
+                                cacheWriteTokens = 200, outputTokens = 150, reasoningTokens = 30,
+                            )))
+                            ProviderResponse(JSONObject().put("role", "assistant").put("content", "done").put("finish_reason", "stop"))
+                        }
+                        else -> error("unexpected chat round $chatRound")
+                    }
+                }
+            }
+        }
+        val executor = SubagentExecutor(
+            conversationKey = "activity-stats-usage-regression",
+            parentController = AgentRunController(),
+            configProvider = {
+                AgentModelClient.ModelConfig(
+                    baseUrl = "https://example.invalid", apiKey = "fixture", model = "model-a",
+                    providerId = "provider-a", systemPrompt = "system",
+                    contextWindow = 100_000, autoCompactionEnabled = true,
+                )
+            },
+            capabilitiesProvider = { AgentToolCapabilities(rootAvailable = false) },
+            baseToolExecutor = AgentModelClient.ToolExecutor { AgentModelClient.ToolResult("file contents") },
+            skillContext = SkillContext.EMPTY,
+            memoryContext = AgentMemoryContext.DISABLED,
+            mcpTools = JSONArray(),
+            executionContext = null,
+            onProgress = { SubagentActivitySnapshot.decode(it.snapshotJson)?.let(publishedSnapshots::add) },
+            providerFactory = { provider },
+        )
+        val result = executor.execute(1, AgentModelClient.ToolCall("call-sub", "subagent", JSONObject()
+            .put("subagent_type", "coder").put("prompt", "work").put("description", "usage regression").toString()))
+        assertTrue(JSONObject(result.content).getBoolean("ok"))
+        assertEquals(1, compactionCalls)
+        val snapshot = requireNotNull(SubagentActivitySnapshot.decode(result.command))
+        assertEquals(1, snapshot.compactionCount)
+        assertEquals(10_000, snapshot.contextTokens)
+        val usage = requireNotNull(snapshot.usage)
+        assertEquals(110_000, usage.inputTokens)
+        assertEquals(64_000, usage.cachedTokens)
+        assertEquals(1_700, usage.cacheWriteTokens)
+        assertEquals(650, usage.outputTokens)
+        assertEquals(130, usage.reasoningTokens)
+        assertTrue(usage.llmMs >= 150L)
+        assertEquals(usage, publishedSnapshots.last().usage)
     }
 }

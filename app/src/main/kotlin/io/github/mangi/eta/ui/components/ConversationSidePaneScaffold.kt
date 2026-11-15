@@ -74,6 +74,7 @@ fun ConversationSidePaneScaffold(
     onOpen: () -> Unit,
     onDismiss: () -> Unit,
     onSearchChange: (String) -> Unit,
+    onNewConversation: () -> Unit = {},
     onConversationSelected: (String) -> Unit,
     onConversationTogglePin: (ConversationSummaryUi) -> Unit,
     onActiveTaskSelected: (ActiveTaskUi) -> Unit,
@@ -87,6 +88,8 @@ fun ConversationSidePaneScaffold(
     onOpenCharacters: () -> Unit,
     onOpenPermissions: () -> Unit,
     modifier: Modifier = Modifier,
+    activeModelLabel: String? = null,
+    hasPermissionAttention: Boolean = false,
     content: @Composable () -> Unit,
 ) {
     val sceneLifecycleState by LocalLifecycleOwner.current.lifecycle.currentStateFlow.collectAsState()
@@ -227,7 +230,11 @@ fun ConversationSidePaneScaffold(
                         state = state,
                         width = paneWidth,
                         listState = panelListState,
+                        isRevealed = isRevealed,
+                        activeModelLabel = activeModelLabel,
+                        hasPermissionAttention = hasPermissionAttention,
                         onSearchChange = onSearchChange,
+                        onNewConversation = onNewConversation,
                         onConversationSelected = onConversationSelected,
                         onConversationTogglePin = onConversationTogglePin,
                         onActiveTaskSelected = onActiveTaskSelected,

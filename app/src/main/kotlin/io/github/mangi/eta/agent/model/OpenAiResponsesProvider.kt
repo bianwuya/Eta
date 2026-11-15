@@ -1,4 +1,4 @@
-﻿package io.github.mangi.eta.agent.model
+package io.github.mangi.eta.agent.model
 
 import io.github.mangi.eta.agent.runtime.AgentRunController
 import io.github.mangi.eta.agent.runtime.AgentTokenUsage
@@ -32,7 +32,7 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
     ): ProviderResponse {
         val config = request.effectiveConfig
         val accountBinding = request.accountBinding
-        val httpRequest = buildHttpRequest(request)
+        val httpRequest = buildHttpRequest(request.copy(credentialBinding = accountBinding))
         runController.throwIfCancelled()
         onEvent(ProviderEvent.RequestStarted)
         return AuthorizedProviderHttp.execute(
@@ -63,8 +63,9 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
         require(config.openAiEndpointMode == OpenAiEndpointMode.RESPONSES) {
             "当前 Provider 未配置为 Responses API"
         }
-                val accountScope = runCatching { request.accountBinding?.credentialSlotId }.getOrNull()
-        val body = buildRequestJson(config, request.messages, request.effectiveTools, accountScope)
+        // Request projection has no credential-store side effects. complete() binds first.
+        val accountScope = request.credentialBinding?.credentialSlotId
+        val body = buildRequestJson(config, request.messages, request.effectiveTools, accountScope, request.purpose)
             .apply { OpenAiPromptCache.apply(this, request) }
             .toString()
             .toRequestBody(JSON_MEDIA_TYPE)
@@ -92,7 +93,8 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
         messages: JSONArray,
         tools: JSONArray,
         accountScope: String? = null,
-    ): JSONObject = ResponsesRequestBuilder.build(config, messages, tools, accountScope)
+        purpose: ProviderRequestPurpose = ProviderRequestPurpose.CHAT,
+    ): JSONObject = ResponsesRequestBuilder.build(config, messages, tools, accountScope, purpose)
 
     internal fun readStreamingResponse(
         stream: java.io.InputStream?,
@@ -615,12 +617,13 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
 
     private fun parseUsage(usage: JSONObject?): AgentTokenUsage? {
         usage ?: return null
+        val inputDetails = usage.optJSONObject("input_tokens_details") ?: usage.optJSONObject("prompt_tokens_details")
         return AgentTokenUsage(
             contextTokens = usage.intValue("total_tokens"),
             inputTokens = usage.intValue("input_tokens", "prompt_tokens"),
             outputTokens = usage.intValue("output_tokens", "completion_tokens"),
-            cachedTokens = usage.optJSONObject("input_tokens_details")?.intValue("cached_tokens")
-                ?: usage.optJSONObject("prompt_tokens_details")?.intValue("cached_tokens"),
+            cachedTokens = inputDetails?.intValue("cached_tokens"),
+            cacheWriteTokens = inputDetails?.intValue("cache_write_tokens"),
             reasoningTokens = usage.optJSONObject("output_tokens_details")?.intValue("reasoning_tokens")
                 ?: usage.optJSONObject("completion_tokens_details")?.intValue("reasoning_tokens"),
         ).takeUnless { it.isEmpty }

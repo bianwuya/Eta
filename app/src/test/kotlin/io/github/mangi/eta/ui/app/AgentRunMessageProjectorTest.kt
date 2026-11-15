@@ -626,6 +626,7 @@ class AgentRunMessageProjectorTest {
             detail = "上下文已压缩：约 45,312 → 25,768 tokens",
             contextTokens = 25_768,
             running = false,
+            compactionSucceeded = true,
         )
         val base = listOf(UserMessageUi(id = "user-$runId", content = "整理上下文"))
 
@@ -640,6 +641,7 @@ class AgentRunMessageProjectorTest {
             runId, base + completed, ok = false, detail = "上下文压缩失败",
         )
         assertEquals("上下文压缩失败", failed.filterIsInstance<SystemNoticeMessageUi>().single().detail)
+        assertEquals(false, failed.filterIsInstance<SystemNoticeMessageUi>().single().compactionSucceeded)
 
         // 事件标记缺失时（如断连恢复路径）才补一条结果标记。
         val appended = AgentRunMessageProjector.mergeCompactionResultNotice(
@@ -649,6 +651,7 @@ class AgentRunMessageProjectorTest {
             "assistant-$runId-compaction-result",
             appended.filterIsInstance<SystemNoticeMessageUi>().single().id,
         )
+        assertEquals(true, appended.filterIsInstance<SystemNoticeMessageUi>().single().compactionSucceeded)
 
         // 仍在进行中的标记被结果收尾，不停留在运行态。
         val finalized = AgentRunMessageProjector.mergeCompactionResultNotice(
@@ -657,12 +660,14 @@ class AgentRunMessageProjectorTest {
         val finishedNotice = finalized.filterIsInstance<SystemNoticeMessageUi>().single()
         assertEquals("上下文压缩完成", finishedNotice.detail)
         assertFalse(finishedNotice.running)
+        assertEquals(true, finishedNotice.compactionSucceeded)
 
         // finishContextCompaction 只收尾仍在运行的标记，已完成标记保持 token 信息。
         val interrupted = projector.finishContextCompaction(runId, base + started, "上下文压缩已中断")
         val interruptedNotice = interrupted.filterIsInstance<SystemNoticeMessageUi>().single()
         assertEquals("上下文压缩已中断", interruptedNotice.detail)
         assertFalse(interruptedNotice.running)
+        assertEquals(false, interruptedNotice.compactionSucceeded)
         assertEquals(base + completed, projector.finishContextCompaction(runId, base + completed, "上下文压缩已中断"))
     }
 }

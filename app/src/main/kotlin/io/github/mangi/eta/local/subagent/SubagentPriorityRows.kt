@@ -67,7 +67,7 @@ internal fun SubagentPriorityRows(models: List<Model>, priority: List<String>, e
             }
             val trailing: @Composable () -> Unit = {
                 Box(handle, contentAlignment = Alignment.Center) {
-                    if (LocalUiStyle.current == AppearanceUiStyle.COUI) CouiText(text = "≡", kind = CouiTextKind.PreferenceTitle)
+                    if (LocalUiStyle.current == AppearanceUiStyle.COUI) CouiText(text = "≡", kind = CouiTextKind.ItemTitle)
                     else Text("≡")
                 }
             }

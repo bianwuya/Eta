@@ -18,8 +18,12 @@ internal class AgentContextSession(
     private val transcriptSize: () -> Int = { 0 },
     private val roleplay: Boolean = false,
     private val compactionTarget: (() -> AgentCompactionTarget)? = null,
+    private val mainToolsProvider: () -> JSONArray = { JSONArray() },
+    private val mainSessionId: String = operationId,
+    private val messageProjector: ((JSONArray) -> JSONArray)? = null,
+    private val enableCacheReuse: Boolean = false,
 ) {
-    private val contextWindow = config.knownContextWindow
+    private val runningConfig get() = provider.activeModelConfig ?: config
     private var inputTokens: Int? = null
     private var compacted = false
     private var consumedSupplementCount = 0
@@ -62,13 +66,15 @@ internal class AgentContextSession(
 
     fun compact(force: Boolean = false, final: Boolean = false) {
         val before = inputTokens
+        val active = runningConfig
+        val contextWindow = active.knownContextWindow
         if (SignedToolContext.hasPendingResponse(messages)) {
             if (force) {
                 throw SignedToolContext.compactionFailure(messages)
             }
             return
         }
-        if (!force && (!config.autoCompactionEnabled || contextWindow == null || before == null ||
+        if (!force && (!active.autoCompactionEnabled || contextWindow == null || before == null ||
                 before < contextWindow * TRIGGER_RATIO)
         ) {
             try {
@@ -85,11 +91,21 @@ internal class AgentContextSession(
         val operation = java.util.UUID.randomUUID().toString()
         onEvent(AgentEvent.ContextCompaction(operation, AgentEvent.ContextCompaction.PHASE_STARTED, before))
         try {
-            val target = compactionTarget?.invoke() ?: AgentCompactionTarget(config, provider)
-            val candidate = AgentContextCompactor(target.config, target.provider, runController,
-                roleplay = roleplay, summaryPrompt = target.prompt).compact(
+            val target = compactionTarget?.invoke() ?: AgentCompactionTarget(active, provider)
+            val outcome = AgentContextCompactor(
+                config = target.config,
+                provider = target.provider,
+                controller = runController,
+                roleplay = roleplay,
+                mainTools = mainToolsProvider(),
+                mainSessionId = mainSessionId,
+                messageProjector = messageProjector,
+                enableCacheReuse = enableCacheReuse && target.config == active,
+                summaryPrompt = target.prompt,
+            ).compactWithOutcome(
                 messages, systemCount, sensitiveIds(),
             )
+            val candidate = outcome.messages
             runController.throwIfCancelled()
             val wasCompacted = compacted
             compacted = true
@@ -102,7 +118,15 @@ internal class AgentContextSession(
             while (messages.length() > 0) messages.remove(messages.length() - 1)
             for (index in 0 until candidate.length()) messages.put(candidate.getJSONObject(index))
             inputTokens = null
-            onEvent(AgentEvent.ContextCompaction(operation, AgentEvent.ContextCompaction.PHASE_COMPLETED, before))
+            onEvent(
+                AgentEvent.ContextCompaction(
+                    operationId = operation,
+                    phase = AgentEvent.ContextCompaction.PHASE_COMPLETED,
+                    tokensBefore = before,
+                    usage = outcome.usage,
+                    archiveId = outcome.archiveId,
+                ),
+            )
         } catch (failure: Exception) {
             runController.throwIfCancelled()
             onEvent(AgentEvent.ContextCompaction(operation, "failed", before,

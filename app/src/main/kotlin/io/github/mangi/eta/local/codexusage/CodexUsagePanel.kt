@@ -38,6 +38,7 @@ import androidx.lifecycle.repeatOnLifecycle
 import io.github.mangi.eta.agent.auth.ProviderAuthException
 import io.github.mangi.eta.agent.model.AgentModelFailure
 import io.github.mangi.eta.agent.runtime.AgentRunController
+import io.github.mangi.eta.agent.runtime.AgentRunCancelledException
 import io.github.mangi.eta.data.model.AppearanceUiStyle
 import io.github.mangi.eta.ui.app.LocalUiStyle
 import io.github.mangi.eta.ui.components.MiuixDialogActions
@@ -68,6 +69,13 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 private val usageAutoRefreshGate = UsageAutoRefreshGate()
 // A confirmed redemption belongs to its account, including after leaving this screen.
 private val redemptionScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+private fun resetAuthorizationFailed(failure: Throwable): Boolean = failure is ProviderAuthException ||
+    failure is AgentModelFailure && (failure.code.startsWith("OAUTH") ||
+        failure.code in setOf("HTTP_401", "HTTP_403", "PROVIDER_AUTH_FAILED"))
+
+private fun resetWindowsNotice(names: List<String>): String = if (names.isEmpty()) "" else
+    "；服务端确认窗口：" + names.joinToString { it.take(80) }
 
 @Composable
 internal fun CodexUsagePanel(
@@ -138,7 +146,7 @@ private fun CodexAccountUsagePanel(
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (failure: Exception) {
-            error = if (failure is ProviderAuthException || failure is AgentModelFailure && failure.code.startsWith("OAUTH")) {
+            error = if (resetAuthorizationFailed(failure)) {
                 "账号授权失效，请重新登录"
             } else if (snapshot != null) {
                 "额度刷新失败，显示上次数据"
@@ -178,7 +186,7 @@ private fun CodexAccountUsagePanel(
     }
 
     val canReset = enabled && usable && cacheLoaded && pendingReadable && !loading && !resetting &&
-        (pending || fresh && (snapshot?.resetCreditsAvailable ?: 0) > 0)
+        (pending || fresh && (snapshot?.resetCreditsAvailable ?: 0) > 0 && snapshot?.resetCreditsApplicable != 0)
     fun redeem() {
         if (!canReset || submitting || CodexResetRepository.isInFlight(providerId, accountId)) return
         confirming = false
@@ -199,11 +207,11 @@ private fun CodexAccountUsagePanel(
                     is CodexResetResult.Success -> {
                         snapshot = result.usage
                         fresh = true
-                        notice = if (result.code == ResetOutcomeCode.ALREADY_REDEEMED) "本次重置已确认，额度已更新" else "重置成功，额度已更新"
+                        notice = (if (result.code == ResetOutcomeCode.ALREADY_REDEEMED) "本次重置已确认，额度已更新" else "重置成功，额度已更新") + resetWindowsNotice(result.resetWindowNames)
                     }
                     is CodexResetResult.SuccessPendingRefresh -> {
                         fresh = false
-                        error = "重置已成功，但额度刷新失败，请刷新查看最新数据"
+                        error = "重置已成功，但额度刷新失败，请刷新查看最新数据" + resetWindowsNotice(result.resetWindowNames)
                     }
                     is CodexResetResult.Rejected -> {
                         fresh = false
@@ -215,7 +223,11 @@ private fun CodexAccountUsagePanel(
                     }
                     is CodexResetResult.Failed -> {
                         fresh = false
-                        error = if (result.unconfirmed) "重置结果待确认，可核对本次操作" else "重置失败，请刷新后重试"
+                        error = when {
+                            resetAuthorizationFailed(result.error) -> "账号授权失效，请重新登录" + if (result.unconfirmed) "；上次重置结果仍待确认" else ""
+                            result.unconfirmed -> "重置结果待确认，可核对本次操作"
+                            else -> "重置失败，请刷新后重试"
+                        }
                     }
                 }
             }
@@ -294,6 +306,10 @@ internal fun CodexUsageContent(
                 UsageNote("上次获取：" + DateFormat.getDateTimeInstance().format(Date(saved.updatedAt)))
             }
             UsageNote("可用重置机会：" + (snapshot?.resetCreditsAvailable?.let { "$it 次" } ?: "未知"))
+            snapshot?.resetCreditsApplicable?.let { UsageNote("当前适用：$it 次") }
+            if (snapshot?.resetCreditsApplicable == 0 && !pending) UsageNote("当前没有可使用重置机会的额度窗口")
+            snapshot?.resetCredits?.forEach { UsageNote("重置机会有效期：${it.expiresAt}") }
+            snapshot?.resetCreditsError?.let { UsageNote(it) }
             if (!fresh && !loading && !pending && usable) UsageNote("刷新额度后可使用重置机会")
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically) {

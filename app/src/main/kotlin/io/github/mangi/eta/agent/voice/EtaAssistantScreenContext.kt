@@ -10,6 +10,7 @@ import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.agent.model.AssistantScreenContextProjection
 import io.github.mangi.eta.core.AndroidAgentLogger
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -35,6 +36,7 @@ internal class EtaAssistantScreenContext(
     private var assistComplete = showFlags and VoiceInteractionSession.SHOW_WITH_ASSIST == 0
     private var screenshotComplete = showFlags and VoiceInteractionSession.SHOW_WITH_SCREENSHOT == 0
     private var screenshotReceived = false
+    private var fallbackInFlight = false
     private var image: AgentModelClient.ModelImage? = null
     private var closed = false
     private var references = 1
@@ -69,18 +71,24 @@ internal class EtaAssistantScreenContext(
     }
 
     fun acceptScreenshot(bitmap: Bitmap?) {
+        // A null framework callback is not a screenshot. Leave the fallback
+        // opportunity open until its attempt completes or the session is retired.
+        if (bitmap != null) acceptOwnedScreenshot(bitmap, fromFallback = false)
+    }
+
+    private fun acceptOwnedScreenshot(bitmap: Bitmap, fromFallback: Boolean) {
         synchronized(this) {
-            if (closed || callbacksSealed || screenshotReceived) {
-                bitmap?.recycle()
+            if (closed || screenshotReceived || (callbacksSealed && !fromFallback)) {
+                bitmap.recycle()
                 return
             }
             screenshotReceived = true
         }
         val job = scope.launch {
             val capturedImage = try {
-                bitmap?.let { AgentImageCodec.fromScreenContextBitmap(it, source = "assistant_screen_context") }
+                AgentImageCodec.fromScreenContextBitmap(bitmap, source = "assistant_screen_context")
             } catch (exception: Exception) {
-                AndroidAgentLogger.warn("助理截图编码失败: type=${exception.javaClass.simpleName}")
+                AndroidAgentLogger.warn("助理截图编码失败: type=" + exception.javaClass.simpleName)
                 null
             }
             synchronized(this@EtaAssistantScreenContext) {
@@ -90,8 +98,62 @@ internal class EtaAssistantScreenContext(
                 completeIfReady()
             }
         }
-        // 即使任务在执行前取消，也要释放系统回调交付的 Bitmap。
-        job.invokeOnCompletion { if (bitmap != null && !bitmap.isRecycled) bitmap.recycle() }
+        // Release Bitmaps even if the encoding coroutine is cancelled.
+        job.invokeOnCompletion { if (!bitmap.isRecycled) bitmap.recycle() }
+    }
+
+    /** Capture only the invocation's original windows before displaying Eta.
+     * Results from a claimed fallback may finish after framework callbacks are
+     * sealed; replacement or closing of that invocation still rejects them.
+     */
+    @Synchronized fun needsScreenshotFallback(): Boolean =
+        !closed && !callbacksSealed && !screenshotReceived && !fallbackInFlight
+
+    fun captureFallbackIfMissing(
+        capture: (onWindowsSubmitted: () -> Unit) -> Bitmap?,
+        onWindowsSubmitted: () -> Unit,
+    ) {
+        val signalled = AtomicBoolean(false)
+        val signal = {
+            if (signalled.compareAndSet(false, true)) onWindowsSubmitted()
+        }
+        val claimed = synchronized(this) {
+            if (!needsScreenshotFallback()) false else {
+                fallbackInFlight = true
+                true
+            }
+        }
+        if (!claimed) {
+            signal()
+            return
+        }
+        val job = scope.launch(Dispatchers.IO) {
+            try {
+                val shouldCapture = synchronized(this@EtaAssistantScreenContext) {
+                    !closed && !screenshotReceived
+                }
+                if (shouldCapture) {
+                    val bitmap = try {
+                        capture(signal)
+                    } catch (failure: Exception) {
+                        AndroidAgentLogger.warn("助理补充截图失败: type=" + failure.javaClass.simpleName)
+                        null
+                    }
+                    if (bitmap != null) acceptOwnedScreenshot(bitmap, fromFallback = true)
+                }
+            } finally {
+                signal()
+            }
+        }
+        // This also runs when the job is cancelled before its body begins.
+        job.invokeOnCompletion {
+            synchronized(this@EtaAssistantScreenContext) {
+                fallbackInFlight = false
+                if (!screenshotReceived) screenshotComplete = true
+                completeIfReady()
+            }
+            signal()
+        }
     }
 
     suspend fun snapshot(): Snapshot {
@@ -128,7 +190,7 @@ internal class EtaAssistantScreenContext(
     @Synchronized fun sealCallbacks(ambiguous: Boolean = false) {
         callbacksSealed = true
         if (ambiguous) captureNotice = "连续唤醒期间系统回调无法确认所属画面，本次未使用这些屏幕数据。"
-        if (!screenshotReceived) screenshotComplete = true
+        if (!screenshotReceived && !fallbackInFlight) screenshotComplete = true
         if (pendingActivities == 0) assistComplete = true
         completeIfReady()
     }

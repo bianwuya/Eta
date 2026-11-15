@@ -524,11 +524,10 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
         }
     }
 
-    private fun showKeyboard(status: EtaVoiceStatus = EtaVoiceStatus.InputRequest) {
+    private fun showKeyboard() {
         entryInputPending = false
         uiState = uiState.copy(
             phase = if (activeRunId == null) EtaVoicePhase.READY else EtaVoicePhase.PROCESSING,
-            status = status,
         )
         updateSoftInput(visible = true)
         inputFocusRequestKey++
@@ -606,7 +605,6 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
         )
         uiState = uiState.copy(
             phase = EtaVoicePhase.PROCESSING,
-            status = EtaVoiceStatus.Reasoning,
             messages = uiState.messages + UserMessageUi(
                 id = "user-$runId",
                 content = normalized,
@@ -663,13 +661,11 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                 if (result.ok) {
                     uiState = uiState.copy(
                         phase = EtaVoicePhase.READY,
-                        status = EtaVoiceStatus.Completed,
                         messages = finishRunMessages(runId, result),
                     )
                 } else {
                     uiState = uiState.copy(
                         phase = EtaVoicePhase.ERROR,
-                        status = EtaVoiceStatus.Failed(result.error),
                         messages = finishRunMessages(runId, result),
                     )
                 }
@@ -698,8 +694,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                 if (!destroyed && observer == observerGeneration && activeRunId == runId) {
                     activeRunId = null
                     runJob = null
-                    uiState = uiState.copy(phase = EtaVoicePhase.ERROR,
-                        status = EtaVoiceStatus.Failed(getString(R.string.voice_task_finished_or_unavailable)))
+                    uiState = uiState.copy(phase = EtaVoicePhase.ERROR)
                 }
             }
           } finally {
@@ -747,7 +742,6 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
         state: EtaVoiceUiState,
     ): EtaVoiceUiState {
         var messages = runMessageProjector.applyEvent(runId, event, state.messages)
-        var status = state.status
         var phase = state.phase
         when (event) {
             is AgentEvent.UserSupplementReceived -> {
@@ -756,19 +750,10 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                     messages = messages + UserMessageUi(id = id, content = event.text, images = event.images)
                 }
             }
-            is AgentEvent.ToolStarted -> status = EtaVoiceStatus.RunningTool(event.name)
-            is AgentEvent.HostedToolStarted -> status = EtaVoiceStatus.RunningTool(event.name)
-            is AgentEvent.RunFailed -> {
-                phase = EtaVoicePhase.ERROR
-                status = EtaVoiceStatus.Failed(event.reason)
-            }
-            is AgentEvent.ContextCompaction,
-            is AgentEvent.ModelRetryScheduled,
-            is AgentEvent.ProviderRequestStarted,
-            -> status = EtaVoiceStatus.Reasoning
+            is AgentEvent.RunFailed -> phase = EtaVoicePhase.ERROR
             else -> Unit
         }
-        return state.copy(messages = messages, phase = phase, status = status)
+        return state.copy(messages = messages, phase = phase)
     }
 
     private fun finishRunMessages(
@@ -861,7 +846,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
         activeRunId = run.runId
         val observer = ++observerGeneration
         runStopRequested = AtomicBoolean(false)
-        uiState = EtaVoiceUiState(phase = EtaVoicePhase.PROCESSING, status = EtaVoiceStatus.Reasoning)
+        uiState = EtaVoiceUiState(phase = EtaVoicePhase.PROCESSING)
         scope.launch {
           try {
             steeringCoordinator.reconcileUnconfirmed(run.runId, run.conversationKey) { restoredText ->
@@ -895,13 +880,11 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                         val result = outcome.result
                         result.contextSnapshot?.let { conversationHistory = it.messages }
                         uiState = uiState.copy(phase = if (result.ok) EtaVoicePhase.READY else EtaVoicePhase.ERROR,
-                            status = if (result.ok) EtaVoiceStatus.Completed else EtaVoiceStatus.Failed(result.error),
                             messages = finishRunMessages(run.runId, result))
                         // Durable archive/import recovery owns the result acknowledgement.
                     }
                     else -> {
-                        uiState = uiState.copy(phase = EtaVoicePhase.ERROR,
-                            status = EtaVoiceStatus.Failed(getString(R.string.voice_task_finished_or_unavailable)))
+                        uiState = uiState.copy(phase = EtaVoicePhase.ERROR)
                     }
                 }
             }

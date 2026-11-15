@@ -385,6 +385,26 @@ class SubagentTest {
         assertTrue(preview.steps.last().id.startsWith("step-100"))
     }
 
+    @Test
+    fun subagentUsageSnapshotRoundTripsInsideActivitySnapshot() {
+        val snapshot = SubagentActivitySnapshot(
+            subagentId = "sub_2",
+            subagentType = "explore",
+            description = "统计",
+            status = SubagentActivitySnapshot.STATUS_COMPLETED,
+            usage = SubagentUsageSnapshot(
+                inputTokens = 12_000,
+                cachedTokens = 9_600,
+                cacheWriteTokens = 800,
+                outputTokens = 450,
+                reasoningTokens = 120,
+                llmMs = 2_400L,
+            ),
+        )
+        val decoded = SubagentActivitySnapshot.decode(snapshot.encode())
+        assertEquals(snapshot, decoded)
+    }
+
     private fun JSONArray.toolNames(): Set<String> =
         (0 until length()).mapTo(linkedSetOf()) { index ->
             getJSONObject(index).getJSONObject("function").getString("name")

@@ -15,6 +15,10 @@ import org.json.JSONObject
 internal object OpenAiChatCompletionsProvider : AgentProviderClient {
     private const val MAX_ERROR_CHARS = 600
     private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
+    private val COMPACTION_FORBIDDEN_FIELDS = setOf(
+        "model", "stream", "messages", "input", "instructions", "system",
+        "system_instruction", "tools", "tool_choice", "stream_options",
+    )
 
     override val id: String = "openai_chat_completions"
 
@@ -54,9 +58,16 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
             }
             .build()
 
-        val requestJson = buildRequestJson(config, request.messages, request.effectiveTools).apply {
+        val requestJson = buildRequestJson(config, request.messages, request.effectiveTools, request.purpose).apply {
             OpenAiPromptCache.apply(this, request)
-            if (!request.purpose.allowsTools) {
+            if (request.purpose == ProviderRequestPurpose.COMPACTION) {
+                if (optJSONArray("tools")?.length()?.let { it > 0 } == true) {
+                    put("tool_choice", "none")
+                } else {
+                    remove("tools")
+                    remove("tool_choice")
+                }
+            } else if (!request.purpose.allowsTools) {
                 remove("tools")
                 remove("tool_choice")
             }
@@ -85,7 +96,7 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
         ) { response ->
             onEvent(ProviderEvent.ResponseHeaders(response.code))
             if (!response.isSuccessful) {
-                throw AgentModelFailure.http(response.code, response.peekBody(16_384).string())
+                throw AgentModelFailure.http(response.code, response.peekBody(16_384).string(), includeParameterDetails = true)
             }
             val assistantMessage = readStreamingAssistantMessage(
                 response.body.byteStream(), runController, existingToolCallIds, onEvent,
@@ -98,7 +109,8 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
     internal fun buildRequestJson(
         config: AgentModelClient.ModelConfig,
         messages: JSONArray,
-        tools: JSONArray
+        tools: JSONArray,
+        purpose: ProviderRequestPurpose = ProviderRequestPurpose.CHAT,
     ): JSONObject {
         val sourceType = ProviderSourceRegistry.resolve(
             providerId = config.providerId,
@@ -106,10 +118,35 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
             baseUrl = config.baseUrl,
             providerType = config.providerType,
         )
+        if (purpose == ProviderRequestPurpose.COMPACTION) {
+            return JSONObject().also { request ->
+                mergeExtraBody(request, config.extraBodyJson)
+                RequestBodyMerge.mergeCustomBody(request, config.customBody)
+                COMPACTION_FORBIDDEN_FIELDS.forEach(request::remove)
+                request.put("model", config.model)
+                request.put("stream", true)
+                request.put("messages", OpenAiRequestMessages.forChatCompletions(messages))
+                if (tools.length() > 0) {
+                    request.put("tools", tools)
+                    request.put("tool_choice", "none")
+                } else {
+                    request.remove("tools")
+                    request.remove("tool_choice")
+                }
+                if (sourceType != ProviderSourceTypes.OPENROUTER) {
+                    request.put("stream_options", JSONObject().put("include_usage", true))
+                }
+                ProviderReasoning.applyOpenAiCompatibleRequest(request, config)
+            }
+        }
         return JSONObject()
             .put("model", config.model)
             .put("stream", true)
-            .put("messages", OpenAiRequestMessages.forChatCompletions(messages))
+            .put("messages", OpenAiRequestMessages.forChatCompletions(messages).also {
+                // Fail locally for orphan/missing tool responses instead of sending a
+                // malformed paid request and receiving an opaque relay HTTP 400.
+                ChatToolCallHistory.validateCompleteBatches(it)
+            })
             .put("tools", tools)
             .put("tool_choice", "auto")
             .also { request ->
@@ -391,21 +428,32 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
 
     private fun parseUsage(chunk: JSONObject): AgentTokenUsage? {
         val usage = chunk.optJSONObject("usage") ?: return null
+        val cacheMiss = usage.firstInt("prompt_cache_miss_tokens")
+        val explicitCached = usage.firstNestedInt(
+            "prompt_tokens_details", "input_tokens_details",
+            childKey = "cached_tokens"
+        ) ?: usage.firstInt("cache_read_input_tokens", "prompt_cache_hit_tokens", "cached_tokens")
+        val rawInput = usage.firstInt("prompt_tokens", "input_tokens")
+            ?: if (explicitCached != null && cacheMiss != null) explicitCached + cacheMiss else null
+        val resolvedCached = explicitCached
+            ?: if (rawInput != null && cacheMiss != null) (rawInput - cacheMiss).coerceAtLeast(0) else null
+        val cacheWrite = usage.firstNestedInt(
+            "prompt_tokens_details", "input_tokens_details",
+            childKey = "cache_write_tokens",
+        ) ?: usage.firstInt("cache_creation_input_tokens", "cache_write_tokens")
         return AgentTokenUsage(
             contextTokens = usage.firstInt("total_tokens"),
-            inputTokens = usage.firstInt("prompt_tokens", "input_tokens"),
+            inputTokens = rawInput,
             outputTokens = usage.firstInt("completion_tokens", "output_tokens"),
             reasoningTokens = usage.firstNestedInt(
                 "completion_tokens_details",
                 "output_tokens_details",
                 childKey = "reasoning_tokens"
             ),
-            // 兼容端点各用各的字段：OpenAI 嵌套在 prompt_tokens_details，DeepSeek 为 prompt_cache_hit_tokens，
+            // 兼容端点各用各的字段：OpenAI 嵌套在 prompt_tokens_details，DeepSeek 为 prompt_cache_hit_tokens / prompt_cache_miss_tokens，
             // 部分端点直接放在顶层 cached_tokens。
-            cachedTokens = usage.firstNestedInt(
-                "prompt_tokens_details", "input_tokens_details",
-                childKey = "cached_tokens"
-            ) ?: usage.firstInt("cache_read_input_tokens", "prompt_cache_hit_tokens", "cached_tokens")
+            cachedTokens = resolvedCached,
+            cacheWriteTokens = cacheWrite,
         ).takeUnless { it.isEmpty }
     }
 
@@ -439,6 +487,7 @@ internal object OpenAiChatCompletionsProvider : AgentProviderClient {
             outputTokens?.let { json.put("output_tokens", it) }
             reasoningTokens?.let { json.put("reasoning_tokens", it) }
             cachedTokens?.let { json.put("cached_tokens", it) }
+            cacheWriteTokens?.let { json.put("cache_write_tokens", it) }
         }
 
     private fun String.compactError(): String =

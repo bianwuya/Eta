@@ -114,6 +114,7 @@ internal object AgentModelClient {
         toolFilter: ((JSONArray) -> JSONArray)? = null,
         compactionTarget: (() -> AgentCompactionTarget)? = null,
         onContextSnapshot: (AgentContextSnapshot) -> Unit = {},
+        initialContextTokens: Int? = null,
         onTranscript: (List<ConversationMessage>) -> Unit = {},
         runRole: AgentRunRole = AgentRunRole.PRIMARY,
         onEvent: (AgentEvent) -> Unit = {}
@@ -213,6 +214,7 @@ internal object AgentModelClient {
         val loop = AgentLoop(
             transcript = transcript,
             compactionTarget = compactionTarget,
+            initialContextTokens = initialContextTokens,
             systemCount = systemCount,
             operationId = operationId,
             onContextSnapshot = if (rewriteReply) ({ _ -> }) else onContextSnapshot,
@@ -251,11 +253,11 @@ internal object AgentModelClient {
                 cause = throwable,
                 contextSnapshot = if (rewriteReply) null else loop.contextSnapshot(),
                 reasoningContent = loop.reasoningSnapshot(),
-                transcript = AgentConversationCodec.transcript(
+                transcript = AgentToolBatchRecovery.completeInterrupted(AgentConversationCodec.transcript(
                     transcript,
                     0,
                     loop.sensitiveToolCallIdsSnapshot(),
-                ),
+                )),
             )
         }
         return ModelResponse.Text(
@@ -377,6 +379,7 @@ internal object AgentModelClient {
         val summaryThroughUserTurn: Int = 0,
         val messageId: String = "",
         val parentAgentDirective: Boolean = false,
+        val compactionArchiveId: String = "",
     )
 
     fun interface ToolExecutor {

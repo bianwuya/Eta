@@ -68,11 +68,11 @@ internal fun ProviderAccountControls(
     onLogin: () -> Unit,
     onDisconnect: () -> Unit,
     onCancel: () -> Unit,
-    onSelectAccount: (String) -> Unit = {},
-    onReloginAccount: (String) -> Unit = {},
-    onRenameAccount: (String, String) -> Unit = { _, _ -> },
-    onRemoveAccount: (String) -> Unit = {},
-    providerId: String = "",
+    onSelectAccount: (String) -> Unit,
+    onReloginAccount: (String) -> Unit,
+    onRenameAccount: (String, String) -> Unit,
+    onRemoveAccount: (String) -> Unit,
+    providerId: String,
     onRebuildIndex: () -> Unit = {},
 ) {
     val prompt = state.prompt

@@ -1,0 +1,3 @@
+#!/bin/sh
+set -eu
+exec ssh -t eta-pc powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File F:/Apps/CodexPhoneSSH/phone-codex.ps1 "$@"

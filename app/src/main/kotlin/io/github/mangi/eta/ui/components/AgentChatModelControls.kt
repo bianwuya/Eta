@@ -15,6 +15,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.R
 import io.github.mangi.eta.ui.model.AgentContextUsageUi
+import io.github.mangi.eta.ui.model.formatCompactTokenCount
 import io.github.mangi.eta.ui.model.formatContextUsage
 import top.yukonga.miuix.kmp.basic.CircularProgressIndicator
 import top.yukonga.miuix.kmp.basic.IconButton
@@ -48,12 +49,16 @@ internal fun AgentContextUsageButton(
     )
     val detail = when {
         usage.contextWindow == null -> summary
+        usage.contextTokens == null && usage.beforeCompactionTokens != null ->
+            stringResource(R.string.context_usage_before_compaction,
+                formatCompactTokenCount(usage.beforeCompactionTokens, locale))
         usage.contextTokens == null -> stringResource(R.string.context_usage_after_response)
         else -> stringResource(R.string.context_usage_previous_response, summary)
     }
     val usageDescription = stringResource(
         R.string.context_usage_description,
-        summary.replace('\n', ' '),
+        (if (usage.contextTokens == null && usage.beforeCompactionTokens != null) detail else summary)
+            .replace('\n', ' '),
     )
     var showPopover by remember { mutableStateOf(false) }
 

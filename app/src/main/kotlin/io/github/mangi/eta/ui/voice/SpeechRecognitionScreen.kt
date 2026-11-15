@@ -44,6 +44,17 @@ internal fun SpeechRecognitionScreen(onBack: () -> Unit, onOpenOss: () -> Unit) 
     SpeechLifecycle { store.stop() }
     val settings = store.settings
     val asrLabels = AsrProvider.entries.map { it.label() }
+    val asrNoteRes = when (settings.asr) {
+        AsrProvider.QWEN_REALTIME, AsrProvider.DOUBAO -> R.string.speech_asr_note_streaming
+        AsrProvider.QWEN_FLASH -> R.string.speech_asr_note_flash
+        AsrProvider.QWEN_FILE -> R.string.speech_asr_note_file
+        AsrProvider.MIMO -> R.string.speech_asr_note_mimo
+        AsrProvider.DEEPSEEK -> R.string.speech_asr_note_deepseek
+    }
+    val showQwenLanguage = when (settings.asr) {
+        AsrProvider.QWEN_REALTIME, AsrProvider.QWEN_FLASH, AsrProvider.QWEN_FILE -> true
+        AsrProvider.DOUBAO, AsrProvider.MIMO, AsrProvider.DEEPSEEK -> false
+    }
 
     when (LocalUiStyle.current) {
         AppearanceUiStyle.COUI -> {
@@ -73,17 +84,9 @@ internal fun SpeechRecognitionScreen(onBack: () -> Unit, onOpenOss: () -> Unit) 
                             },
                         )
                     }
-                    SpeechNote(
-                        stringResource(
-                            when (settings.asr) {
-                                AsrProvider.QWEN_REALTIME, AsrProvider.DOUBAO -> R.string.speech_asr_note_streaming
-                                AsrProvider.QWEN_FLASH -> R.string.speech_asr_note_flash
-                                AsrProvider.QWEN_FILE -> R.string.speech_asr_note_file
-                            },
-                        ),
-                    )
+                    SpeechNote(stringResource(asrNoteRes))
                     SpeechConnectionSection(store, synthesis = false)
-                    if (settings.asr != AsrProvider.DOUBAO) {
+                    if (showQwenLanguage) {
                         SpeechGroupCard {
                             SpeechFieldColumn {
                                 SpeechField(
@@ -109,7 +112,12 @@ internal fun SpeechRecognitionScreen(onBack: () -> Unit, onOpenOss: () -> Unit) 
                     SpeechNote(stringResource(R.string.speech_recognition_disabled_note))
                 }
                 SpeechSaveBlock(store) {
-                    validateSpeechSettings(store.settings, store.credentials, synthesis = false)
+                    validateSpeechSettings(
+                        store.settings,
+                        store.credentials,
+                        synthesis = false,
+                        hasProviderDeepSeekKey = store.hasProviderDeepSeekKey,
+                    )
                 }
                 CouiPageBottomSpacer()
             }
@@ -146,21 +154,13 @@ internal fun SpeechRecognitionScreen(onBack: () -> Unit, onOpenOss: () -> Unit) 
                                     },
                                 )
                             }
-                            SpeechNote(
-                                stringResource(
-                                    when (settings.asr) {
-                                        AsrProvider.QWEN_REALTIME, AsrProvider.DOUBAO -> R.string.speech_asr_note_streaming
-                                        AsrProvider.QWEN_FLASH -> R.string.speech_asr_note_flash
-                                        AsrProvider.QWEN_FILE -> R.string.speech_asr_note_file
-                                    },
-                                ),
-                            )
+                            SpeechNote(stringResource(asrNoteRes))
                         }
                     }
                     item(key = "connection") {
                         SpeechConnectionSection(store, synthesis = false)
                     }
-                    if (settings.asr != AsrProvider.DOUBAO) {
+                    if (showQwenLanguage) {
                         item(key = "language") {
                             SpeechGroupCard {
                                 SpeechFieldColumn {
@@ -208,7 +208,7 @@ internal fun SpeechRecognitionScreen(onBack: () -> Unit, onOpenOss: () -> Unit) 
 @Composable
 private fun SpeechResultSection(store: SpeechSettingsStore) {
     val settings = store.settings
-    val streaming = settings.asr != AsrProvider.QWEN_FLASH && settings.asr != AsrProvider.QWEN_FILE
+    val streaming = settings.asr == AsrProvider.QWEN_REALTIME || settings.asr == AsrProvider.DOUBAO
     val options = SpeechSettings.AUTO_SEND_SILENCE_OPTIONS
     val optionLabels = options.map { millis ->
         if (millis == 0) {

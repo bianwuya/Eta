@@ -63,6 +63,26 @@ import org.robolectric.shadows.ShadowContentResolver
 @RunWith(RobolectricTestRunner::class)
 @Config(application = EtaApp::class, sdk = [36], shadows = [io.github.mangi.eta.testing.WindowsAtomicFileShadow::class])
 class LocalMergeRegressionTest {
+    @Test fun portableRestoreCannotBypassRuntimeStatusGuard() = withFixture(true) { f ->
+        val archive = ByteArrayOutputStream()
+        runBlocking {
+            io.github.mangi.eta.local.imagegen.ImageGenConfigStore.write(f.activity,
+                io.github.mangi.eta.local.imagegen.ImageGenConfig(profileId = "backup-guard",
+                    source = io.github.mangi.eta.local.imagegen.ImageGenSource.OPENAI_API,
+                    endpoint = "https://fixture.invalid", model = "image"))
+            io.github.mangi.eta.data.repository.EtaPortableBackup.export(f.activity, archive,
+                setOf(io.github.mangi.eta.data.repository.EtaPortablePart.IMAGEGEN))
+            io.github.mangi.eta.local.imagegen.ImageGenConfigStore.remove(f.activity, "backup-guard")
+            io.github.mangi.eta.data.repository.EtaPortableBackup.inspect(f.activity,
+                ByteArrayInputStream(archive.toByteArray())).use { staged ->
+                val failure = runCatching { f.state.restorePortableBackup(staged, staged.manifest.parts) }.exceptionOrNull()
+                assertTrue(failure?.message.orEmpty().contains("Runtime"))
+                assertTrue(io.github.mangi.eta.local.imagegen.ImageGenConfigStore.profiles(f.activity).profiles.isEmpty())
+                assertTrue(staged.file("imagegen/config.json").exists())
+            }
+        }
+    }
+
     @Test fun sessionTotalsRemainCompleteWhenTheConversationIsLoadedInPages() = withFixture(false) { f ->
         runBlocking {
             val messages = (0 until 100).flatMap { index -> listOf(
@@ -79,7 +99,7 @@ class LocalMergeRegressionTest {
             assertEquals(128, recent.messages.size)
             val whole = AgentConversationStore.loadAllMessages(f.activity, "paging-source")
             val expected = latestContextUsage(whole, null).sessionStats
-            val actual = recent.sessionStatsPrefix + latestContextUsage(recent.messages, null).sessionStats
+            val actual = latestContextUsage(recent.messages, null, recent.sessionStatsPrefix).sessionStats
             assertEquals(100, expected.turns)
             assertEquals(10_000, expected.promptTokens)
             assertEquals("Session totals must include the stored prefix", expected, actual)

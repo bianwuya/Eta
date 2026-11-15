@@ -55,6 +55,86 @@ class EtaAssistantScreenContextTest {
     }
 
     @Test
+    fun fallbackSubmitsWindowsOnceWithoutBlockingFutureFrameworkScreenshot() {
+        val capture = EtaAssistantScreenContext(
+            VoiceInteractionSession.SHOW_WITH_SCREENSHOT, emptyList(),
+        )
+        val submitted = java.util.concurrent.CountDownLatch(1)
+        val count = java.util.concurrent.atomic.AtomicInteger(0)
+        try {
+            assertTrue(capture.needsScreenshotFallback())
+            capture.captureFallbackIfMissing(
+                capture = { signal ->
+                    signal()
+                    signal()
+                    null
+                },
+                onWindowsSubmitted = {
+                    count.incrementAndGet()
+                    submitted.countDown()
+                },
+            )
+            assertTrue(submitted.await(3, java.util.concurrent.TimeUnit.SECONDS))
+            assertEquals(1, count.get())
+            // The system may still deliver its own screenshot after fallback failed.
+            assertTrue(capture.needsScreenshotFallback())
+            capture.acceptScreenshot(null)
+            assertTrue(capture.needsScreenshotFallback())
+        } finally { capture.close() }
+    }
+
+    @Test
+    fun frameworkCallbackAlreadyReceivedSkipsExtraScreenshot() {
+        val capture = EtaAssistantScreenContext(
+            VoiceInteractionSession.SHOW_WITH_SCREENSHOT, emptyList(),
+        )
+        try {
+            capture.acceptScreenshot(android.graphics.Bitmap.createBitmap(2, 2, android.graphics.Bitmap.Config.ARGB_8888))
+            var attempted = false
+            var notified = false
+            capture.captureFallbackIfMissing(
+                capture = { attempted = true; null },
+                onWindowsSubmitted = { notified = true },
+            )
+            assertFalse(attempted)
+            assertTrue(notified)
+        } finally { capture.close() }
+    }
+
+    @Test
+    fun fallbackOwnedByCurrentWakeSurvivesFrameworkCallbacksBeingSealed() = runBlocking {
+        val capture = EtaAssistantScreenContext(
+            VoiceInteractionSession.SHOW_WITH_SCREENSHOT, emptyList(),
+        )
+        val started = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val submitted = java.util.concurrent.atomic.AtomicInteger(0)
+        try {
+            capture.captureFallbackIfMissing(
+                capture = { signal ->
+                    signal()
+                    started.countDown()
+                    release.await(3, java.util.concurrent.TimeUnit.SECONDS)
+                    android.graphics.Bitmap.createBitmap(
+                        16, 16, android.graphics.Bitmap.Config.ARGB_8888,
+                    )
+                },
+                onWindowsSubmitted = { submitted.incrementAndGet() },
+            )
+            assertTrue(started.await(3, java.util.concurrent.TimeUnit.SECONDS))
+            capture.sealCallbacks()
+            release.countDown()
+            val snapshot = capture.snapshot()
+            assertNotNull(snapshot.image)
+            assertTrue(snapshot.text.contains("本次已附屏幕截图"))
+            assertEquals(1, submitted.get())
+        } finally {
+            release.countDown()
+            capture.close()
+        }
+    }
+
+    @Test
     fun flagsRequestBothChannelsAndAndroid17ScreenContent() {
         val older = AssistantContextFlags.forSdk(34)
         assertTrue(older and VoiceInteractionSession.SHOW_WITH_ASSIST != 0)

@@ -43,6 +43,12 @@ sealed interface AppRoute : NavKey {
     data class SubagentConversationStats(val conversationId: String) : AppRoute
 
     @Serializable
+    data object ConversationTitleSettings : AppRoute
+
+    @Serializable
+    data object AssistantOverlaySettings : AppRoute
+
+    @Serializable
     data object Characters : AppRoute
 
     @Serializable

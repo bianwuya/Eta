@@ -12,6 +12,8 @@ import org.json.JSONObject
 internal interface AgentProviderClient {
     val id: String
     val capabilities: ProviderCapabilities
+    /** Start-only routing may select a compatible model before any output is accepted. */
+    val activeModelConfig: AgentModelClient.ModelConfig? get() = null
 
     fun complete(
         request: ProviderRequest,
@@ -38,7 +40,7 @@ internal enum class EndpointKind {
 }
 
 internal enum class ProviderRequestPurpose {
-    CHAT, COMPACTION, REPLY_REWRITE, TRANSCRIPT_REFINE, CONVERSATION_TITLE;
+    CHAT, COMPACTION, REPLY_REWRITE, TRANSCRIPT_REFINE, TITLE_GENERATION;
 
     val allowsTools: Boolean get() = this == CHAT
 }
@@ -91,7 +93,8 @@ internal data class ProviderRequest(
                 extraBodyJson = extra, customBody = connected.customBody.filter { it.key in allowed })
         } else connected
     }
-    val effectiveTools: JSONArray get() = if (purpose.allowsTools) tools else JSONArray()
+    val effectiveTools: JSONArray get() =
+        if (purpose.allowsTools || purpose == ProviderRequestPurpose.COMPACTION) tools else JSONArray()
 }
 
 internal data class ProviderResponse(

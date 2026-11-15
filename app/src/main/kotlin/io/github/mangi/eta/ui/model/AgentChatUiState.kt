@@ -1,4 +1,4 @@
-﻿package io.github.mangi.eta.ui.model
+package io.github.mangi.eta.ui.model
 
 import androidx.compose.runtime.Immutable
 import io.github.mangi.eta.agent.model.AgentFileReference
@@ -45,8 +45,9 @@ internal data class AgentChatUiState(
     val conversationCharacterName: String? = null,
     val conversationCharacterAvatarPath: String? = null,
 ) {
-    val canCompactContext: Boolean get() = !isStreaming && messageEdit == null && history.any {
-        !it.contextSummary && (it.role == "assistant" || it.role == "tool")
+    // A completed summary is still valid context: users must be able to compact it again.
+    val canCompactContext: Boolean get() = !isStreaming && !isCompacting && messageEdit == null && history.any {
+        it.role == "assistant" || it.role == "tool"
     }
 }
 
@@ -101,6 +102,11 @@ data class SystemNoticeMessageUi(
     val contextTokens: Int? = null,
     /** 仅运行期存在的进行中标记，不随消息持久化；恢复的历史通知始终视为已结束。 */
     val running: Boolean = false,
+    val usage: TokenUsageUi? = null,
+    val archiveId: String = "",
+    val tokensBefore: Int? = null,
+    /** null = pending/legacy; true = complete; false = failed or timed out. Persisted with the notice. */
+    val compactionSucceeded: Boolean? = null,
 ) : AgentChatMessageUi
 
 @Immutable
@@ -110,6 +116,8 @@ data class TokenUsageUi(
     val outputTokens: Int? = null,
     val reasoningTokens: Int? = null,
     val cachedTokens: Int? = null,
+    val cacheWriteTokens: Int? = null,
+    val requestKind: String? = null,
     val stepCount: Int? = null,
     val llmMs: Long? = null,
     val toolMs: Long? = null,
@@ -124,6 +132,7 @@ data class TokenUsageUi(
             outputTokens == null &&
             reasoningTokens == null &&
             cachedTokens == null &&
+            cacheWriteTokens == null &&
             stepCount == null &&
             llmMs == null &&
             toolMs == null &&

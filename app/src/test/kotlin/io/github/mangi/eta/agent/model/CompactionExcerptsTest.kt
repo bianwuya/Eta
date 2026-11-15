@@ -71,6 +71,18 @@ class CompactionExcerptsTest {
         assertEquals(summary, result)
         assertTrue(result.length > 12000)
     }
+    @Test fun fullSummaryCanExceedSourceWithoutAnyPostCompactionRetentionLimit() {
+        val original = JSONArray()
+            .put(JSONObject().put("role", "system").put("content", "规则"))
+            .put(JSONObject().put("role", "assistant").put("content", "短历史"))
+        val retained = "关键证据与决策".repeat(5_000)
+        val candidate = AgentContextCompactor(config.copy(contextWindow = 200_000),
+            provider { response(retained) }, AgentRunController()).compact(original, 1, emptySet())
+        assertTrue(candidate.getJSONObject(1).getString("content").endsWith(retained))
+        assertTrue(candidate.toString().length > original.toString().length)
+        assertEquals("短历史", original.getJSONObject(1).getString("content"))
+    }
+
     @Test fun summaryTransportFallsBackOnceWithIdenticalCompleteHistoryAndAccount() {
         val requests = mutableListOf<ProviderRequest>()
         val source = listOf(AgentModelClient.ConversationMessage("assistant", "facts"))

@@ -1,6 +1,7 @@
 package io.github.mangi.eta.ui.app
 
 import android.os.Looper
+import android.os.SystemClock
 import android.util.DisplayMetrics
 import android.view.View
 import android.view.ViewGroup
@@ -9,6 +10,9 @@ import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.BroadcastFrameClock
+import androidx.compose.runtime.Recomposer
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -17,6 +21,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.AbstractComposeView
+import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsNode
@@ -55,6 +60,8 @@ import io.github.mangi.eta.ui.screens.enhance.SystemEnhanceScreen
 import io.github.mangi.eta.ui.screens.mcp.McpServersScreen
 import io.github.mangi.eta.ui.screens.memory.AgentMemoryScreen
 import io.github.mangi.eta.ui.screens.permissions.PermissionHealthScreen
+import io.github.mangi.eta.ui.screens.settings.AssistantOverlaySettingsScreen
+import io.github.mangi.eta.ui.screens.settings.ConversationTitleSettingsScreen
 import io.github.mangi.eta.ui.screens.skills.AgentSkillsScreen
 import io.github.mangi.eta.ui.screens.subagent.SubagentSettingsScreen
 import io.github.mangi.eta.ui.screens.terminal.LinuxEnvironmentScreen
@@ -70,6 +77,8 @@ import io.github.mangi.eta.ui.voice.SpeechSynthesisScreen
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -89,8 +98,11 @@ class UiStyleThemeAndScreensTest {
     fun switchingUiStylePreservesStateAndSynchronizesPageAndDialogScaleWith100PercentBaseline() {
         val controller = Robolectric.buildActivity(ComponentActivity::class.java).setup().visible()
         val activity = controller.get()
-        val looper = shadowOf(Looper.getMainLooper())
         val baseDensity = activity.resources.configuration.densityDpi.toFloat() / DisplayMetrics.DENSITY_DEFAULT
+        val frames = BroadcastFrameClock()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate + frames)
+        val recomposer = Recomposer(scope.coroutineContext)
+        val host = ComposeView(activity)
 
         var appearance by mutableStateOf(
             AppearanceSettings(
@@ -98,14 +110,16 @@ class UiStyleThemeAndScreensTest {
                 interfaceScale = 1.0f,
             ),
         )
-        var observedStyle by mutableStateOf<AppearanceUiStyle?>(null)
-        var pageDensity by mutableStateOf(0f)
-        var dialogDensity by mutableStateOf(0f)
+        var observedStyle: AppearanceUiStyle? = null
+        var pageDensity = 0f
+        var dialogDensity = 0f
         var mountCount = 0
         var latestDraft = ""
 
         try {
-            activity.setContent {
+            scope.launch { recomposer.runRecomposeAndApplyChanges() }
+            host.setParentCompositionContext(recomposer)
+            host.setContent {
                 AgentAppTheme(
                     appearance = appearance,
                     applyInterfaceScale = true,
@@ -116,19 +130,23 @@ class UiStyleThemeAndScreensTest {
                         mountCount += 1
                         draftText = "edited-draft-$counter"
                     }
-                    latestDraft = draftText
-                    observedStyle = LocalUiStyle.current
-                    pageDensity = LocalDensity.current.density
+                    val style = LocalUiStyle.current
+                    val density = LocalDensity.current.density
+                    SideEffect {
+                        latestDraft = draftText
+                        observedStyle = style
+                        pageDensity = density
+                    }
                     Box(Modifier.size(100.dp))
                     Dialog(onDismissRequest = {}) {
-                        dialogDensity = LocalDensity.current.density
+                        val density = LocalDensity.current.density
+                        SideEffect { dialogDensity = density }
                         Box(Modifier.size(40.dp))
                     }
                 }
             }
-            looper.idle()
-            measureAndLayoutActivity(activity)
-            looper.idle()
+            activity.setContentView(host)
+            advanceCompositionUntil(activity, frames) { mountCount == 1 && latestDraft == "edited-draft-1" && dialogDensity > 0f }
 
             assertEquals(AppearanceUiStyle.COUI, observedStyle)
             assertEquals(1, mountCount)
@@ -141,9 +159,8 @@ class UiStyleThemeAndScreensTest {
                 uiStyle = AppearanceUiStyle.MIUIX,
                 interfaceScale = 0.9f,
             )
-            looper.idle()
-            measureAndLayoutActivity(activity)
-            looper.idle()
+            advanceCompositionUntil(activity, frames) { observedStyle == AppearanceUiStyle.MIUIX &&
+                kotlin.math.abs(pageDensity - baseDensity * 0.9f) < 0.001f }
 
             assertEquals(AppearanceUiStyle.MIUIX, observedStyle)
             assertEquals(1, mountCount)
@@ -153,14 +170,15 @@ class UiStyleThemeAndScreensTest {
 
             // 再切回 COUI：状态依然保持不变
             appearance = appearance.copy(uiStyle = AppearanceUiStyle.COUI)
-            looper.idle()
-            measureAndLayoutActivity(activity)
-            looper.idle()
+            advanceCompositionUntil(activity, frames) { observedStyle == AppearanceUiStyle.COUI }
 
             assertEquals(AppearanceUiStyle.COUI, observedStyle)
             assertEquals(1, mountCount)
             assertEquals("edited-draft-1", latestDraft)
         } finally {
+            host.disposeComposition()
+            recomposer.cancel()
+            scope.cancel()
             controller.pause().stop().destroy()
         }
     }
@@ -247,6 +265,7 @@ class UiStyleThemeAndScreensTest {
                             context = activity,
                             onBack = { backPressedCount++ },
                             onExport = { error("unused") },
+                            onPortableRestore = { _, _ -> error("unused") },
                             onImport = { error("unused") },
                         )
                         12 -> AgentMemoryScreen(state = memoryState, onAction = {})
@@ -273,11 +292,13 @@ class UiStyleThemeAndScreensTest {
                             onOpenEta = {},
                         )
                         27 -> AgentAppRoot()
+                        28 -> ConversationTitleSettingsScreen(onBack = { backPressedCount++ })
+                        29 -> AssistantOverlaySettingsScreen(onBack = { backPressedCount++ })
                     }
                 }
             }
 
-            for (index in 0..27) {
+            for (index in 0..29) {
                 screenIndex = index
                 for (style in listOf(AppearanceUiStyle.COUI, AppearanceUiStyle.MIUIX)) {
                     uiStyle = style
@@ -309,6 +330,19 @@ class UiStyleThemeAndScreensTest {
         } finally {
             controller.pause().stop().destroy()
         }
+    }
+
+    private fun advanceCompositionUntil(activity: ComponentActivity, frames: BroadcastFrameClock, condition: () -> Boolean) {
+        // Drive the test-owned recomposer instead of relying on the shared Android frame clock.
+        val looper = shadowOf(Looper.getMainLooper())
+        repeat(60) {
+            androidx.compose.runtime.snapshots.Snapshot.sendApplyNotifications()
+            looper.idleFor(java.time.Duration.ofMillis(16))
+            frames.sendFrame(SystemClock.uptimeMillis() * 1_000_000L)
+            measureAndLayoutActivity(activity)
+            if (condition()) return
+        }
+        assertTrue("Compose frame did not apply its state and effects", condition())
     }
 
     private fun measureAndLayoutActivity(activity: ComponentActivity) {

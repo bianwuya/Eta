@@ -99,7 +99,7 @@ class EtaAssistantSteeringTest {
         }
     }
 
-    private fun testVoicePanelColors() = EtaVoicePanelColors(Color(0xFFFAFAFC), Color(0xFAFFFFFF), Color.White, Color(0xF5FFFFFF), Color(0xF0000000), Color(0x9E000000), Color(0x52000000), Color(0x38000000), Color(0x14000000), Color(0x18000000), Color(0x48000000), Color(0xF5FFFFFF))
+    @androidx.compose.runtime.Composable private fun testVoicePanelColors() = rememberEtaVoicePanelColors()
 
     @Before
     fun reset() {
@@ -134,6 +134,7 @@ class EtaAssistantSteeringTest {
                     input = inputState.value,
                     speech = EtaSpeechState(),
                     recognitionEnabled = true,
+                    speechLevel = { 0f },
                     inputFocusRequestKey = -1,
                     onInputFocus = {},
                     onMicrophone = {},

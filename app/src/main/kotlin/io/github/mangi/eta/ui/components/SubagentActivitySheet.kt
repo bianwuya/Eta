@@ -1,4 +1,4 @@
-﻿package io.github.mangi.eta.ui.components
+package io.github.mangi.eta.ui.components
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
@@ -316,7 +316,7 @@ internal fun SubagentInspectorContent(
         // This entry remains visible for running, failed and cancelled tasks, including old
         // snapshots with no detail ID. The destination explains unavailable records instead.
         if (isCoui) {
-            CouiText(text = requestStats, kind = CouiTextKind.Description)
+            CouiText(text = requestStats, kind = CouiTextKind.ItemSummary)
             CouiPreference(title = "历史记录",
                 summary = if (snapshot.historyIncomplete) "部分记录保存失败，历史可能不完整" else null, onClick = onOpenDetails)
         } else {

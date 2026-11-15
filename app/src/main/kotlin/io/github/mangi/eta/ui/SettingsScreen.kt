@@ -14,7 +14,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.MenuBook
 import androidx.compose.material.icons.rounded.AccessibilityNew
 import androidx.compose.material.icons.rounded.AccountTree
+import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.BugReport
+import androidx.compose.material.icons.rounded.ChatBubble
 import androidx.compose.material.icons.rounded.Cloud
 import androidx.compose.material.icons.rounded.Code
 import androidx.compose.material.icons.rounded.Dashboard
@@ -268,8 +270,6 @@ private fun SettingsPageContent(
     val selectedModel = remember(selectedProvider, selectedModelId) {
         selectedProvider?.models?.find { it.id == selectedModelId }
     }
-    val chatSettingsFlow = remember { io.github.mangi.eta.data.datastore.SettingsDataStore.settingsFlow() }
-    val chatSettings by chatSettingsFlow.collectAsState(initial = io.github.mangi.eta.data.model.Settings())
     val providerSummary = selectedProvider?.let { provider ->
         "${provider.name} / ${selectedModel?.displayName ?: stringResource(R.string.settings_model_not_selected)}"
     } ?: stringResource(R.string.settings_not_configured)
@@ -401,16 +401,6 @@ private fun SettingsPageContent(
                 }
 
                 Group(title = stringResource(R.string.settings_context_extensions)) {
-                    CouiSwitchPreference(
-                        title = "自动命名新会话",
-                        summary = "首轮完成后命名一次；不覆盖手动标题，失败不影响聊天",
-                        checked = chatSettings.autoConversationTitle,
-                        onCheckedChange = { enabled -> coroutineScope.launch {
-                            io.github.mangi.eta.data.datastore.SettingsDataStore.updateSettings { it.copy(autoConversationTitle = enabled) }
-                        } },
-                        icon = { CouiSettingsIcon(Icons.Rounded.EditNote, SettingsIconColors.Blue) },
-                    )
-                    CouiIconDivider()
                     SwitchPref(
                         context = context,
                         prefs = agentPrefs,
@@ -418,6 +408,12 @@ private fun SettingsPageContent(
                         key = Prefs.Keys.AGENT_AUTO_COMPACTION_ENABLED,
                         icon = Icons.Rounded.Layers,
                         iconTint = SettingsIconColors.Blue,
+                    )
+                    CouiIconDivider()
+                    CouiPreference(
+                        title = stringResource(R.string.conversation_title_settings_title),
+                        icon = { CouiSettingsIcon(Icons.Rounded.AutoAwesome, SettingsIconColors.Blue) },
+                        onClick = { onNavigate(AppRoute.ConversationTitleSettings) },
                     )
                     CouiIconDivider()
                     CouiPreference(
@@ -534,6 +530,17 @@ private fun SettingsPageContent(
                             )
                         },
                         onClick = openAssistantSettings,
+                    )
+                    CouiIconDivider()
+                    CouiPreference(
+                        title = stringResource(R.string.assistant_overlay_settings_title),
+                        icon = {
+                            CouiSettingsIcon(
+                                Icons.Rounded.ChatBubble,
+                                SettingsIconColors.Blue,
+                            )
+                        },
+                        onClick = { onNavigate(AppRoute.AssistantOverlaySettings) },
                     )
                     if (prefs != null || hasConnectedFramework) {
                         CouiIconDivider()
@@ -838,20 +845,6 @@ private fun SettingsPageContent(
                 item(key = "section_context_extensions") {
                     SmallTitle(stringResource(R.string.settings_context_extensions))
                     SettingsGroupCard {
-                        SwitchPreference(
-                            title = "自动命名新会话",
-                            summary = "首轮完成后命名一次；不覆盖手动标题，失败不影响聊天",
-                            checked = chatSettings.autoConversationTitle,
-                            onCheckedChange = { enabled -> coroutineScope.launch {
-                                io.github.mangi.eta.data.datastore.SettingsDataStore.updateSettings { it.copy(autoConversationTitle = enabled) }
-                            } },
-                            startAction = {
-                                SettingsIcon(
-                                    icon = Icons.Rounded.EditNote,
-                                    tint = SettingsIconColors.Blue,
-                                )
-                            },
-                        )
                         SwitchPref(
                             context = context,
                             prefs = agentPrefs,
@@ -859,6 +852,16 @@ private fun SettingsPageContent(
                             key = Prefs.Keys.AGENT_AUTO_COMPACTION_ENABLED,
                             icon = Icons.Rounded.Layers,
                             iconTint = SettingsIconColors.Blue,
+                        )
+                        ArrowPreference(
+                            title = stringResource(R.string.conversation_title_settings_title),
+                            startAction = {
+                                SettingsIcon(
+                                    icon = Icons.Rounded.AutoAwesome,
+                                    tint = SettingsIconColors.Blue,
+                                )
+                            },
+                            onClick = { onNavigate(AppRoute.ConversationTitleSettings) },
                         )
                         ArrowPreference(
                             title = stringResource(R.string.ui_memory_b55ff5),
@@ -979,6 +982,16 @@ private fun SettingsPageContent(
                                 )
                             },
                             onClick = openAssistantSettings,
+                        )
+                        ArrowPreference(
+                            title = stringResource(R.string.assistant_overlay_settings_title),
+                            startAction = {
+                                SettingsIcon(
+                                    icon = Icons.Rounded.ChatBubble,
+                                    tint = SettingsIconColors.Blue,
+                                )
+                            },
+                            onClick = { onNavigate(AppRoute.AssistantOverlaySettings) },
                         )
                         if (prefs != null || hasConnectedFramework) {
                             OverlayDropdownPreference(

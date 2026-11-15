@@ -73,7 +73,11 @@ internal class EtaBackupException(message: String, cause: Throwable? = null) :
 internal object EtaBackupRepository {
     private const val EXPORT_PAGE_SIZE = 64
 
-    suspend fun export(context: Context, output: OutputStream): EtaBackupSummary = withContext(Dispatchers.IO) {
+    suspend fun export(
+        context: Context,
+        output: OutputStream,
+        excludeCodexSubscription: Boolean = false,
+    ): EtaBackupSummary = withContext(Dispatchers.IO) {
         var phase = "prepare_export"
         try {
             val appContext = context.applicationContext
@@ -84,8 +88,14 @@ internal object EtaBackupRepository {
             EtaBackupJsonStreams.export(appContext, output, onPhase = { phase = it }) { writer ->
                 database.withTransaction {
                     val dao = database.conversationDao()
-                    val providers = database.providerDao().providers().map {
-                        EtaBackupProvider(it.provider.withoutOAuthSecrets(), it.models)
+                    val providers = database.providerDao().providers()
+                        .filterNot { excludeCodexSubscription && it.provider.authMode == ProviderAuthModes.OPENAI_CHATGPT }
+                        .map { EtaBackupProvider(it.provider.withoutOAuthSecrets(), it.models) }
+                    val selectedProviderId = settings.selectedProviderId?.takeIf { id ->
+                        providers.any { it.provider.id == id }
+                    }
+                    val selectedModelId = settings.selectedModelId?.takeIf { id ->
+                        providers.any { entry -> entry.models.any { it.id == id } }
                     }
                     val memory = AgentMemoryRepository.snapshot().content
                     writer.value("format", String.serializer(), EtaBackupDocument.FORMAT)
@@ -93,8 +103,8 @@ internal object EtaBackupRepository {
                     writer.value("exportedAt", Long.serializer(), System.currentTimeMillis())
                     writer.value("providers", ListSerializer(EtaBackupProvider.serializer()), providers)
                     writer.value("catalogRevision", Int.serializer(), catalogRevision)
-                    writer.value("selectedProviderId", String.serializer().nullable, settings.selectedProviderId)
-                    writer.value("selectedModelId", String.serializer().nullable, settings.selectedModelId)
+                    writer.value("selectedProviderId", String.serializer().nullable, selectedProviderId)
+                    writer.value("selectedModelId", String.serializer().nullable, selectedModelId)
                     writer.value("conversationState", ConversationStateEntity.serializer().nullable, dao.state())
                     writer.value("memoryMd", String.serializer(), memory)
                     val boundAvatars = linkedMapOf<String, String?>()
@@ -142,6 +152,7 @@ internal object EtaBackupRepository {
         input: InputStream,
         onCommitted: () -> Unit = {},
         forgetCredentials: (String) -> Unit = ProviderCredentialRepository::forget,
+        preserveCodexAccounts: Boolean = false,
     ): EtaBackupSummary = withContext(Dispatchers.IO) {
         var phase = "stage_import"
         try {
@@ -158,9 +169,21 @@ internal object EtaBackupRepository {
                 phase = "restore_assets"
                 val avatarPaths = document.roleplay?.let { CharacterBackupTransfer.restoreAssets(appContext, it) }.orEmpty()
                 val cancellation = currentCoroutineContext()
-                val oauthProviders = document.providers.map { it.provider }
+                // Portable restores must not import, replace or sign out local Codex subscription accounts.
+                val retainedCodex = if (preserveCodexAccounts) {
+                    database.providerDao().providers().filter {
+                        it.provider.authMode == ProviderAuthModes.OPENAI_CHATGPT
+                    }
+                } else emptyList()
+                val protectedIds = retainedCodex.mapTo(linkedSetOf()) { it.provider.id }
+                val incomingProviders = if (preserveCodexAccounts) {
+                    document.providers.filterNot {
+                        it.provider.authMode == ProviderAuthModes.OPENAI_CHATGPT || it.provider.id in protectedIds
+                    }
+                } else document.providers
+                val oauthProviders = incomingProviders.map { it.provider }
                     .filter { ProviderAuthModes.isOAuth(it.authMode) }
-                val credentialIds = document.providers.mapTo(linkedSetOf()) { it.provider.id }
+                val credentialIds = incomingProviders.mapTo(linkedSetOf()) { it.provider.id }
                 // 显式检查原任务取消，使 Room 提交到凭据清理之间不留下被取消打断的空隙。
                 withContext(NonCancellable) {
                     var memoryWriteStarted = false
@@ -168,9 +191,13 @@ internal object EtaBackupRepository {
                         database.withTransaction {
                             cancellation.ensureActive()
                             phase = "restore_providers"
-                            credentialIds += database.providerDao().providers().map { it.provider.id }
-                            database.providerDao().replaceAll(document.providers.map {
+                            credentialIds += database.providerDao().providers()
+                                .filterNot { preserveCodexAccounts && it.provider.authMode == ProviderAuthModes.OPENAI_CHATGPT }
+                                .map { it.provider.id }
+                            database.providerDao().replaceAll(incomingProviders.map {
                                 ProviderWithModelsSeed(it.provider.awaitingCredentialCleanup(), it.models)
+                            } + retainedCodex.map {
+                                ProviderWithModelsSeed(it.provider, it.models)
                             })
                             val dao = database.conversationDao()
                             phase = "clear_conversations"

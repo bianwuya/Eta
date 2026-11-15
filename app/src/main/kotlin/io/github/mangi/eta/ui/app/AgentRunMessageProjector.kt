@@ -56,9 +56,21 @@ internal class AgentRunMessageProjector(
         is AgentEvent.ContextCompaction -> {
             val id = "assistant-$runId-compaction-${event.operationId}"
             messages.filterNot { it.id == id } + SystemNoticeMessageUi(
-                id = id, code = SystemNoticeCode.ContextCompaction, detail = event.displayMessage,
+                id = id,
+                code = SystemNoticeCode.ContextCompaction,
+                detail = event.displayMessage,
                 contextTokens = event.tokensAfter,
                 running = event.phase == AgentEvent.ContextCompaction.PHASE_STARTED,
+                usage = event.usage?.takeUnless { it.isEmpty }?.toUi()?.copy(
+                    requestKind = AgentTokenUsage.REQUEST_KIND_COMPACTION,
+                ),
+                archiveId = event.archiveId,
+                tokensBefore = event.tokensBefore,
+                compactionSucceeded = when (event.phase) {
+                    AgentEvent.ContextCompaction.PHASE_STARTED -> null
+                    AgentEvent.ContextCompaction.PHASE_COMPLETED -> true
+                    else -> false
+                },
             )
         }
         is AgentEvent.ModelRetryScheduled -> scheduleModelRetry(runId, event, messages)
@@ -158,7 +170,7 @@ internal class AgentRunMessageProjector(
     ): List<AgentChatMessageUi> = messages.map { message ->
         if (message is SystemNoticeMessageUi && message.code == SystemNoticeCode.ContextCompaction &&
             message.id.startsWith("assistant-$runId-compaction-") && message.running) {
-            message.copy(detail = detail, running = false)
+            message.copy(detail = detail, running = false, compactionSucceeded = false)
         } else message
     }
 
@@ -714,13 +726,14 @@ internal class AgentRunMessageProjector(
                     id = "assistant-$runId-compaction-result",
                     code = SystemNoticeCode.ContextCompaction,
                     detail = detail,
+                    compactionSucceeded = ok,
                 )
             }
             val notice = messages[index] as SystemNoticeMessageUi
-            if (ok && !notice.running) return messages
+            if (ok && !notice.running && notice.compactionSucceeded == true) return messages
             return messages.mapIndexed { i, message ->
                 if (i == index && message is SystemNoticeMessageUi) {
-                    message.copy(detail = detail, running = false)
+                    message.copy(detail = detail, running = false, compactionSucceeded = ok)
                 } else {
                     message
                 }
@@ -817,6 +830,8 @@ internal fun AgentTokenUsage.toUi(): TokenUsageUi =
         outputTokens = outputTokens,
         reasoningTokens = reasoningTokens,
         cachedTokens = cachedTokens,
+        cacheWriteTokens = cacheWriteTokens,
+        requestKind = requestKind,
         stepCount = stepCount,
         llmMs = llmMs,
         toolMs = toolMs,

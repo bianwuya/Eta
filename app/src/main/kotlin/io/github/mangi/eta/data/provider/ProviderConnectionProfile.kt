@@ -43,12 +43,14 @@ internal enum class ProviderConnectionProfile(
 
     val usageUrl: String? get() = if (this == OPENAI_CODEX) "https://chatgpt.com/backend-api/wham/usage" else null
 
+    val rateLimitResetCreditsUrl: String? get() = if (this == OPENAI_CODEX) "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits" else null
+
     val rateLimitResetConsumeUrl: String? get() = if (this == OPENAI_CODEX) "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume" else null
 
     fun requireRequestTarget(url: HttpUrl) {
         require(url == modelsUrl.toHttpUrl() || url == inferenceUrl.toHttpUrl() ||
             imageGenerationUrl?.toHttpUrl() == url || usageUrl?.toHttpUrl() == url ||
-            rateLimitResetConsumeUrl?.toHttpUrl() == url) {
+            rateLimitResetCreditsUrl?.toHttpUrl() == url || rateLimitResetConsumeUrl?.toHttpUrl() == url) {
             "订阅凭据只能用于对应服务商的官方模型接口"
         }
     }

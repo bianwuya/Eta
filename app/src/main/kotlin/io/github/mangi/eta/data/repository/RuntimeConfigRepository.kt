@@ -6,6 +6,8 @@ import io.github.mangi.eta.config.Prefs
 import io.github.mangi.eta.data.datastore.SettingsDataStore
 import io.github.mangi.eta.data.model.GeminiProviderSetting
 import io.github.mangi.eta.data.model.AnthropicProviderSetting
+import io.github.mangi.eta.data.model.AssistantOverlaySettings
+import io.github.mangi.eta.data.model.ConversationTitleSettings
 import io.github.mangi.eta.data.model.CustomProviderSetting
 import io.github.mangi.eta.data.model.Model
 import io.github.mangi.eta.data.model.ModelReasoningCapabilities
@@ -45,6 +47,122 @@ internal object RuntimeConfigRepository {
     }
 
     suspend fun setSubagentModelPriority(ids: List<String>) = SettingsDataStore.setSubagentModelPriority(ids)
+    fun conversationTitleSettingsFlow() = SettingsDataStore.conversationTitleSettingsFlow()
+
+    suspend fun setConversationTitleSettings(settings: ConversationTitleSettings) {
+        SettingsDataStore.setConversationTitleSettings(settings)
+    }
+
+    fun assistantOverlaySettingsFlow() = SettingsDataStore.assistantOverlaySettingsFlow()
+
+    suspend fun setAssistantOverlaySettings(settings: AssistantOverlaySettings) {
+        SettingsDataStore.setAssistantOverlaySettings(settings)
+    }
+
+    /**
+     * 解析全局对话浮窗助手（电源键 / 系统助手入口）实际运行所用的模型与思考配置。
+     *
+     * 指定了独立浮窗模型且仍启用时优先使用，否则平滑回退到全局主模型；
+     * 思考等级未显式指定时跟随全局默认思考开关与模型默认档位。
+     */
+    suspend fun assistantOverlayRuntimeConfig(): AgentModelClient.ModelConfig? {
+        val settings = SettingsDataStore.assistantOverlaySettings()
+        val customModelId = settings.modelId?.takeIf { it.isNotBlank() }
+        val base = if (customModelId != null) {
+            ProviderRepository.ensureBuiltInsMerged()
+            ProviderRepository.allProviders().enabledModel(customModelId)?.let { (provider, model) ->
+                buildRuntimeConfig(provider, model)
+            }
+        } else {
+            null
+        } ?: currentRuntimeConfig() ?: return null
+        return applyAssistantOverlaySettings(base, settings)
+    }
+
+    internal fun applyAssistantOverlaySettings(
+        base: AgentModelClient.ModelConfig,
+        settings: AssistantOverlaySettings,
+        defaultThinkingEnabled: Boolean = Prefs.isEnabled(Prefs.Keys.AGENT_THINKING_ENABLED),
+    ): AgentModelClient.ModelConfig {
+        val explicitEffort = settings.resolvedReasoningEffort
+        val capabilities = base.reasoningCapabilities
+        val effort = when {
+            explicitEffort != null -> when {
+                capabilities != null -> capabilities.normalize(explicitEffort)
+                explicitEffort == ReasoningEffort.OFF -> ReasoningEffort.OFF
+                else -> base.effectiveReasoningEffort
+            }
+            !defaultThinkingEnabled -> capabilities?.normalize(ReasoningEffort.OFF) ?: ReasoningEffort.OFF
+            else -> base.effectiveReasoningEffort
+        }
+        return base.copy(
+            thinkingEnabled = effort.enablesReasoning,
+            reasoningEffort = effort,
+        )
+    }
+
+    /**
+     * 解析对话标题生成所用的模型与思考配置。
+     *
+     * 关闭自动标题时返回 `null`；若指定了独立标题模型且仍启用则优先使用，否则平滑回退到
+     * 会话当前模型（或全局默认模型）。思考等级未显式指定时默认取最低可用档位以节省 Token。
+     */
+    suspend fun titleGeneratorConfig(
+        conversationModelId: String? = null,
+        manual: Boolean = false,
+    ): AgentModelClient.ModelConfig? {
+        val settings = SettingsDataStore.conversationTitleSettings()
+        if (!settings.enabled && !manual) return null
+        val customModelId = settings.modelId?.takeIf { it.isNotBlank() }
+        val base = if (customModelId != null) {
+            ProviderRepository.ensureBuiltInsMerged()
+            ProviderRepository.allProviders().enabledModel(customModelId)?.let { (provider, model) ->
+                buildRuntimeConfig(provider, model)
+            }
+        } else {
+            null
+        } ?: runtimeConfigFor(conversationModelId) ?: return null
+        return applyTitleGenerationSettings(base, settings)
+    }
+
+    internal fun applyTitleGenerationSettings(
+        base: AgentModelClient.ModelConfig,
+        settings: ConversationTitleSettings,
+    ): AgentModelClient.ModelConfig {
+        val explicitEffort = settings.resolvedReasoningEffort
+        val capabilities = base.reasoningCapabilities
+        val effort = when {
+            explicitEffort != null -> when {
+                capabilities != null -> capabilities.normalize(explicitEffort)
+                explicitEffort == ReasoningEffort.OFF -> ReasoningEffort.OFF
+                else -> base.effectiveReasoningEffort
+            }
+            capabilities != null -> {
+                val selectable = capabilities.selectableEfforts
+                if (ReasoningEffort.OFF in selectable) {
+                    ReasoningEffort.OFF
+                } else {
+                    selectable.filter { it != ReasoningEffort.DEFAULT }
+                        .minByOrNull(ReasoningEffort::rank)
+                        ?: ReasoningEffort.DEFAULT
+                }
+            }
+            else -> base.effectiveReasoningEffort
+        }
+        return base.copy(
+            terminalTools = false,
+            browserTools = false,
+            deviceDirectTools = false,
+            deviceSensitiveReadTools = false,
+            deviceSensitiveActionTools = false,
+            subagentTools = false,
+            hostedWebSearchEnabled = false,
+            autoCompactionEnabled = false,
+            supportsSearchSuggestions = false,
+            thinkingEnabled = effort.enablesReasoning,
+            reasoningEffort = effort,
+        )
+    }
 
     /**
      * 解析 Subagent 实际运行所用的模型配置。
@@ -59,7 +177,9 @@ internal object RuntimeConfigRepository {
         val secondaryModelId = settings.modelId?.takeIf { it.isNotBlank() }
         val resolvedSecondary = if (secondaryModelId != null) {
             ProviderRepository.ensureBuiltInsMerged()
-            ProviderRepository.allProviders().enabledModel(secondaryModelId)
+            ProviderRepository.allProviders().enabledModel(secondaryModelId)?.takeIf { pair ->
+                pair.provider.authMode != ProviderAuthModes.API_KEY || pair.provider.apiKey.isNotBlank()
+            }
         } else {
             null
         }
@@ -97,27 +217,103 @@ internal object RuntimeConfigRepository {
     suspend fun subagentRuntimeCandidates(primary: AgentModelClient.ModelConfig): List<AgentModelClient.ModelConfig> {
         val settings = SettingsDataStore.subagentSettings()
         val default = subagentRuntimeConfig(primary)
-        if (settings.modelPriority.isEmpty()) return listOf(default)
+        val priorityIds = settings.modelPriority.asSequence()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .distinct()
+            .toList()
+        if (priorityIds.isEmpty()) return listOf(default)
+        ProviderRepository.ensureBuiltInsMerged()
         val providers = ProviderRepository.allProviders()
-        val ordered = settings.modelPriority.mapNotNull { id ->
+        val matchingProvider = providers.firstOrNull { provider ->
+            provider.isEnabled && isSameSubagentAccount(
+                buildProviderAnchorConfig(provider, default.model),
+                default,
+            )
+        } ?: return listOf(default)
+        if (matchingProvider.models.none { it.id in priorityIds }) {
+            return listOf(default)
+        }
+        val ordered = priorityIds.mapNotNull { id ->
             providers.enabledModel(id)?.let { (provider, model) ->
-                val config = buildRuntimeConfig(provider, model).copy(
-                    terminalTools = default.terminalTools, browserTools = default.browserTools,
-                    deviceDirectTools = default.deviceDirectTools, deviceSensitiveReadTools = default.deviceSensitiveReadTools,
-                    deviceSensitiveActionTools = default.deviceSensitiveActionTools, subagentTools = false,
-                    autoCompactionEnabled = default.autoCompactionEnabled, supportsSearchSuggestions = false,
-                    reasoningEffort = default.reasoningEffort, thinkingEnabled = default.thinkingEnabled,
-                )
+                val config = applySubagentCandidateSettings(buildRuntimeConfig(provider, model), settings, default)
                 io.github.mangi.eta.agent.subagent.SubagentModelPolicy.Candidate(config, model.supportsTools)
             }
         }
         // Anchor account to the selected config, never to the first surviving arbitrary provider.
-        val sameAccount = ordered.filter { c ->
-            c.config.providerId == default.providerId && c.config.baseUrl == default.baseUrl &&
-                c.config.authMode == default.authMode && c.config.apiKey == default.apiKey
+        val sameAccount = ordered.filter { c -> isSameSubagentAccount(c.config, default) }
+        val eligible = io.github.mangi.eta.agent.subagent.SubagentModelPolicy.eligible(sameAccount)
+        if (eligible.isNotEmpty()) return eligible
+        val defaultModel = matchingProvider.models.firstOrNull { it.modelId.trim() == default.model }
+        if (defaultModel != null && defaultModel.isEnabled && defaultModel.supportsTools && defaultModel.id !in priorityIds) {
+            return listOf(default)
         }
-        return io.github.mangi.eta.agent.subagent.SubagentModelPolicy.eligible(sameAccount)
-            .ifEmpty { throw io.github.mangi.eta.agent.model.AgentModelFailure("SUBAGENT_MODEL_UNAVAILABLE", false, "排序中的子模型没有可用的同账号工具模型") }
+        throw io.github.mangi.eta.agent.model.AgentModelFailure("SUBAGENT_MODEL_UNAVAILABLE", false, "排序中的子模型没有可用的同账号工具模型")
+    }
+
+    private fun buildProviderAnchorConfig(
+        provider: ProviderSetting,
+        modelName: String,
+    ): AgentModelClient.ModelConfig {
+        val profile = ProviderConnectionProfile.forAuthMode(provider.authMode)
+        return AgentModelClient.ModelConfig(
+            providerId = provider.id,
+            providerType = profile?.providerType ?: provider.runtimeProviderType,
+            baseUrl = profile?.baseUrl ?: provider.baseUrl.trim(),
+            apiKey = provider.apiKey.trim().takeIf { provider.authMode == ProviderAuthModes.API_KEY }.orEmpty(),
+            authMode = provider.authMode,
+            model = modelName,
+            systemPrompt = "",
+            openAiEndpointMode = profile?.endpointMode ?: provider.endpointMode(),
+        )
+    }
+
+    private fun isSameSubagentAccount(
+        a: AgentModelClient.ModelConfig,
+        b: AgentModelClient.ModelConfig,
+    ): Boolean = a.providerId == b.providerId &&
+        a.baseUrl == b.baseUrl &&
+        a.authMode == b.authMode &&
+        a.apiKey == b.apiKey &&
+        a.providerType == b.providerType &&
+        a.openAiEndpointMode == b.openAiEndpointMode
+
+    private fun applySubagentCandidateSettings(
+        built: AgentModelClient.ModelConfig,
+        settings: SubagentSettings,
+        defaultConfig: AgentModelClient.ModelConfig,
+    ): AgentModelClient.ModelConfig {
+        val explicitEffort = settings.resolvedReasoningEffort
+        val followSecondaryDefault = !settings.modelId.isNullOrBlank() && explicitEffort == null
+        val capabilities = built.reasoningCapabilities
+        val effort = when {
+            explicitEffort != null -> when {
+                capabilities != null -> capabilities.normalize(explicitEffort)
+                explicitEffort == ReasoningEffort.OFF -> ReasoningEffort.OFF
+                else -> built.effectiveReasoningEffort
+            }
+            followSecondaryDefault -> built.effectiveReasoningEffort
+            else -> {
+                val inherited = defaultConfig.effectiveReasoningEffort
+                when {
+                    capabilities != null -> capabilities.normalize(inherited)
+                    inherited == ReasoningEffort.OFF -> ReasoningEffort.OFF
+                    else -> built.effectiveReasoningEffort
+                }
+            }
+        }
+        return built.copy(
+            terminalTools = defaultConfig.terminalTools,
+            browserTools = defaultConfig.browserTools,
+            deviceDirectTools = defaultConfig.deviceDirectTools,
+            deviceSensitiveReadTools = defaultConfig.deviceSensitiveReadTools,
+            deviceSensitiveActionTools = defaultConfig.deviceSensitiveActionTools,
+            subagentTools = false,
+            autoCompactionEnabled = defaultConfig.autoCompactionEnabled,
+            supportsSearchSuggestions = false,
+            reasoningEffort = effort,
+            thinkingEnabled = effort.enablesReasoning,
+        )
     }
 
     suspend fun compactionTarget(primary: AgentModelClient.ModelConfig): io.github.mangi.eta.agent.model.AgentCompactionTarget {

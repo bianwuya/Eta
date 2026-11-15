@@ -45,6 +45,44 @@ internal object ChatToolCallHistory {
         }
     }
 
+    /** Check the final Chat Completions wire messages, not just stored DTOs.
+     * Never guess tool results or expose prompt/result text in diagnostic errors.
+     */
+    fun validateCompleteBatches(messages: JSONArray) {
+        var outstanding: MutableSet<String>? = null
+        for (index in 0 until messages.length()) {
+            val message = messages.optJSONObject(index)
+                ?: throw malformed("invalid_message")
+            if (message.optString("role") == "tool") {
+                val id = message.nonBlankString("tool_call_id")
+                val pending = outstanding
+                if (id == null || pending == null || !pending.remove(id)) {
+                    throw malformed("orphan_or_duplicate_tool_result")
+                }
+                continue
+            }
+            if (outstanding?.isNotEmpty() == true) throw malformed("missing_tool_result")
+            outstanding = null
+            if (message.optString("role") != "assistant" || !message.has("tool_calls")) continue
+            val calls = message.optJSONArray("tool_calls")
+                ?: throw malformed("invalid_tool_calls")
+            if (calls.length() == 0) continue
+            val expected = linkedSetOf<String>()
+            for (callIndex in 0 until calls.length()) {
+                val id = calls.optJSONObject(callIndex)?.nonBlankString("id")
+                if (id == null || !expected.add(id)) throw malformed("invalid_or_duplicate_tool_call_id")
+            }
+            outstanding = expected
+        }
+        if (outstanding?.isNotEmpty() == true) throw malformed("missing_tool_result")
+    }
+
+    private fun malformed(reason: String): AgentModelFailure =
+        AgentModelFailure(
+            "INVALID_TOOL_HISTORY", false,
+            "请求历史中的工具调用与响应不匹配（$reason）；本次请求已在本地阻止，未重放工具或发送至服务商。",
+        )
+
     private fun completeBatch(
         messages: JSONArray,
         assistantIndex: Int,

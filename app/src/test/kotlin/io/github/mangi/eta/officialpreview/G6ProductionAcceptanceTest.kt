@@ -37,6 +37,8 @@ class G6ProductionAcceptanceTest(private val style: AppearanceUiStyle) {
         purpose = "chat", ordinal = 1, status = "completed", inputTokens = input, cachedTokens = cache, outputTokens = output)
 
     @Test fun realSettingsSummaryAndDragReachRuntimeCandidateOrder() {
+        // Other Robolectric fixtures replace Room. Do not reuse their shared observer/replay.
+        ProviderRepository.resetObservationForTests()
         runBlocking {
             ProviderRepository.addProvider(OpenAiCompatibleProviderSetting("priority-provider", "测试连接", "https://fixture.invalid/v1",
                 apiKey = "fixture-key", models = models))

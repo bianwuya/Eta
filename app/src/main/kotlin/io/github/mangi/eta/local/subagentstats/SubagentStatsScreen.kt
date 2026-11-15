@@ -241,7 +241,7 @@ private fun StatsRow(title: String, summary: String? = null, enabled: Boolean = 
 
 @Composable
 private fun StatsText(text: String) {
-    if (LocalUiStyle.current == AppearanceUiStyle.COUI) CouiText(text = text, kind = CouiTextKind.Description)
+    if (LocalUiStyle.current == AppearanceUiStyle.COUI) CouiText(text = text, kind = CouiTextKind.ItemSummary)
     else Text(text, style = MiuixTheme.textStyles.footnote1, color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
 }
 

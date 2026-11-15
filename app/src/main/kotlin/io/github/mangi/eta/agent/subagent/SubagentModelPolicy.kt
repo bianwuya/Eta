@@ -7,6 +7,8 @@ import io.github.mangi.eta.agent.model.ProviderEvent
 import io.github.mangi.eta.agent.model.ProviderRequest
 import io.github.mangi.eta.agent.model.ProviderResponse
 import io.github.mangi.eta.agent.runtime.AgentRunController
+import org.json.JSONArray
+import org.json.JSONObject
 
 /** Ordered start-only candidates. A candidate list never grants another account or tool permission. */
 internal object SubagentModelPolicy {
@@ -21,7 +23,7 @@ internal object SubagentModelPolicy {
                 c.providerId == first.providerId && c.baseUrl == first.baseUrl &&
                 c.authMode == first.authMode && c.apiKey == first.apiKey &&
                 c.providerType == first.providerType && c.openAiEndpointMode == first.openAiEndpointMode &&
-                (minimumContext == 0 || (c.knownContextWindow ?: 0) >= minimumContext)
+                (minimumContext <= 0 || (c.knownContextWindow ?: 0) >= minimumContext)
         }.map { it.config }.distinctBy { it.model }
     }
 
@@ -30,6 +32,7 @@ internal object SubagentModelPolicy {
         selected: (AgentModelClient.ModelConfig, String?) -> Unit,
     ): AgentProviderClient {
         require(candidates.isNotEmpty()) { "没有可用的子代理候选模型" }
+        val candidateModels = candidates.map { it.model }
         return object : AgentProviderClient {
             private var index = 0
             private var started = false
@@ -38,10 +41,28 @@ internal object SubagentModelPolicy {
             private var bindingResolved = false
             override val id get() = delegate.id
             override val capabilities get() = delegate.capabilities
+            override val activeModelConfig get() = candidates[index]
             override fun complete(request: ProviderRequest, runController: AgentRunController,
                 onEvent: (ProviderEvent) -> Unit): ProviderResponse {
                 if (request.purpose != io.github.mangi.eta.agent.model.ProviderRequestPurpose.CHAT) {
-                    return factory(request.config).complete(request, runController, onEvent)
+                    val effectiveConfig = if (index > 0 && request.config == candidates.first()) {
+                        candidates[index]
+                    } else {
+                        request.config
+                    }
+                    val sameAccountBinding = pinnedBinding?.takeIf {
+                        effectiveConfig.providerId == candidates.first().providerId &&
+                            effectiveConfig.authMode == candidates.first().authMode
+                    }
+                    val effectiveRequest = if (effectiveConfig == request.config && sameAccountBinding == null) {
+                        request
+                    } else {
+                        request.copy(
+                            config = effectiveConfig,
+                            credentialBinding = sameAccountBinding ?: request.credentialBinding,
+                        )
+                    }
+                    return factory(effectiveConfig).complete(effectiveRequest, runController, onEvent)
                 }
                 if (!bindingResolved) {
                     pinnedBinding = request.accountBinding
@@ -50,19 +71,17 @@ internal object SubagentModelPolicy {
                 while (true) {
                     runController.throwIfCancelled()
                     val config = candidates[index]
-                    if (index > 0) {
-                        for (i in 0 until request.messages.length()) {
-                            val message = request.messages.optJSONObject(i) ?: continue
-                            if (message.optString("role") == "system") {
-                                message.put("content", message.optString("content").replace(
-                                    "当前配置的模型：${org.json.JSONObject.quote(candidates.first().model)}。",
-                                    "当前配置的模型：${org.json.JSONObject.quote(config.model)}。"))
-                            }
-                        }
+                    val effectiveMessages = if (index > 0) {
+                        replaceSystemModelIdentity(request.messages, candidateModels, config.model)
+                    } else {
+                        request.messages
                     }
                     var callbackFailed = false
                     try {
-                        val response = delegate.complete(request.copy(config = config, credentialBinding = pinnedBinding), runController) { event ->
+                        val response = delegate.complete(
+                            request.copy(config = config, messages = effectiveMessages, credentialBinding = pinnedBinding),
+                            runController,
+                        ) { event ->
                             // Once output or a hosted tool begins, outcome is no longer known to be empty.
                             if (event !is ProviderEvent.RequestStarted && event !is ProviderEvent.ResponseHeaders) started = true
                             try { onEvent(event) } catch (failure: Throwable) { callbackFailed = true; throw failure }
@@ -81,5 +100,41 @@ internal object SubagentModelPolicy {
                 }
             }
         }
+    }
+
+    private fun replaceSystemModelIdentity(
+        messages: JSONArray,
+        candidateModels: List<String>,
+        activeModel: String,
+    ): JSONArray {
+        val replacement = "当前配置的模型：${JSONObject.quote(activeModel)}。"
+        val prefixes = candidateModels.asSequence()
+            .distinct()
+            .filter { it != activeModel }
+            .map { "当前配置的模型：${JSONObject.quote(it)}。" }
+            .toList()
+        if (prefixes.isEmpty()) return messages
+        var changed = false
+        val copy = JSONArray()
+        for (i in 0 until messages.length()) {
+            val raw = messages.opt(i)
+            val message = raw as? JSONObject
+            if (message != null && message.optString("role") == "system") {
+                val original = message.optString("content")
+                var updated = original
+                for (prefix in prefixes) {
+                    if (updated.contains(prefix)) {
+                        updated = updated.replace(prefix, replacement)
+                    }
+                }
+                if (updated != original) {
+                    changed = true
+                    copy.put(JSONObject(message.toString()).put("content", updated))
+                    continue
+                }
+            }
+            copy.put(raw)
+        }
+        return if (changed) copy else messages
     }
 }

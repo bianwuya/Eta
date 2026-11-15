@@ -14,6 +14,7 @@ import io.github.mangi.eta.data.model.Model
 import io.github.mangi.eta.data.model.ProviderAuthModes
 import io.github.mangi.eta.data.repository.CodexAccountView
 import io.github.mangi.eta.data.repository.ProviderCredentialRepository
+import io.github.mangi.eta.local.codexusage.CodexUsagePanel
 import io.github.mangi.eta.ui.app.LocalAppearanceSettings
 import io.github.mangi.eta.ui.app.LocalUiStyle
 import io.github.mangi.eta.ui.components.MiuixDialogActions
@@ -75,6 +76,7 @@ internal fun ImageGenSettingsScreen(
         scope.launch {
             try { action(); state = withContext(Dispatchers.IO) { ImageGenConfigStore.profiles(context) }; error = null }
             catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: io.github.mangi.eta.agent.runtime.AgentRunCancelledException) { error = "登录已取消" }
             catch (failure: Exception) { error = (failure as? io.github.mangi.eta.agent.auth.ProviderAuthException)?.let {
                 "${it.stage?.let { phase -> "[$phase] " }.orEmpty()}${it.message}"
             } ?: "操作失败，原配置保留，请检查输入后重试" }
@@ -105,9 +107,15 @@ internal fun ImageGenSettingsScreen(
     fun login(accountId: String? = null) {
         operation {
             val run = AgentRunController(); controller = run
-            withContext(Dispatchers.IO) {
-                ProviderCredentialRepository.login(draft.credentialPoolId, ProviderAuthModes.OPENAI_CHATGPT, run,
+            val profile = draft
+            val loggedIn = withContext(Dispatchers.IO) {
+                ProviderCredentialRepository.login(profile.credentialPoolId, ProviderAuthModes.OPENAI_CHATGPT, run,
                     onPrompt = { next -> scope.launch { prompt = next } }, accountId = accountId)
+            }
+            val loaded = withContext(Dispatchers.IO) { loadImageGenAccounts(profile, readAccounts) }
+            accounts = loaded.accounts; accountError = loaded.error
+            if (profile.accountId.isBlank() || loaded.accounts.none { it.accountId == profile.accountId && it.usable }) {
+                draft = profile.copy(accountId = loggedIn.accountId)
             }
         }
     }
@@ -133,6 +141,12 @@ internal fun ImageGenSettingsScreen(
                                 (profile.retiredCredentialIds + profile.keySlotId).distinct().forEach(credentials::delete)
                                 ProviderCredentialRepository.forget(profile.credentialPoolId)
                                 ImageGenConfigStore.remove(context, profile.profileId)
+                            }
+                            if (accountId != null) {
+                                val saved = ImageGenConfigStore.profiles(context)
+                                ImageGenConfigStore.writeProfiles(context, saved.copy(profiles = saved.profiles.map {
+                                    if (it.profileId == profile.profileId && it.accountId == accountId) it.copy(accountId = "") else it
+                                }))
                             }
                         }
                         draft = if (accountId != null) draft.copy(accountId = draft.accountId.takeIf { it != accountId }.orEmpty()) else ImageGenConfig()
@@ -217,6 +231,19 @@ internal fun ImageGenSettingsScreen(
                                     ImageGenAction("从本机移除账号", { removeAccount = account.accountId }, !saving)
                                 }
                                 ImageGenRow("生图模型", "gpt-image-2 · Codex 订阅")
+                            }
+                        }
+                    }
+                    if (draft.source == ImageGenSource.CODEX_SUBSCRIPTION && draft.accountId.isNotBlank()) {
+                        item(key = "codex_usage:${draft.credentialPoolId}:${draft.accountId}") {
+                            val account = accounts.firstOrNull { it.accountId == draft.accountId }
+                            ImageGenGroup("订阅额度") {
+                                CodexUsagePanel(providerId = draft.credentialPoolId, accountId = draft.accountId,
+                                    usable = account?.usable == true, canManage = true, enabled = !saving,
+                                    onManageUsage = {
+                                        error = io.github.mangi.eta.ui.pages.providers.openProviderAccountLink(context,
+                                            "https://chatgpt.com/codex/settings/usage")
+                                    }, accountName = account?.label ?: "固定生图账号")
                             }
                         }
                     }

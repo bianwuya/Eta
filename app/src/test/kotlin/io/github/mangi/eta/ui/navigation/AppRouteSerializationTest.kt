@@ -31,6 +31,8 @@ class AppRouteSerializationTest {
             AppRoute.CompactionSettings,
             AppRoute.SubagentStats,
             AppRoute.SubagentConversationStats("conversation-a"),
+            AppRoute.ConversationTitleSettings,
+            AppRoute.AssistantOverlaySettings,
             AppRoute.Characters,
             AppRoute.CharacterDetail("character"),
             AppRoute.CharacterEditor(),

@@ -25,6 +25,8 @@ import io.github.mangi.eta.core.safeLogType
 import io.github.mangi.eta.core.safeStackTrace
 import io.github.mangi.eta.data.model.AppearanceUiStyle
 import io.github.mangi.eta.data.repository.EtaBackupSummary
+import io.github.mangi.eta.data.repository.EtaPortableBackup
+import io.github.mangi.eta.data.repository.EtaPortablePart
 import io.github.mangi.eta.ui.app.LocalUiStyle
 import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
@@ -52,6 +54,7 @@ internal fun DataBackupScreen(
     onBack: () -> Unit,
     onExport: suspend (OutputStream) -> EtaBackupSummary,
     onImport: suspend (InputStream) -> EtaBackupSummary,
+    onPortableRestore: suspend (EtaPortableBackup.Staged, Set<EtaPortablePart>) -> Unit,
 ) {
     val scope = rememberCoroutineScope()
     var busy by remember { mutableStateOf(false) }
@@ -143,6 +146,7 @@ internal fun DataBackupScreen(
                         },
                     )
                 }
+                EtaPortableBackupControls(context, onPortableRestore)
                 CouiPageBottomSpacer()
             }
         }
@@ -197,6 +201,9 @@ internal fun DataBackupScreen(
                             },
                         )
                     }
+                }
+                item(key = "portable_backup") {
+                    EtaPortableBackupControls(context, onPortableRestore)
                 }
             }
         }

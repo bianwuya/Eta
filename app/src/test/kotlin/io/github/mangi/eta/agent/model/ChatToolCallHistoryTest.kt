@@ -6,9 +6,60 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class ChatToolCallHistoryTest {
+    @Test
+    fun interruptedPreviousInvocationIsRepairedBeforeResumeWithoutReplayingTools() {
+        val incomplete = JSONArray()
+            .put(assistant("completed", "unknown"))
+            .put(result("completed", "real-result"))
+        val durable = AgentConversationCodec.transcript(incomplete, 0)
+        val recovered = AgentToolBatchRecovery.completeInterrupted(durable)
+        assertEquals(3, recovered.size)
+        assertEquals("real-result", recovered[1].content)
+        assertEquals("unknown", recovered[2].toolCallId)
+        assertTrue(recovered[2].content.contains("TOOL_INTERRUPTED"))
+        assertEquals(recovered, AgentToolBatchRecovery.completeInterrupted(recovered))
+        val resumed = JSONArray()
+        recovered.forEach { resumed.put(AgentConversationCodec.toJsonObject(it)) }
+        resumed.put(message("user", "继续原子代理任务"))
+        val config = AgentModelClient.ModelConfig(
+            baseUrl = "https://example.invalid/v1", apiKey = "fixture",
+            model = "gpt-6.1-terra", systemPrompt = "fixed",
+        )
+        val wire = OpenAiChatCompletionsProvider.buildRequestJson(config, resumed, JSONArray())
+            .getJSONArray("messages")
+        ChatToolCallHistory.validateCompleteBatches(wire)
+        assertEquals("unknown", wire.getJSONObject(2).getString("tool_call_id"))
+        assertEquals(incomplete.length(), 2) // source remains unchanged
+    }
+
+    @Test
+    fun malformedToolHistoryIsBlockedLocallyBeforeAnyHttpRequest() {
+        val config = AgentModelClient.ModelConfig(
+            baseUrl = "https://example.invalid/v1", apiKey = "fixture",
+            model = "gpt-6.1-terra", systemPrompt = "fixed",
+        )
+        val missing = JSONArray()
+            .put(assistant("needs_response"))
+            .put(message("user", "continue"))
+        val orphan = JSONArray()
+            .put(message("user", "question"))
+            .put(result("unknown", "orphan"))
+        for (bad in listOf(missing, orphan)) {
+            val before = bad.toString()
+            val failure = assertThrows(AgentModelFailure::class.java) {
+                OpenAiChatCompletionsProvider.buildRequestJson(config, bad, JSONArray())
+            }
+            assertEquals("INVALID_TOOL_HISTORY", failure.code)
+            assertFalse(failure.retryable)
+            assertTrue(failure.message.orEmpty().contains("本地阻止"))
+            assertEquals(before, bad.toString())
+        }
+    }
+
     @Test
     fun repeatedBatchesKeepEveryResultPairedWithoutChangingSource() {
         val source = JSONArray()

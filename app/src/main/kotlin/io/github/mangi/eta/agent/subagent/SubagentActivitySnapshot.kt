@@ -48,6 +48,16 @@ internal data class SubagentStepSnapshot(
     }
 }
 
+@Serializable
+internal data class SubagentUsageSnapshot(
+    val inputTokens: Int = 0,
+    val cachedTokens: Int = 0,
+    val cacheWriteTokens: Int = 0,
+    val outputTokens: Int = 0,
+    val reasoningTokens: Int = 0,
+    val llmMs: Long = 0L,
+)
+
 /**
  * Subagent 实时与持久化的结构化活动快照。
  *
@@ -79,6 +89,7 @@ internal data class SubagentActivitySnapshot(
     val contextReading: SubagentContextReading? = null,
     val contextRequestState: String = REQUEST_UNKNOWN,
     val historyIncomplete: Boolean = false,
+    val usage: SubagentUsageSnapshot? = null,
 ) {
     val toolStepCount: Int
         get() = steps.count { it.kind == SubagentStepSnapshot.KIND_TOOL }

@@ -64,6 +64,18 @@ class GeminiModelFailureTest {
     }
 
     @Test
+    fun chatCompletionsBadRequestCanReportSafeHistoryIndex() {
+        val body = """{"error":{"type":"invalid_request_error",
+            "param":"messages[56].tool_calls[0].function.arguments",
+            "message":"secret-prompt-123"}}"""
+        val failure = AgentModelFailure.http(400, body, includeParameterDetails = true)
+        assertEquals("HTTP_400", failure.code)
+        assertFalse(failure.retryable)
+        assertTrue(failure.message.orEmpty().contains("messages[56]"))
+        assertFalse(failure.message.orEmpty().contains("secret-prompt"))
+    }
+
+    @Test
     fun inputTokenOverflowHasExplicitNonRetryableFailure() {
         val failure = AgentModelFailure.http(400,
             """{"error":{"message":"The input token count (123) exceeds the maximum number of tokens allowed (100)."}}""")

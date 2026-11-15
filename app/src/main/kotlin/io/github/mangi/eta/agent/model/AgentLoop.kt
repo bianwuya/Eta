@@ -1,4 +1,4 @@
-﻿package io.github.mangi.eta.agent.model
+package io.github.mangi.eta.agent.model
 
 import io.github.mangi.eta.agent.runtime.AgentEvent
 import io.github.mangi.eta.agent.runtime.AgentRunController
@@ -40,6 +40,7 @@ internal class AgentLoop(
     private val roleplayContext: RoleplayRunContext? = null,
     initialSupplementIndex: Int = 0,
     private val compactionTarget: (() -> AgentCompactionTarget)? = null,
+    private val initialContextTokens: Int? = null,
 ) {
     data class Result(
         val content: String,
@@ -63,12 +64,19 @@ internal class AgentLoop(
     private var childWorkers: ExecutorService? = null
     private var pendingToolImageMessage: JSONObject? = null
     private val turnMetrics = TurnMetricsAccumulator()
+    private var precedingTools: JSONArray? = null
     private val context = AgentContextSession(
         config, messages, systemCount, operationId, provider, runController,
         { sensitiveToolCallIds }, onEvent, onContextSnapshot, { transcript.length() },
         roleplay = roleplayContext != null,
         compactionTarget = compactionTarget,
+        mainToolsProvider = { precedingTools ?: tools },
+        mainSessionId = sessionId,
+        messageProjector = { source -> roleplayContext?.projectMessages(source) ?: source },
+        enableCacheReuse = true,
     )
+    init { context.observeInputTokens(initialContextTokens) }
+
     private var supplementIndex = initialSupplementIndex
     private var conversationInputIndex = 0
     private var unconsumedNewInput = false
@@ -104,7 +112,6 @@ internal class AgentLoop(
 
     private fun runLoop(): Result {
         var round = 1
-        var precedingTools: JSONArray? = null
 
         while (true) {
             runController.throwIfCancelled()
@@ -766,6 +773,7 @@ internal class AgentLoop(
         private var outputTokens: Int? = null
         private var reasoningTokens: Int? = null
         private var cachedTokens: Int? = null
+        private var cacheWriteTokens: Int? = null
 
         fun reset() {
             stepCount = 0
@@ -780,6 +788,7 @@ internal class AgentLoop(
             outputTokens = null
             reasoningTokens = null
             cachedTokens = null
+            cacheWriteTokens = null
         }
 
         fun recordStep(
@@ -805,12 +814,15 @@ internal class AgentLoop(
             stepUsage?.outputTokens?.let { outputTokens = (outputTokens ?: 0) + it }
             stepUsage?.reasoningTokens?.let { reasoningTokens = (reasoningTokens ?: 0) + it }
             stepUsage?.cachedTokens?.let { cachedTokens = (cachedTokens ?: 0) + it }
+            stepUsage?.cacheWriteTokens?.let { cacheWriteTokens = (cacheWriteTokens ?: 0) + it }
             return AgentTokenUsage(
                 contextTokens = contextTokens,
                 inputTokens = inputTokens,
                 outputTokens = outputTokens,
                 reasoningTokens = reasoningTokens,
                 cachedTokens = cachedTokens,
+                cacheWriteTokens = cacheWriteTokens,
+                requestKind = AgentTokenUsage.REQUEST_KIND_CHAT,
                 stepCount = stepCount.takeIf { it > 0 },
                 llmMs = llmMs.takeIf { stepCount > 0 },
                 toolMs = toolMs.takeIf { it > 0L },

@@ -88,7 +88,10 @@ internal object ImageGenConfigStore {
         writeProfiles(context, old.copy(profiles = old.profiles.filterNot { it.profileId == profileId },
             selectedId = old.selectedId?.takeIf { it != profileId }))
     }
-    private fun writeProfiles(context: Context, state: ImageGenProfiles) {
+    @Synchronized
+    internal fun writeProfiles(context: Context, state: ImageGenProfiles) {
+        require(state.profiles.all { it.profileId.isNotBlank() } && state.profiles.map { it.profileId }.distinct().size == state.profiles.size)
+        require(state.selectedId == null || state.profiles.any { it.profileId == state.selectedId })
         check(prefs(context).edit().putString(KEY, json.encodeToString(state)).commit()) { "生图配置保存失败" }
         ImageGenAvailability.reload(context)
     }

@@ -38,7 +38,7 @@ internal object ProviderParameterDiagnostics {
         "invalid_request_error", "unsupported_parameter", "model_not_found",
     )
     private val requestParameterRoots = setOf(
-        "model", "input", "system_instruction", "tools", "generation_config", "response_format",
+        "model", "input", "messages", "system_instruction", "tools", "generation_config", "response_format",
         "stream", "store", "previous_interaction_id", "background", "safety_settings", "service_tier",
     )
     private val publicParameterNames = requestParameterRoots + setOf(
@@ -47,6 +47,7 @@ internal object ProviderParameterDiagnostics {
         "minimum", "maximum", "minItems", "maxItems", "minLength", "maxLength", "pattern",
         "thinking_level", "thinking_summaries", "tool_choice", "max_output_tokens", "temperature", "top_p",
         "text", "data", "uri", "mime_type", "schema", "arguments", "result", "call_id", "signature",
+        "tool_calls", "tool_call_id", "function", "reasoning_content", "stream_options",
     )
     private val parameterPath = Regex("[A-Za-z_][A-Za-z0-9_]*(?:\\[[0-9]{1,6}])?(?:\\.[A-Za-z_][A-Za-z0-9_]*(?:\\[[0-9]{1,6}])?)*")
 }

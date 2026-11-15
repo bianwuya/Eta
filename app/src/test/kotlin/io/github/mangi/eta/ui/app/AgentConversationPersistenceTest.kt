@@ -10,6 +10,8 @@ import io.github.mangi.eta.agent.roleplay.RoleplayReplyRevision
 import io.github.mangi.eta.data.db.EtaDatabase
 import io.github.mangi.eta.ui.model.AgentChatHomeUiState
 import io.github.mangi.eta.ui.model.AgentMessageUi
+import io.github.mangi.eta.ui.model.SystemNoticeCode
+import io.github.mangi.eta.ui.model.SystemNoticeMessageUi
 import io.github.mangi.eta.ui.model.ThinkingMessageUi
 import io.github.mangi.eta.ui.model.UserMessageUi
 import kotlinx.coroutines.runBlocking
@@ -44,6 +46,23 @@ class AgentConversationPersistenceTest {
         assertTrue(restored.searchSuggestionsHtml.isEmpty())
         val unloaded = AgentConversationStore.unloadConversation(conversation)
         assertTrue((unloaded.messages.single() as AgentMessageUi).searchSuggestionsHtml.isEmpty())
+    }
+
+    @Test
+    fun compactionFailureAndSuccessSurviveMessagePersistence() = runBlocking {
+        val previous = AgentMessageUi("prior", "正常回答", usage = io.github.mangi.eta.ui.model.TokenUsageUi(contextTokens = 30_000))
+        val failed = SystemNoticeMessageUi("compaction-timeout", SystemNoticeCode.ContextCompaction,
+            detail = "MODEL_TIMEOUT", compactionSucceeded = false)
+        val succeeded = SystemNoticeMessageUi("compaction-success", SystemNoticeCode.ContextCompaction,
+            detail = "上下文压缩完成", compactionSucceeded = true)
+        val saved = state("active").copy(messages = listOf(previous, failed, succeeded))
+        AgentConversationPersistence().save(context, snapshot(mapOf("active" to saved)))
+        val restored = AgentConversationStore.loadAllMessages(context, "active")
+        val notices = restored.filterIsInstance<SystemNoticeMessageUi>()
+        assertEquals(listOf(false, true), notices.map { it.compactionSucceeded })
+        assertEquals(null, io.github.mangi.eta.ui.model.latestContextUsage(restored, null).contextTokens)
+        assertEquals(30_000, io.github.mangi.eta.ui.model.latestContextUsage(restored, null).beforeCompactionTokens)
+        assertEquals(30_000, io.github.mangi.eta.ui.model.latestContextUsage(restored.take(2), null).contextTokens)
     }
 
     @Test

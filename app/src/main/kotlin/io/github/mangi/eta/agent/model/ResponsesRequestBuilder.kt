@@ -14,6 +14,7 @@ internal object ResponsesRequestBuilder {
         messages: JSONArray,
         tools: JSONArray,
         accountScope: String? = null,
+        purpose: ProviderRequestPurpose = ProviderRequestPurpose.CHAT,
     ): JSONObject {
         val input = buildInput(messages, accountScope)
         val responseTools = buildTools(tools, config.usesHostedWebSearch)
@@ -24,6 +25,9 @@ internal object ResponsesRequestBuilder {
         RequestBodyMerge.mergeCustomBody(request, config.customBody)
 
         // 这些字段决定协议正确性、隐私边界和 Eta 本轮行为，必须由运行时最终写入。
+        if (purpose == ProviderRequestPurpose.COMPACTION) {
+            listOf("messages", "system", "system_instruction").forEach(request::remove)
+        }
         request.put("model", config.model)
         request.put("instructions", instructions)
         request.put("input", input)
@@ -31,7 +35,7 @@ internal object ResponsesRequestBuilder {
         request.put("store", false)
         if (responseTools.length() > 0) {
             request.put("tools", responseTools)
-            request.put("tool_choice", "auto")
+            request.put("tool_choice", if (purpose == ProviderRequestPurpose.COMPACTION) "none" else "auto")
         } else {
             request.remove("tools")
             request.remove("tool_choice")

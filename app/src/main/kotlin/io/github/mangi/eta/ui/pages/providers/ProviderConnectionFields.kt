@@ -60,10 +60,10 @@ internal fun ProviderConnectionFields(
     onLogin: () -> Unit,
     onDisconnect: () -> Unit,
     onCancel: () -> Unit,
-    onSelectAccount: (String) -> Unit = {},
-    onReloginAccount: (String) -> Unit = {},
-    onRenameAccount: (String, String) -> Unit = { _, _ -> },
-    onRemoveAccount: (String) -> Unit = {},
+    onSelectAccount: (String) -> Unit,
+    onReloginAccount: (String) -> Unit,
+    onRenameAccount: (String, String) -> Unit,
+    onRemoveAccount: (String) -> Unit,
     onRebuildIndex: () -> Unit = {},
 ) {
     val context = LocalContext.current

@@ -114,7 +114,7 @@ private fun ReviewPriorityRows(initialReversed: Boolean = false) {
 }
 
 @Composable private fun ReviewLabel(text: String) {
-    if (LocalUiStyle.current == AppearanceUiStyle.COUI) CouiText(text = text, kind = CouiTextKind.PreferenceTitle)
+    if (LocalUiStyle.current == AppearanceUiStyle.COUI) CouiText(text = text, kind = CouiTextKind.ItemTitle)
     else Text(text)
 }
 
