@@ -5,7 +5,13 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class RichMarkdownParsingTest {
-    private fun parse(source: String) = StreamingGfmParserSession().parse(source, true)
+    private fun parse(source: String) = StreamingGfmParserSession(
+        MarkdownMathLayoutCache(
+            engine = { _, _ ->
+                io.ratex.DisplayList(width = 1.0, height = 0.8, depth = 0.2, items = emptyList())
+            },
+        ),
+    ).parse(source, true)
     @Test fun localImageProducesDisplayAnnotationButNoImageBytes() {
         val source = "![预览](/sdcard/Download/Eta-前端审核/图.png)"
         val snap = parse(source)
@@ -30,8 +36,9 @@ class RichMarkdownParsingTest {
             val snap = parse(source)
             assertEquals(source, snap.originalSource)
             snap.document.blocks.filterIsInstance<MarkdownTextBlock>().forEach {
-                assertTrue(it.text.getStringAnnotations(MATH_ANNOTATION, 0, it.text.length).isEmpty())
+                assertTrue(it.inlineMath.isEmpty())
             }
+            assertTrue(snap.document.blocks.filterIsInstance<MarkdownMath>().isEmpty())
         }
     }
     @Test fun mathematicalSourceIsRetainedSeparatelyFromDisplayAnnotations() {
@@ -39,14 +46,15 @@ class RichMarkdownParsingTest {
         val snap = parse(source)
         assertEquals(source, snap.originalSource)
         val para = snap.document.blocks.first() as MarkdownParagraph
-        assertEquals(1, para.text.getStringAnnotations(MATH_ANNOTATION, 0, para.text.length).size)
-        assertTrue((snap.document.blocks.last() as MarkdownCode).isMath)
+        assertEquals(1, para.inlineMath.size)
+        assertEquals("\\frac{1}{2}", para.inlineMath.single().latex)
+        val display = snap.document.blocks.last() as MarkdownMath
+        assertEquals("x^2", display.latex)
     }
     @Test fun explicitHtmlFenceAndRawHtmlHavePreviewLanguage() {
         listOf("```html\n<h1>demo</h1>\n```", "<html><body>demo</body></html>").forEach {
             val code = parse(it).document.blocks.single() as MarkdownCode
             assertEquals("html", code.language)
-            assertFalse(code.isMath)
         }
     }
 }

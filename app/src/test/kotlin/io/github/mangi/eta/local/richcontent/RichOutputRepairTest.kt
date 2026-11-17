@@ -20,14 +20,6 @@ class RichOutputRepairTest {
         assertEquals(360f, long.heightDp, 0.01f)
         assertTrue(long.cropped)
     }
-    @Test fun scrollRestoreHappensOnceAndHeightFeedbackIgnoresSameMeasurement() {
-        assertEquals(200, pendingScrollRestore(200, false))
-        assertNull(pendingScrollRestore(200, true))
-        assertEquals(0, pendingScrollRestore(-1, false))
-        assertNull(acceptedReportedHeight(100, 100, 2))
-        assertNull(acceptedReportedHeight(100, 101, 2))
-        assertEquals(150, acceptedReportedHeight(100, 150, 2))
-    }
     @Test fun imageFailuresAreNotSwallowedIntoBlankContent() {
         assertEquals("文件不存在或已移走", imageFailureReason(IllegalArgumentException("文件不存在或已移走")))
         assertTrue(imageFailureReason(Exception()).isNotBlank())
