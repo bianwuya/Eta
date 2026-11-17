@@ -63,7 +63,7 @@ pending steering
 
 ## 多会话并行与 GUI 控制权
 
-会话持有历史，run 持有一次执行。App 聊天、手动压缩和回复改写共享同会话单写约束；原有排队、插队和停止仍由用户选择。Runtime 在物化图片前登记 run 与会话占用，重复活动 run 不重新执行，超出准入上限明确失败，限制集中在 `RuntimeRunRegistry`。准备、等待 GUI、暂停和提交中的任务都计入活动集合，没有额外的全局任务排队。系统助手入口保留各自回传及入口内取消行为。
+会话持有历史，run 持有一次执行。App 聊天、手动压缩和回复改写共享同会话单写约束；原有排队、插话和停止仍由用户选择。主聊天对纯文本或文件引用发起插话时，通过 `MSG_STEER` 直接写入当前活动 run 的 `AgentRunController.steer`，不中断正在执行中的模型请求或工具批次，并在下一回合安全边界将补充指令（`_eta_steering`）追加到上下文末尾以保留前缀缓存；仅当当前 run 不可接纳（如压缩中或已进入终态提交）或消息包含图片时，保留在队首等待当前 run 完成后优先发出。主动停止仅由停止按钮触发。Runtime 在物化图片前登记 run 与会话占用，重复活动 run 不重新执行，超出准入上限明确失败，限制集中在 `RuntimeRunRegistry`。准备、等待 GUI、暂停和提交中的任务都计入活动集合，没有额外的全局任务排队。系统助手入口保留各自回传及入口内取消行为。
 
 GUI 工具在执行前自动取得控制权，跨模型回合保留，覆盖观察、推理、动作和验证。其他任务按 FIFO 等待，等待可取消；取得控制权后再次检查权限。零参数 `release_gui` 结束调用 run 的操作阶段，正常结束、失败和取消也会收尾；当前底层动作退出后才向下一任务交接。取得控制权先于助手面板关闭等前台副作用，流式工具名称事件只用于展示。
 
@@ -139,7 +139,7 @@ Gemini 工具参数在 Provider 边界做组合分支兼容投影：`oneOf`、`a
 
 Gemini 的完整原生 steps、思考和搜索签名只在当前 run 内回放，不进入稳定会话或运行归档。签名工具链尚未完成时保持请求前缀并延后自动压缩，强制压缩明确失败。跨 run、跨 Provider 或压缩后，旧消息与工具记录作为明确标注的文本历史投影，不把缺少签名的旧工具交换重新构造成原生调用。工具截图仍沿用完整工具批次后的单轮观察消息。思考配置按用户覆盖、远端元数据、本地已知默认值的顺序解析。未知模型默认只使用 Default；模型编辑页允许手动勾选 Interactions 协议的 Minimal、Low、Medium、High，服务端校验具体模型是否支持，请求失败会明确报告而不自动降级。关闭“配置思考档位”只恢复 Default，不发送关闭模型思考的参数；恢复自动会移除用户覆盖。工具混用能力仍独立确认，不由手动思考配置推断。原生模型目录支持分页并限制累计大小，已有兼容连接不会自动改为 Gemini。 Gemini 4 Carbon（`gemini-4-carbon`）支持 Default、Low、Medium、High，服务端默认 Medium，不能关闭思考；Carbon 已加入内置预设，旧安装仅补入新增项；已有同 ID 模型不会被替换。请求通过 `generation_config.thinking_level` 指定档位，并使用 `thinking_summaries: "auto"` 请求摘要；`thought.summary` 与流式 `thought_summary` 用于展示，签名不作为文字展示，服务端也可能只返回签名而没有摘要。参数合同见 [Google 思考文档](https://ai.google.dev/gemini-api/docs/thinking)。
 
-Gemini Google Search 仅在用户开启、模型已确认支持、入口声明并通过 Runtime 校验可以展示建议时生效。Eta 聊天和原生助手浮窗支持该能力；小布、小爱、旧客户端和其他入口保持本地搜索。搜索与函数混用使用 `validated`，能力目前属于预览。搜索调用与结果的完整签名回放留在模型层，引用按 UTF-8 字节位置转换；搜索建议附在对应回答下方，无正文的工具轮将建议延后到下一次回答。建议通过独立只读 WebView 展示，脚本、文件访问和网络子资源关闭，用户点击 HTTP(S) 链接交给外部浏览器。
+Gemini Google Search 仅在用户开启、模型已确认支持、入口声明并通过 Runtime 校验可以展示建议时生效。Eta 聊天和原生助手浮窗支持该能力；旧客户端和其他入口保持本地搜索。搜索与函数混用使用 `validated`，能力目前属于预览。搜索调用与结果的完整签名回放留在模型层，引用按 UTF-8 字节位置转换；搜索建议附在对应回答下方，无正文的工具轮将建议延后到下一次回答。建议通过独立只读 WebView 展示，脚本、文件访问和网络子资源关闭，用户点击 HTTP(S) 链接交给外部浏览器。
 
 搜索建议使用 `SearchSuggestionsPayload` 的单片段、每轮数量与总字节预算，超限明确失败，不截断 HTML。活动 Runtime 的内存重连可回放建议；持久化事件、checkpoint、归档、会话存储、备份和导出均排除建议 HTML。进程恢复只保留回答与引用，不能恢复原建议。`store=false` 仅控制 Interactions 保存，不承诺关闭 Google Search 自身的数据处理与留存，详见 [官方说明](https://ai.google.dev/gemini-api/terms#grounding-with-google-search)。
 
@@ -155,7 +155,7 @@ Gemini Google Search 仅在用户开启、模型已确认支持、入口声明�
 
 Eta 直接作为 MCP 客户端连接远程 Streamable HTTP 服务器，不把协议能力绑定到某个模型 Provider。当前优先使用 `2026-07-28` 无状态协议，并兼容需要 `initialize` 与 session 的 `2025-11-25` 服务；只接入 `tools/list` 和 `tools/call`，暂不支持 Resources、Prompts、Tasks、stdio、OAuth、交互式补充输入或 Provider 托管 MCP。
 
-工具默认关闭，服务器也可整体停用。添加服务器时先发现并缓存工具目录，用户再逐项启用；未标记只读的工具需要额外确认。现代服务的目录按 `ttlMs` 到期并在下次 run 前刷新，legacy 目录由用户手动刷新。每次 run 开始时一并冻结启用目录与 Bearer Token，并生成带服务器命名空间的模型工具名，因此后续设置变化不会改变正在执行的 schema 或账户。Eta 不因 `$ref`、组合关键字、条件关键字等复杂 Schema 禁用工具，而是保留参数声明，由 Provider 适配其接口格式，实际参数交给 MCP 服务解释；现代 Streamable HTTP 的 `x-mcp-header` 参数会同步映射为请求头。
+工具默认关闭，服务器也可整体停用。添加服务器时先发现并缓存工具目录，用户再逐项启用；未标记只读的工具需要额外确认。现代服务的目录按 `ttlMs` 到期并在下次 run 前刷新，legacy 目录由用户手动刷新。工具发现遵循 MCP 游标分页规范（将 `nextCursor` 视为不透明字符串，仅在字段缺失或为 `null` 时结束），单服务器支持最多 2048 个工具、64 页与 200 万字符目录预算，并通过分块表持久化超大工具目录；若仍触及保护上界或检测到重复游标，会记录截断原因并在界面明确提示，不静默丢弃。每次 run 开始时一并冻结启用目录与 Bearer Token，并生成带服务器命名空间的模型工具名，因此后续设置变化不会改变正在执行的 schema 或账户。Eta 不因 `$ref`、组合关键字、条件关键字等复杂 Schema 禁用工具，而是保留参数声明，由 Provider 适配其接口格式，实际参数交给 MCP 服务解释；现代 Streamable HTTP 的 `x-mcp-header` 参数会同步映射为请求头。
 
 MCP 地址由用户直接配置，HTTP、HTTPS、局域网与本机地址使用同一条连接链路，并沿用共享 OkHttp 客户端的默认重定向和超时行为；HTTP 会明文传输 Token、工具参数和结果。Bearer Token 通过 Android Keystore 加密后保存在本机。MCP 原始参数与结果只在当前回合使用，持久 transcript、运行 checkpoint 和归档只保留脱敏记录；文本、结构化结果、图片、分页次数和单次 run 工具数仍有独立预算，不支持或超出预算的结果会携带明确标记。取消 run 会立即封闭新调用并关闭在途 HTTP 请求，legacy session 的释放只做异步 best-effort，不阻塞取消线程。
 
@@ -315,13 +315,11 @@ Debian 安装基础工具时会刷新 `eta-apt` 入口，旧环境初始化中�
 
 ## 后台执行生命周期
 
-App 本体的当前会话正在回复且处于聊天页时，以及 GUI 运行浮层正在执行时，通过 Android [`View.keepScreenOn`](https://developer.android.com/develop/background-work/background-tasks/awake/screen-on) 保持屏幕常亮，底层使用 `FLAG_KEEP_SCREEN_ON`。仅已有窗口可见时生效；暂停、停止、完成、失败或 Runtime 服务销毁时清除。任务结束后的结果卡片、设置页、空闲会话与纯后台任务不额外保持常亮，无需新增权限，也不修改系统亮度和息屏时间。用户主动锁屏不取消后台任务，但 GUI 操作通常仍需亮屏、解锁；后台执行不因常亮功能获得额外的 CPU 或网络保活保证。
+开启设置中的“运行期间保持屏幕常亮”（默认开启）且有任意未暂停的 Agent run 正在执行时，不管当前处于 Eta 前台（任意页面）还是切至后台/其他应用，由 `AgentRuntimeService` 统一持有 `PowerManager.SCREEN_BRIGHT_WAKE_LOCK`（声明普通权限 `WAKE_LOCK`），并同步投影到 App 前台窗口与 GUI 浮层（`View.keepScreenOn`）防止屏幕超时熄灭。全部运行暂停、停止、完成、失败、关闭开关或 Runtime 服务销毁时立即释放；不修改系统亮度和息屏时间，不唤醒已主动锁屏的设备。用户主动锁屏不取消后台任务，但 GUI 操作通常仍需亮屏、解锁。
 
 `AgentExecutionService` 使用 `specialUse` 前台类型，为当前 Agent 运行、普通终端和 PRoot 后台进程持有任务引用。用户退出页面只断开 UI；最后一个任务结束时服务释放，通知中的停止操作回收它实际持有的任务。普通后台任务保持宿主 tracer 与输出读取，不能像 Root daemon 那样脱离 App 生命周期。Root daemon 保持原有独立生命周期，普通任务清理不会批量停止 Root daemon。Root 用户的原有 Runtime 绑定链路在新增前台服务启动受限时仍可继续，不因新增服务阻断厂商助手入口。
 
 `terminal_daemon(action=start)` 表达跨 Agent run 的服务生命周期，不是永久存活保证；任务可能自行退出，也可能受 Android 后台限制、宿主进程回收、权限变化或设备重启影响。`terminal_daemon` 的 `list`、`logs` 与 `stop` 用于查询和管理实际任务，不以启动时拿到 `task_id` 代替后续存活检查。
-
-Kimi 使用 `kimi web --no-open`，按发行版及后端复用活跃实例。启动失败或取消只清理本次新建的进程；复用实例保留。服务使用 `START_NOT_STICKY`，系统强停或重启后不自动重放命令。通知授权被拒绝不会直接阻止合法前台启动，但系统后台启动限制与厂商进程回收策略仍然生效。
 
 ## 上下文与续接
 
@@ -366,9 +364,9 @@ App 按上次成功提交的内容比较会话变更，只更新变化的元数�
 
 上下文替换快照保存版本、操作标识、用户轮次和覆盖的 transcript 边界。完整工具批次的脱敏 transcript 独立写入在途检查点；快照先落盘，再替换运行上下文。快照后产生的增量在恢复时按边界接回，避免崩溃后遗漏已完成步骤。终态结果和归档保留完整 transcript 与快照；批量 drain 每批只列出有限条结果和引用，客户端校验 run 与 handoff 归属后单独读取完整结果。App 串行提交历史、模型投影及已应用标记，成功落盘后才 ACK。未确认结果和待导入归档不按年龄或数量淘汰。
 
-对话提供 `conversation_history` 工具，搜索或按索引展开当前会话的完整脱敏原文（App 会话读取持久化 `journal` 与当前 `transcript`，无持久会话的入口读取本次运行历史与当前 `transcript`）。工具由 Runtime 绑定会话身份，模型不能指定其他会话；按 `query` 检索长消息时返回围绕命中位置的聚焦片段及位置元数据，按 `message_index` 与 `offset` 可继续展开完整消息。它不依赖 MEMORY.md 开关，也不向模型暴露数据库路径。摘要仍然有损，历史工具让模型能按需核对摘要省略的细节；完整存储不代表每次请求都把所有历史塞入模型窗口。编辑或删除旧轮次时从完整历史重建对应前缀，旧版本已缺失的前缀沿用明确提示。
+对话提供 `conversation_history` 工具，搜索或按索引展开当前会话的完整脱敏原文（App 会话读取持久化 `journal` 与当前 `transcript`，无持久会话的入口读取本次运行历史与当前 `transcript`）。工具由 Runtime 绑定会话身份，模型不能指定其他会话；按 `query` 检索长消息时返回围绕命中位置的聚焦片段及位置元数据，按 `message_index` 与 `offset` 可继续展开完整消息。它不依赖 MEMORY.md 开关，也不向模型暴露数据库路径。摘要仍然有损，历史工具让模型能按需核对摘要省略的细节；完整存储不代表每次请求都把所有历史塞入模型窗口。编辑或删除旧轮次时，若目标轮次位于已有上下文摘要之后则保留该摘要并同步裁剪完整历史，仅在回溯到摘要覆盖范围内或使摘要失效时才从完整历史重建对应前缀，旧版本已缺失的前缀沿用明确提示。
 
-普通与角色会话可在已结束轮次的最终回复旁选择“在新对话中分支”。分支复制截至该回复的完整持久化记录，包括当前展示窗口之外的消息，并从脱敏原文重建模型上下文，避免当前摘要夹带后续轮次。角色配置、已有回复候选及选中项一并保留；模型选择与推理设置沿用源会话。新会话使用独立消息标识，保存成功后打开，不自动发起模型请求；草稿、待发送附件、队列与运行绑定不复制。源会话生成、重写、压缩或编辑期间不可分支；缺少完整历史或稳定消息标识、摘要跨越分支点或工具交换未闭合时明确拒绝创建。
+普通与角色会话可在已结束轮次的最终回复旁选择“在新对话中分支”。分支复制截至该回复的完整持久化记录，包括当前展示窗口之外的消息；若分支点位于已有上下文摘要之后且摘要未涵盖后续轮次，则保留压缩后的活跃模型上下文并同步裁剪完整历史，仅当分支点早于摘要覆盖范围时才从脱敏原文重建模型上下文，避免当前摘要夹带后续轮次。角色配置、已有回复候选及选中项一并保留；模型选择与推理设置沿用源会话。新会话使用独立消息标识，保存成功后打开，不自动发起模型请求；草稿、待发送附件、队列与运行绑定不复制。源会话生成、重写、压缩或编辑期间不可分支；缺少完整历史或稳定消息标识、摘要跨越分支点或工具交换未闭合时明确拒绝创建。
 
 分支创建通过串行保存队列与 Room 事务提交，消息分页复制，长文本块使用新消息作为所有者；失败不会留下部分会话。新分支作为普通独立会话显示，名称使用“原标题 · 分支”并在重名时编号，编辑和删除均不影响源会话。浏览器、终端、设备、工作目录及共享角色记忆不做快照或回滚。
 
@@ -376,7 +374,7 @@ App 按上次成功提交的内容比较会话变更，只更新变化的元数�
 
 Provider 明确返回上下文溢出时直接报告失败，不自动压缩后重放原请求。空正文以长度上限结束时报告输出额度耗尽；内容过滤和普通空响应分别明确失败，不猜成输入溢出。已开始托管工具的请求不自动重放。失败或取消不提交半成品摘要，已经提交的安全快照随取消或失败结果保留。任务已完成时，压缩失败不改变任务成功状态，原始上下文完整保存；实际持久化失败仍报告失败，不用删头方式掩盖。用户停止时先取消网络与工具，收束运行并保存已完成的安全历史，再交付取消终态。
 
-设计依据：[Android Binder 事务限制](https://developer.android.com/reference/android/os/TransactionTooLargeException)、[ParcelFileDescriptor](https://developer.android.com/reference/android/os/ParcelFileDescriptor)、[CursorWindow](https://developer.android.com/reference/android/database/CursorWindow)。参考的会话模式见 [pi 的追加式压缩记录与上下文重建](https://github.com/earendil-works/pi/blob/b215884021491772a1eb7a9f92c6653a2a52a69d/packages/coding-agent/docs/compaction.md) 和 [Kimi Code 的历史恢复指针](https://github.com/MoonshotAI/kimi-code/blob/b1807253c34e12b0ecf60c9b4da3890d0c80ce72/packages/agent-core-v2/src/agent/fullCompaction/contextRecovery.ts)。Eta 使用 Room 分块及当前会话读取工具适配 Android，不依赖桌面文件路径。
+设计依据：[Android Binder 事务限制](https://developer.android.com/reference/android/os/TransactionTooLargeException)、[ParcelFileDescriptor](https://developer.android.com/reference/android/os/ParcelFileDescriptor)、[CursorWindow](https://developer.android.com/reference/android/database/CursorWindow)。参考的会话模式见 [pi 的追加式压缩记录与上下文重建](https://github.com/earendil-works/pi/blob/b215884021491772a1eb7a9f92c6653a2a52a69d/packages/coding-agent/docs/compaction.md)。Eta 使用 Room 分块及当前会话读取工具适配 Android，不依赖桌面文件路径。
 
 ## Skills 安装边界
 

@@ -7,12 +7,13 @@ import io.github.mangi.eta.agent.context.PersonalSearchTools
 import io.github.mangi.eta.agent.model.AgentFileToolCatalog
 import io.github.mangi.eta.agent.model.AgentPhoneToolCatalog
 import io.github.mangi.eta.agent.model.AgentTerminalToolCatalog
+import io.github.mangi.eta.data.model.ReasoningEffort
 import org.json.JSONArray
 
 /**
  * 模块配置中枢。
  *
- * - Hook 进程（system_server / SystemUI / Google / 系统助手等）在模块加载时调用
+ * - Hook 进程（system_server / SystemUI / Google / 识屏与系统记忆等）在模块加载时调用
  *   [attachRemote]，缓存框架提供的只读 [SharedPreferences]；之后所有拦截回调用 [isEnabled]
  *   读取当前进程持有的 remote preferences。
  * - Eta Runtime 自己消费的开关保存在 App 私有配置中，不依赖 Xposed Service。
@@ -36,22 +37,19 @@ internal object Prefs {
         // 兼容旧版布尔协议；新 UI 不再写入，缺少三态配置时 true 仍表示 Gemini。
         const val POWER_KEY_TAKEOVER = "power_key_takeover"
         const val ASSISTANT_AUTO_CONFIG = "assistant_auto_config"
-        const val HOTWORD_SELF_HEAL = "hotword_self_heal"
         const val GESTURE_BAR_CIRCLE_TO_SEARCH = "gesture_bar_circle_to_search"
         const val DOUBLE_FINGER_CIRCLE_TO_SEARCH = "double_finger_circle_to_search"
-        const val LOCKSCREEN_VOICE_COMMAND = "lockscreen_voice_command"
-        const val SCREEN_ON_VOICE_COMMAND = "screen_on_voice_command"
-        const val AGENT_CUSTOM_MODEL = "agent_custom_model"
-        const val AGENT_REQUIRE_PREFIX = "agent_require_prefix"
         const val AGENT_TERMINAL_TOOLS = "agent_terminal_tools"
         const val AGENT_BROWSER_TOOLS = "agent_browser_tools"
         const val AGENT_DEVICE_DIRECT_TOOLS = "agent_device_direct_tools"
         const val AGENT_DEVICE_SENSITIVE_READ_TOOLS = "agent_device_sensitive_read_tools"
         const val AGENT_DEVICE_SENSITIVE_ACTION_TOOLS = "agent_device_sensitive_action_tools"
         const val AGENT_THINKING_ENABLED = "agent_thinking_enabled"
+        const val AGENT_DEFAULT_REASONING_EFFORT = "agent_default_reasoning_effort"
         const val AGENT_AUTO_COMPACTION_ENABLED = "agent_auto_compaction_enabled"
         const val AGENT_SUBAGENT_ENABLED = "agent_subagent_enabled"
         const val AGENT_VIRTUAL_DISPLAY_ENABLED = "agent_virtual_display_enabled"
+        const val AGENT_KEEP_SCREEN_ON_ENABLED = "agent_keep_screen_on_enabled"
         const val AGENT_RUNTIME_CONFIG_JSON = "agent_runtime_config_json"
         const val AGENT_DISABLED_TOOLS_JSON = "agent_disabled_tools_json"
 
@@ -59,13 +57,8 @@ internal object Prefs {
         val BOOLEAN_DEFAULTS: Map<String, Boolean> = mapOf(
             POWER_KEY_TAKEOVER to false,
             ASSISTANT_AUTO_CONFIG to false,
-            HOTWORD_SELF_HEAL to false,
             GESTURE_BAR_CIRCLE_TO_SEARCH to true,
             DOUBLE_FINGER_CIRCLE_TO_SEARCH to false,
-            LOCKSCREEN_VOICE_COMMAND to false,
-            SCREEN_ON_VOICE_COMMAND to false,
-            AGENT_CUSTOM_MODEL to true,
-            AGENT_REQUIRE_PREFIX to false,
             AGENT_TERMINAL_TOOLS to true,
             AGENT_BROWSER_TOOLS to true,
             AGENT_DEVICE_DIRECT_TOOLS to true,
@@ -75,6 +68,7 @@ internal object Prefs {
             AGENT_AUTO_COMPACTION_ENABLED to true,
             AGENT_SUBAGENT_ENABLED to true,
             AGENT_VIRTUAL_DISPLAY_ENABLED to true,
+            AGENT_KEEP_SCREEN_ON_ENABLED to true,
         )
 
         /** 由 Eta Runtime 最终裁决、不要求 Xposed 框架在线的开关。 */
@@ -88,6 +82,7 @@ internal object Prefs {
             AGENT_AUTO_COMPACTION_ENABLED,
             AGENT_SUBAGENT_ENABLED,
             AGENT_VIRTUAL_DISPLAY_ENABLED,
+            AGENT_KEEP_SCREEN_ON_ENABLED,
         )
     }
 
@@ -136,6 +131,16 @@ internal object Prefs {
 
     fun getString(key: String): String {
         return remote?.getString(key, "") ?: ""
+    }
+
+    fun defaultReasoningEffort(
+        preferences: SharedPreferences? = localAgent ?: remote,
+    ): ReasoningEffort {
+        val raw = runCatching {
+            preferences?.getString(Keys.AGENT_DEFAULT_REASONING_EFFORT, null)
+        }.getOrNull()
+        val parsed = ReasoningEffort.fromWireValue(raw)
+        return if (parsed != null && parsed != ReasoningEffort.OFF) parsed else ReasoningEffort.DEFAULT
     }
 
     fun powerAssistantTarget(): PowerAssistantTarget = powerAssistantTarget(remote)

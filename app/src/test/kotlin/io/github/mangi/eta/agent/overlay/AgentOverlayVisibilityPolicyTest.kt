@@ -86,7 +86,7 @@ class AgentOverlayVisibilityPolicyTest {
         )
         assertFalse(
             AgentOverlayVisibilityPolicy.shouldSuppressOverlayInEtaUi(
-                handoffSource = "breeno",
+                handoffSource = AgentRuntimeWire.ETA_VOICE_HANDOFF_SOURCE,
                 etaUiInForeground = true,
             ),
         )
@@ -108,14 +108,14 @@ class AgentOverlayVisibilityPolicyTest {
         assertTrue(
             AgentOverlayVisibilityPolicy.shouldShowResultCard(
                 hasExecutedForegroundTool = true,
-                handoffSource = "xiaoai",
+                handoffSource = AgentRuntimeWire.ETA_VOICE_HANDOFF_SOURCE,
                 etaUiInForeground = true,
             ),
         )
         assertFalse(
             AgentOverlayVisibilityPolicy.shouldShowResultCard(
                 hasExecutedForegroundTool = false,
-                handoffSource = "xiaoai",
+                handoffSource = AgentRuntimeWire.ETA_VOICE_HANDOFF_SOURCE,
                 etaUiInForeground = false,
             ),
         )

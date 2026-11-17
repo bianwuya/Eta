@@ -67,7 +67,6 @@ import io.github.mangi.eta.local.conversationcommunication.ConversationMessageFi
 import io.github.mangi.eta.local.conversationcommunication.ConversationOutboxWrite
 import io.github.mangi.eta.local.conversationcommunication.ConversationOutcomeRecord
 import io.github.mangi.eta.local.conversationcommunication.ConversationTerminalOutcome
-import io.github.mangi.eta.core.ModuleConfig
 import io.github.mangi.eta.core.safeLogType
 import io.github.mangi.eta.agent.tool.ToolExecutionDecision
 import io.github.mangi.eta.local.guipresentation.GuiPresentationState
@@ -2401,14 +2400,8 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         windowManager = null
     }
 
-    private fun isMessageSenderAllowed(msg: Message): Boolean {
-        val uid = msg.sendingUid
-        if (uid == Process.myUid()) return true
-        val packages = runCatching {
-            packageManager.getPackagesForUid(uid)
-        }.getOrNull().orEmpty()
-        return packages.any { it in ModuleConfig.AGENT_RUNTIME_ENTRY_PACKAGES }
-    }
+    private fun isMessageSenderAllowed(msg: Message): Boolean =
+        msg.sendingUid == Process.myUid()
 
     private fun isNightMode(): Boolean {
         val mode = resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK

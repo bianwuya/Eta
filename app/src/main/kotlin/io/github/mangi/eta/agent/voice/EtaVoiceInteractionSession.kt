@@ -23,6 +23,7 @@ internal class EtaVoiceInteractionSession(context: Context) : VoiceInteractionSe
     private val mainHandler = Handler(Looper.getMainLooper())
     private var screenContext: EtaAssistantScreenContext? = null
     private var shown = false
+    private var coalescedShow = false
     private var captureHandedOff = false
     private var ambiguousCaptureCallbacks = false
     private val controlReceiver = object : BroadcastReceiver() {
@@ -47,6 +48,12 @@ internal class EtaVoiceInteractionSession(context: Context) : VoiceInteractionSe
 
     override fun onPrepareShow(args: Bundle?, showFlags: Int) {
         super.onPrepareShow(args, showFlags)
+        // 浮窗仍处于刚唤起的初始空闲态时合并重复唤醒，保留初次截取的底层界面上下文与截图。
+        if (EtaAssistantOverlayService.hasFreshVisibleEntry()) {
+            coalescedShow = true
+            return
+        }
+        coalescedShow = false
         // Framework screenshot/assist callbacks carry no show-invocation identifier. Once
         // overlapping shows make them ambiguous, never feed them to another invocation.
         if (screenContext?.hasPendingSystemCallbacks() == true) ambiguousCaptureCallbacks = true
@@ -63,6 +70,7 @@ internal class EtaVoiceInteractionSession(context: Context) : VoiceInteractionSe
     override fun onShow(args: Bundle?, showFlags: Int) {
         super.onShow(args, showFlags)
         shown = true
+        if (coalescedShow) return
         captureHandedOff = true
         val entry = screenContext
         val entryId = entry?.id
@@ -97,15 +105,21 @@ internal class EtaVoiceInteractionSession(context: Context) : VoiceInteractionSe
     }
 
     override fun onHandleAssist(state: AssistState) {
+        if (coalescedShow) return
         screenContext?.acceptAssist(context.applicationContext, state)
     }
 
     override fun onHandleScreenshot(screenshot: Bitmap?) {
+        if (coalescedShow) {
+            screenshot?.recycle()
+            return
+        }
         val capture = screenContext
         if (capture == null) screenshot?.recycle() else capture.acceptScreenshot(screenshot)
     }
 
     override fun onHide() {
+        coalescedShow = false
         if (screenContext?.hasPendingSystemCallbacks() == true) ambiguousCaptureCallbacks = true
         screenContext?.sealCallbacks()
         // ACTION_SHOW can still be queued when the framework hides/destroys this session.
@@ -129,6 +143,7 @@ internal class EtaVoiceInteractionSession(context: Context) : VoiceInteractionSe
     }
 
     override fun onDestroy() {
+        coalescedShow = false
         // 浮窗拥有独立生命周期；系统会话重建不代表用户关闭了助理。
         screenContext?.sealCallbacks()
         if (!captureHandedOff) EtaAssistantScreenContexts.release(screenContext?.id)
