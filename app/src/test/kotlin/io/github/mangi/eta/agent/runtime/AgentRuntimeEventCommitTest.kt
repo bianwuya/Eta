@@ -31,7 +31,7 @@ class AgentRuntimeEventCommitTest {
             emptyList(), handoff = AgentRuntimeWire.EntryHandoff("event-stop-boundary", AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE, "fixture-chat"))
         recorder = requireNotNull(AgentRunCheckpointRecorder.create(context, request))
         executor = AgentRuntimeRunExecutor(context,
-            currentPermissions = { AgentRuntimePolicy.Permissions(terminalTools = false, browserTools = false, thinking = false) },
+            currentPermissions = { AgentRuntimePolicy.Permissions(terminalTools = false, browserTools = false) },
             snapshotRequest = { it }, guiControl = GuiControlCoordinator(), onAcceptedEvent = { _, _ -> },
             persistArtifacts = { _, _, _ -> })
     }
