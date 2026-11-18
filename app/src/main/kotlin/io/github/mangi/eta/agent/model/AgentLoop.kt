@@ -62,7 +62,12 @@ internal class AgentLoop(
     private var precedingTools: JSONArray? = null
     private val context = AgentContextSession(
         config, messages, systemCount, operationId, provider, runController,
-        { sensitiveToolCallIds }, onEvent, onContextSnapshot, { transcript.length() },
+        { sensitiveToolCallIds }, { event ->
+            if (event is AgentEvent.ContextCompaction && event.phase == AgentEvent.ContextCompaction.PHASE_COMPLETED) {
+                turnMetrics.invalidateContextMeasurement()
+            }
+            onEvent(event)
+        }, onContextSnapshot, { transcript.length() },
         roleplay = roleplayContext != null,
         mainToolsProvider = { precedingTools ?: tools },
         mainSessionId = sessionId,
@@ -665,6 +670,9 @@ internal class AgentLoop(
             cachedTokens = null
             cacheWriteTokens = null
         }
+
+        /** A compacted context has no current occupation until the provider measures it again. */
+        fun invalidateContextMeasurement() { contextTokens = null }
 
         fun recordStep(
             stepLlmMs: Long,
