@@ -248,8 +248,8 @@ class UiStyleThemeAndScreensTest {
                         11 -> DataBackupScreen(
                             context = activity,
                             onBack = { backPressedCount++ },
-                            onExport = { error("unused") },
-                            onImport = { error("unused") },
+                            onExport = { _, _, _ -> error("unused") },
+                            onImport = { _, _, _ -> error("unused") },
                         )
                         12 -> AgentMemoryScreen(state = memoryState, onAction = {})
                         13 -> SpeechSettingsScreen(onBack = { backPressedCount++ }, onNavigate = {})
@@ -260,7 +260,18 @@ class UiStyleThemeAndScreensTest {
                         18 -> CharacterLibraryScreen(store = characterStore, onNavigate = {}, onBack = { backPressedCount++ })
                         19 -> CharacterPersonaScreen(store = characterStore, onBack = { backPressedCount++ })
                         20 -> CharacterMemoryScreen(id = "char-1", store = characterStore, onBack = { backPressedCount++ })
-                        21 -> LinuxEnvironmentScreen(context = activity, onNavigate = {}, onBack = { backPressedCount++ })
+                        21 -> {
+                            val target = KimiWebTarget(
+                                io.github.mangi.eta.agent.terminal.LinuxDistribution.DEBIAN,
+                                io.github.mangi.eta.agent.terminal.LinuxExecutionBackend.PROOT,
+                            )
+                            LinuxEnvironmentScreen(
+                                context = activity,
+                                kimiWeb = KimiWebControls(target, KimiWebUiState(target), {}, {}, {}),
+                                onNavigate = {},
+                                onBack = { backPressedCount++ },
+                            )
+                        }
                         22 -> LinuxFilesScreen(context = activity, distribution = "alpine", onBack = { backPressedCount++ })
                         23 -> SharedFoldersScreen(context = activity, onBack = { backPressedCount++ })
                         24 -> WorkspaceScreen(onBack = { backPressedCount++ })
