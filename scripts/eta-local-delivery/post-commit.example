@@ -1,0 +1,15 @@
+#!/bin/sh
+# Runs only for commits in the dedicated Eta night repository.
+# Never auto-commits, force-pushes, or touches main/local.
+repo=$(git rev-parse --show-toplevel) || exit 0
+if [ "${ETA_AUTO_PUSH_DRY_RUN:-0}" = "1" ]; then
+    pwsh.exe -NoProfile -File "F:/eta/06-环境运维工具/eta-auto-delivery/eta-auto-push.ps1" -RepoPath "$repo" -CheckOnly
+    exit $?
+fi
+pwsh.exe -NoProfile -File "F:/eta/06-环境运维工具/eta-auto-delivery/eta-auto-push.ps1" -RepoPath "$repo"
+rc=$?
+if [ "$rc" -ne 0 ]; then
+    echo "Eta: automatic build/push blocked; local commit remains intact. Inspect F:/eta/07-构建与运行日志/eta-auto-delivery." >&2
+fi
+# post-commit cannot safely undo a completed commit.
+exit 0
