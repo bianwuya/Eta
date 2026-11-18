@@ -29,6 +29,22 @@ import android.view.WindowManager
 import android.view.inputmethod.InputMethodManager
 import android.window.OnBackInvokedCallback
 import android.window.OnBackInvokedDispatcher
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
@@ -37,8 +53,15 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.ViewCompositionStrategy
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.hideFromAccessibility
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.LifecycleRegistry
@@ -50,6 +73,7 @@ import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.agent.overlay.AgentOverlayVisibilityPolicy
+import io.github.mangi.eta.agent.runtime.AgentConversationIdentity
 import io.github.mangi.eta.agent.runtime.AgentEvent
 import io.github.mangi.eta.agent.runtime.AgentExternalArchivePayload
 import io.github.mangi.eta.agent.runtime.AgentRuntimeClient
@@ -64,14 +88,13 @@ import io.github.mangi.eta.ui.app.AgentRunMessageProjector
 import io.github.mangi.eta.ui.model.AgentChatMessageUi
 import io.github.mangi.eta.ui.model.AgentMessageUi
 import io.github.mangi.eta.ui.model.SystemNoticeCode
-import io.github.mangi.eta.ui.model.ThinkingMessageUi
-import io.github.mangi.eta.ui.model.ToolActivityMessageUi
 import io.github.mangi.eta.ui.model.UserMessageUi
+import java.lang.ref.WeakReference
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
-import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -79,8 +102,12 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withContext
+import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.squircle.LocalSquircleEnabled
+import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 /**
  * Eta 数字助理的用户界面窗口。
@@ -92,10 +119,8 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
     private val lifecycleRegistry = LifecycleRegistry(this)
     private val savedStateRegistryController = SavedStateRegistryController.create(this)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val cancellationExecutor = Executors.newSingleThreadExecutor { runnable ->
-        Thread(runnable, "EtaAssistantRuntimeCancel")
-    }
-    private val runtimeClient = AgentRuntimeClient(this, AndroidAgentLogger)
+    private val runtimeClient by lazy { AgentRuntimeClient(applicationContext, AndroidAgentLogger) }
+    private val steeringCoordinator by lazy { EtaAssistantSteeringCoordinator(applicationContext, runtimeClient) }
     private val runMessageProjector = AgentRunMessageProjector()
     private val eventCoalescer = AgentRunEventCoalescer()
     private var deltaFlushJob: Job? = null
@@ -120,7 +145,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
             },
         )
     }
-    private val conversationKey = "eta_assistant_${UUID.randomUUID()}"
+    private var conversationKey by mutableStateOf<String?>(newConversationKey())
     private var conversationHistory = emptyList<AgentModelClient.ConversationMessage>()
 
     private var windowManager: WindowManager? = null
@@ -130,10 +155,24 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
     private val windowDetachCallbacks = mutableListOf<(Boolean) -> Unit>()
     private var backInvokedDispatcher: OnBackInvokedDispatcher? = null
     private var backInvokedCallback: OnBackInvokedCallback? = null
-    private var runJob: Job? = null
+    private var attachmentJob: Job? = null
     private var dismissalJob: Job? = null
-    private var activeRunId: String? = null
+    private var activeTask by mutableStateOf<AgentRuntimeWire.ActiveRunSnapshot?>(null)
+    private val activeRunId: String? get() = activeTask?.runId
+    private var observerVersion = 0L
+    private var attachOnly by mutableStateOf(false)
+    private var runConfirmed by mutableStateOf(false)
+    private var stopRequested by mutableStateOf(false)
+    private var guideInput by mutableStateOf(false)
+    private var guideBusy by mutableStateOf(false)
+    private var taskNotice by mutableStateOf<Int?>(null)
+    private var taskPicker by mutableStateOf(false)
+    private var showAllTasks by mutableStateOf(false)
+    private var pickerCanReturn = false
+    private var taskList by mutableStateOf<EtaVoiceTaskList?>(null)
+    private var tasksQueryJob: Job? = null
     private var entryGeneration = 0L
+    private val handledInvocations = linkedSetOf<String>()
     private var presentedEntryGeneration = -1L
     @Volatile
     private var entryShownUptimeMs = 0L
@@ -190,7 +229,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             AssistantSpeechForeground.ACTION_STOP -> { speechInput.cancel(); playback.stop() }
-            ACTION_SHOW -> showEntry(intent.getStringExtra(EXTRA_SCREEN_CONTEXT_ID))
+            ACTION_SHOW -> showEntry(intent.getStringExtra(EXTRA_SCREEN_CONTEXT_ID), intent.getStringExtra(EXTRA_INVOCATION_ID))
             ACTION_HANDOFF_READY -> finishHandoff()
             else -> Unit
         }
@@ -204,16 +243,19 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
         entryShownUptimeMs = 0L
         EtaAssistantScreenContexts.release(entryScreenContext?.id)
         entryScreenContext = null
-        cancelCurrentRun()
+        detachCurrentRun()
         removeWindow()
         scope.cancel()
-        cancellationExecutor.shutdown()
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_DESTROY)
         if (activeService === this) activeService = null
         super.onDestroy()
     }
 
-    private fun showEntry(screenContextId: String?) {
+    private fun showEntry(screenContextId: String?, invocationId: String?) {
+        if (invocationId != null) {
+            if (!handledInvocations.add(invocationId)) return
+            if (handledInvocations.size > 16) handledInvocations.remove(handledInvocations.first())
+        }
         if (!Settings.canDrawOverlays(this)) {
             EtaAssistantScreenContexts.release(screenContextId)
             AndroidAgentLogger.warnThrottled("eta_assistant_overlay_permission_missing") {
@@ -234,7 +276,9 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
         }
         dismissalJob?.cancel()
         dismissalJob = null
-        cancelCurrentRun()
+        detachCurrentRun()
+        conversationKey = newConversationKey()
+        conversationHistory = emptyList()
         if (entryScreenContext?.id != screenContextId) {
             EtaAssistantScreenContexts.release(entryScreenContext?.id)
             entryScreenContext = EtaAssistantScreenContexts.find(screenContextId)
@@ -251,7 +295,12 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
         hiddenForForegroundOperation = false
         handoffInProgress = false
         handoffExitRequested = false
+        taskPicker = true
+        showAllTasks = false
+        pickerCanReturn = false
+        taskList = null
         presentEntry(generation)
+        if (windowView != null) refreshTasks(allowAutomaticInput = true)
     }
 
     private fun presentEntry(generation: Long) {
@@ -282,7 +331,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
         )
 
     private fun presentEntryInput() {
-        if (!entryInputPending || windowView == null || activeRunId != null) return
+        if (!entryInputPending || windowView == null || taskPicker || attachOnly || activeRunId != null) return
         val settings = speechSettings ?: return
         val canRecord = settings.recognitionEnabled &&
             checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
@@ -300,7 +349,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
     }
 
     private fun startSpeech(holdToTalk: Boolean = false) {
-        if (activeRunId != null || speechSettings?.recognitionEnabled != true) return
+        if (!canComposePrompt() || speechSettings?.recognitionEnabled != true) return
         entryInputPending = false
         playback.stop()
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
@@ -334,6 +383,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
     }
 
     private fun switchToKeyboard() {
+        if (!canComposePrompt()) return
         speechInput.cancel()
         speechState = EtaSpeechState()
         showKeyboard()
@@ -356,58 +406,73 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                     LocalSpeechPlayback provides playback,
                     LocalSpeechPlaybackEnabled provides (speechSettings?.let { it.tts != TtsProvider.NONE } == true)) {
                     SpeechPlaybackErrors(playback)
-                    EtaVoicePanel(
-                        state = uiState,
-                        speech = speechState,
-                        recognitionEnabled = speechSettings?.recognitionEnabled,
-                        entranceComplete = entryEntranceComplete,
-                        onEntranceFinished = {
-                            if (generation == entryGeneration) {
-                                entryEntranceComplete = true
-                                presentEntryInput()
+                    Box(Modifier.fillMaxSize()) {
+                        Box(Modifier.then(if (taskPicker) Modifier.semantics(mergeDescendants = true) {
+                            hideFromAccessibility()
+                        } else Modifier)) {
+                            EtaVoicePanel(
+                                state = if (guideInput && !guideBusy || activeTask?.isVoiceTask() == false) {
+                                    uiState.copy(phase = EtaVoicePhase.READY)
+                                } else uiState,
+                                speech = speechState,
+                                recognitionEnabled = speechSettings?.recognitionEnabled,
+                                entranceComplete = entryEntranceComplete,
+                                onEntranceFinished = {
+                                    if (generation == entryGeneration) {
+                                        entryEntranceComplete = true
+                                        presentEntryInput()
+                                    }
+                                },
+                                onContentReady = {
+                                    if (generation == entryGeneration) {
+                                        entryContentReady = true
+                                        presentEntryInput()
+                                    }
+                                },
+                                onInputFocus = {
+                                    if (canComposePrompt()) entryInputPending = false
+                                    if (!speechState.active && speechState.hasFeedback) {
+                                        speechState = EtaSpeechState()
+                                    }
+                                },
+                                speechLevel = { speechLevel },
+                                onMicrophone = ::startSpeech,
+                                onCancelSpeech = ::cancelSpeech,
+                                onFinishSpeech = { speechInput.finish() },
+                                onOpenSpeechSettings = {
+                                    openSpeechSettings(this@EtaAssistantOverlayService)
+                                    dismissAndStop()
+                                },
+                                onKeyboard = ::switchToKeyboard,
+                                input = inputText,
+                                inputFocusRequestKey = inputFocusRequestKey,
+                                onInputChange = {
+                                    if (canComposePrompt()) inputText = it
+                                    if (!speechState.active && speechState.hasFeedback) {
+                                        speechState = EtaSpeechState()
+                                    }
+                                },
+                                onSuggestionClick = { prompt -> if (activeRunId == null) submitPrompt(prompt) },
+                                onSubmit = ::submitInput,
+                                onStop = ::stopCurrentRun,
+                                onClose = ::closeTaskPickerOrWindow,
+                                canOpenConversation = !taskPicker && conversationKey != null && activeRunId == null &&
+                                    uiState.messages.any { message ->
+                                        message is AgentMessageUi && message.content.isNotBlank()
+                                    },
+                                handoffRunning = handoffInProgress,
+                                exitRequested = handoffExitRequested,
+                                onOpenConversation = ::openConversation,
+                            )
+                        }
+                        if (!handoffExitRequested) {
+                            if (taskPicker) {
+                                TaskPicker()
+                            } else if (entryEntranceComplete) {
+                                TaskControls(Modifier.align(Alignment.TopEnd))
                             }
-                        },
-                        onContentReady = {
-                            if (generation == entryGeneration) {
-                                entryContentReady = true
-                                presentEntryInput()
-                            }
-                        },
-                        onInputFocus = {
-                            entryInputPending = false
-                            if (!speechState.active && speechState.hasFeedback) {
-                                speechState = EtaSpeechState()
-                            }
-                        },
-                        speechLevel = { speechLevel },
-                        onMicrophone = ::startSpeech,
-                        onCancelSpeech = ::cancelSpeech,
-                        onFinishSpeech = { speechInput.finish() },
-                        onOpenSpeechSettings = {
-                            openSpeechSettings(this)
-                            dismissAndStop()
-                        },
-                        onKeyboard = ::switchToKeyboard,
-                        input = inputText,
-                        inputFocusRequestKey = inputFocusRequestKey,
-                        onInputChange = {
-                            inputText = it
-                            if (!speechState.active && speechState.hasFeedback) {
-                                speechState = EtaSpeechState()
-                            }
-                        },
-                        onSuggestionClick = ::submitPrompt,
-                        onSubmit = ::submitInput,
-                        onStop = ::stopCurrentRun,
-                        onClose = ::dismissAndStop,
-                        canOpenConversation = activeRunId == null &&
-                            uiState.messages.any { message ->
-                                message is AgentMessageUi && message.content.isNotBlank()
-                            },
-                        handoffRunning = handoffInProgress,
-                        exitRequested = handoffExitRequested,
-                        onOpenConversation = ::openConversation,
-                    )
+                        }
+                    }
                 }
             }
         }
@@ -445,6 +510,115 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
         view.requestFocus()
     }
 
+    @Composable
+    private fun TaskPicker() {
+        val list = taskList
+        val rows = list?.visibleRows(showAllTasks).orEmpty()
+        val colors = MiuixTheme.colorScheme
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.36f))
+                .clickable(onClick = ::closeTaskPickerOrWindow))
+            Column(
+                Modifier.windowInsetsPadding(WindowInsets.safeDrawing).padding(16.dp)
+                    .widthIn(max = 420.dp).fillMaxWidth()
+                    .background(colors.surface, RoundedCornerShape(24.dp))
+                    .verticalScroll(rememberScrollState()).padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text(stringResource(if (showAllTasks) R.string.voice_tasks_all else R.string.voice_tasks_title),
+                    color = colors.onSurface)
+                when {
+                    list == null -> Text(stringResource(R.string.voice_tasks_loading), color = colors.onSurface)
+                    !list.known -> Text(stringResource(R.string.voice_tasks_unavailable), color = colors.onSurface)
+                    rows.isEmpty() -> Text(stringResource(if (showAllTasks) R.string.voice_tasks_empty else R.string.voice_tasks_no_voice),
+                        color = colors.onSurface)
+                }
+                rows.forEach { row ->
+                    TextButton(
+                        text = stringResource(if (row.run.isVoiceTask()) R.string.voice_tasks_continue else R.string.voice_tasks_view,
+                            taskLabel(row.run)),
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = list?.known == true && row.admitted,
+                        onClick = { continueTask(row) },
+                    )
+                }
+                if (!showAllTasks && list != null) TextButton(
+                    text = stringResource(R.string.voice_tasks_all),
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = { showAllTasks = true; refreshTasks() },
+                )
+                if (list != null) TextButton(
+                    text = stringResource(R.string.voice_tasks_refresh),
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = { refreshTasks(allowAutomaticInput = !pickerCanReturn) },
+                )
+                TextButton(text = stringResource(R.string.voice_tasks_new), modifier = Modifier.fillMaxWidth(),
+                    enabled = list?.known == true, onClick = ::chooseNewTask)
+                TextButton(text = stringResource(R.string.action_close), modifier = Modifier.fillMaxWidth(),
+                    onClick = ::closeTaskPickerOrWindow)
+            }
+        }
+    }
+
+    @Composable
+    private fun TaskControls(modifier: Modifier) {
+        val target = activeTask
+        val colors = MiuixTheme.colorScheme
+        val stopLabel = if (stopRequested || target?.isVoiceTask() != true) null else R.string.voice_stop_task
+        Column(
+            modifier.windowInsetsPadding(WindowInsets.safeDrawing).padding(8.dp)
+                .widthIn(max = 290.dp).heightIn(max = 216.dp)
+                .background(colors.surface, RoundedCornerShape(14.dp))
+                .verticalScroll(rememberScrollState()).padding(horizontal = 6.dp),
+            horizontalAlignment = Alignment.End,
+        ) {
+            TextButton(text = stringResource(R.string.voice_tasks_all), enabled = !guideBusy, onClick = ::openTaskPicker)
+            if (target != null && attachOnly) Text(stringResource(R.string.voice_task_selected,
+                taskSource(target), displayRunId(target)), Modifier.padding(horizontal = 6.dp), color = colors.onSurface)
+            val notice = taskNotice ?: when {
+                target == null && attachOnly -> R.string.voice_task_read_only
+                target == null -> null
+                !runConfirmed -> R.string.voice_task_preparing
+                !target.isVoiceTask() -> R.string.voice_task_read_only
+                else -> null
+            }
+            if (notice != null) Text(stringResource(notice), Modifier.padding(6.dp), color = colors.onSurface)
+            if (guideInput) {
+                TextButton(text = stringResource(R.string.action_cancel), enabled = !guideBusy, onClick = {
+                    endGuideInput()
+                    taskNotice = null
+                })
+            } else if (target?.isVoiceTask() == true && runConfirmed && !stopRequested) {
+                TextButton(text = stringResource(R.string.voice_guide), enabled = !guideBusy, onClick = ::openGuideInput)
+            }
+            // The stock composer exposes Stop while processing; keep it reachable while editing guidance too.
+            if (stopLabel != null && (guideInput || uiState.phase != EtaVoicePhase.PROCESSING || speechSettings == null)) {
+                TextButton(text = stringResource(stopLabel), onClick = ::stopCurrentRun)
+            }
+        }
+    }
+
+    @Composable
+    private fun taskSource(run: AgentRuntimeWire.ActiveRunSnapshot): String = stringResource(when (run.handoffSource) {
+        AgentRuntimeWire.ETA_VOICE_HANDOFF_SOURCE -> R.string.voice_task_source_voice
+        AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE -> R.string.voice_task_source_app
+        else -> R.string.voice_task_source_other
+    })
+
+    private fun displayRunId(run: AgentRuntimeWire.ActiveRunSnapshot): String = run.runId.take(8)
+
+    @Composable
+    private fun taskLabel(run: AgentRuntimeWire.ActiveRunSnapshot): String {
+        val phase = when (run.phase) {
+            AgentRuntimeWire.RunPhase.Preparing -> R.string.voice_task_phase_preparing
+            AgentRuntimeWire.RunPhase.Running -> R.string.voice_task_phase_running
+            AgentRuntimeWire.RunPhase.WaitingForGui -> R.string.voice_task_phase_waiting
+            AgentRuntimeWire.RunPhase.Paused -> R.string.voice_task_phase_paused
+            AgentRuntimeWire.RunPhase.Committing -> R.string.voice_task_phase_committing
+        }
+        return stringResource(R.string.voice_task_identity, taskSource(run), displayRunId(run), stringResource(phase))
+    }
+
     private fun createComposeView(content: @Composable () -> Unit): ComposeView =
         ComposeView(this).apply {
             setLayerType(View.LAYER_TYPE_HARDWARE, null)
@@ -462,7 +636,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
             AndroidAgentLogger.warn("Eta assistant overlay back dispatcher unavailable")
             return
         }
-        val callback = OnBackInvokedCallback(::dismissAndStop)
+        val callback = OnBackInvokedCallback(::closeTaskPickerOrWindow)
         dispatcher.registerOnBackInvokedCallback(
             OnBackInvokedDispatcher.PRIORITY_OVERLAY,
             callback,
@@ -483,115 +657,172 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
 
     private fun showKeyboard() {
         entryInputPending = false
-        uiState = uiState.copy(phase = EtaVoicePhase.READY)
+        if (activeRunId == null) uiState = uiState.copy(phase = EtaVoicePhase.READY)
         updateSoftInput(visible = true)
         inputFocusRequestKey++
     }
 
     private fun submitInput() {
         val prompt = inputText.trim()
-        if (prompt.isBlank() || activeRunId != null) return
+        if (prompt.isBlank()) return
         submitPrompt(prompt)
     }
 
     private fun submitPrompt(prompt: String) = submitPromptInternal(prompt, fromSpeech = false)
 
+    private fun canComposePrompt(): Boolean = windowView != null && !hiddenForForegroundOperation &&
+        !handoffInProgress && !handoffExitRequested && !taskPicker && !guideBusy &&
+        (if (activeRunId != null) guideInput && !stopRequested else !attachOnly)
+
     private fun submitPromptInternal(prompt: String, fromSpeech: Boolean) {
         val normalized = prompt.trim()
-        if (normalized.isBlank() || activeRunId != null) return
-        entryInputPending = false
-        inputFocusRequestKey = -1
-        speechInput.cancel()
-        speechState = EtaSpeechState()
-        playback.stop()
+        if (normalized.isBlank() || !canComposePrompt()) return
+        val selected = activeTask
+        if (selected != null) {
+            submitGuide(selected, normalized)
+            return
+        }
+        val key = conversationKey ?: return
+        val history = conversationHistory
         val capture = entryScreenContext
-        inputText = ""
-        activeRunId = UUID.randomUUID().toString()
-        val runId = activeRunId ?: return
-        uiState = uiState.copy(
-            phase = EtaVoicePhase.PROCESSING,
-            messages = uiState.messages + UserMessageUi(
-                id = "user-$runId",
-                content = normalized,
-            ),
+        val runId = UUID.randomUUID().toString()
+        val target = AgentRuntimeWire.ActiveRunSnapshot(
+            runId = runId,
+            conversationId = AgentConversationIdentity.archiveConversationId(AgentRuntimeWire.ETA_VOICE_HANDOFF_SOURCE, key),
+            phase = AgentRuntimeWire.RunPhase.Preparing,
+            handoffSource = AgentRuntimeWire.ETA_VOICE_HANDOFF_SOURCE,
         )
-        updateSoftInput(visible = false)
-        runJob = scope.launch {
-            val speechConfig = if (fromSpeech) SpeechSettingsRepository.settings() else null
-            val screen = capture?.snapshot() ?: EtaAssistantScreenContext.Snapshot()
-            val runImages = listOfNotNull(screen.image)
-            val config = AgentModelClient.loadConfig()
-            val payload = AgentExternalArchivePayload(
-                userText = normalized,
-                conversationKey = conversationKey,
-                title = normalized.take(40),
-            )
-            val result = runtimeClient.run(
-                request = AgentRuntimeWire.RunRequest(
-                    runId = runId,
-                    prompt = normalized,
-                    assistantScreenContext = screen.text,
-                    config = config.copy(supportsSearchSuggestions = true),
-                    images = runImages,
-                    history = conversationHistory,
-                    handoff = AgentRuntimeWire.EntryHandoff(
-                        id = "$conversationKey:$runId",
-                        source = AgentRuntimeWire.ETA_VOICE_HANDOFF_SOURCE,
-                        payload = payload.toJson(),
-                        dismissEntrySurfaceOnForegroundOperation = true,
-                    ),
-                ),
-                onEvent = { event -> handleRuntimeEvent(runId, event) },
-            )
-            val shouldStopAfterResult = withContext(Dispatchers.Main.immediate) {
-                if (activeRunId != runId) return@withContext false
-                flushPendingDelta(runId)
-                activeRunId = null
-                runJob = null
-                if (result.contextSnapshot != null) {
-                    conversationHistory = result.contextSnapshot.messages
-                } else if (result.ok) {
-                    conversationHistory = conversationHistory +
-                        AgentModelClient.buildUserHistoryMessage(normalized, runImages) + result.transcript
-                }
-                if (result.ok) {
-                    uiState = uiState.copy(
-                        phase = EtaVoicePhase.READY,
-                        messages = finishRunMessages(runId, result),
-                    )
-                } else {
-                    uiState = uiState.copy(
-                        phase = EtaVoicePhase.ERROR,
-                        messages = finishRunMessages(runId, result),
+        val submission = VoiceSubmission(target, key, normalized)
+        val observer = ++observerVersion
+        val overlay = WeakReference(this)
+        val client = runtimeClient
+        val receipts = steeringCoordinator
+        submissions[runId] = submission
+        entryInputPending = false
+        cancelSpeech()
+        playback.stop()
+        inputText = ""
+        inputFocusRequestKey = -1
+        activeTask = target
+        taskNotice = null
+        uiState = uiState.copy(phase = EtaVoicePhase.PROCESSING,
+            messages = uiState.messages + UserMessageUi(id = "user-$runId", content = normalized))
+        hideKeyboard()
+
+        // This worker owns the START request. Do not cancel its wait: official run() sends MSG_CANCEL on interrupt.
+        runtimeWork.launch {
+            var speechConfig: SpeechSettings? = null
+            var submittedImages = emptyList<AgentModelClient.ModelImage>()
+            var dispatched = false
+            val result = try {
+                val request = withContext(Dispatchers.IO) {
+                    val screen = capture?.snapshot() ?: EtaAssistantScreenContext.Snapshot()
+                    submittedImages = listOfNotNull(screen.image)
+                    speechConfig = if (fromSpeech) SpeechSettingsRepository.settings() else null
+                    val payload = AgentExternalArchivePayload(userText = normalized, conversationKey = key, title = normalized.take(40))
+                    AgentRuntimeWire.RunRequest(
+                        runId = runId,
+                        prompt = normalized,
+                        assistantScreenContext = screen.text,
+                        config = AgentModelClient.loadConfig().copy(supportsSearchSuggestions = true),
+                        images = submittedImages,
+                        history = history,
+                        handoff = AgentRuntimeWire.EntryHandoff(
+                            id = "$key:$runId",
+                            source = AgentRuntimeWire.ETA_VOICE_HANDOFF_SOURCE,
+                            payload = payload.toJson(),
+                            dismissEntrySurfaceOnForegroundOperation = true,
+                        ),
                     )
                 }
-                if (!hiddenForForegroundOperation && windowView?.isShown == true && result.ok &&
-                    getSystemService(PowerManager::class.java).isInteractive &&
-                    speechConfig?.autoSpeak == true && speechConfig.tts != TtsProvider.NONE) {
-                    val messageId = uiState.messages.filterIsInstance<AgentMessageUi>().lastOrNull()?.id ?: runId
-                    playback.speak(messageId, result.content, settings = speechConfig)
+                dispatched = submission.gate.beginDispatch()
+                if (!dispatched) {
+                    AgentRuntimeWire.RunResult(runId, false, "", LEGACY_STOPPED_ERROR)
+                } else withContext(Dispatchers.IO) {
+                    client.run(request, onEvent = { event ->
+                        if (event is AgentEvent.UserSupplementReceived) recordGuideReceipt(receipts, target, event)
+                        overlay.get()?.handleRuntimeEvent(target, observer, event)
+                    })
                 }
-                if (!hiddenForForegroundOperation) {
-                    updateSoftInput(visible = false)
-                }
-                hiddenForForegroundOperation
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                AndroidAgentLogger.warn("Eta voice submission failed: type=${failure.javaClass.simpleName}")
+                AgentRuntimeWire.RunResult(runId, false, "", null)
+            } finally {
+                submission.gate.finish()
+                submissions.remove(runId)
             }
-            runtimeClient.ackResult(runId)
-            if (shouldStopAfterResult) {
-                withContext(Dispatchers.Main.immediate) {
-                    if (activeRunId == null) {
-                        removeWindow()
-                        stopSelf()
-                    }
-                }
+            overlay.get()?.completeObservedRun(target, observer, result, speechConfig) {
+                history + AgentModelClient.buildUserHistoryMessage(normalized, submittedImages) + result.transcript
+            }
+            // Keep the existing result ACK for complete deliveries, never for a transport-only fallback.
+            if (dispatched && result.runId == runId && result.contextSnapshotRef.isBlank()) {
+                withContext(Dispatchers.IO) { client.ackResult(runId) }
             }
         }
     }
 
-    private fun handleRuntimeEvent(runId: String, event: AgentEvent) {
+    private fun completeObservedRun(
+        target: AgentRuntimeWire.ActiveRunSnapshot,
+        observer: Long,
+        result: AgentRuntimeWire.RunResult,
+        speechConfig: SpeechSettings? = null,
+        fallbackHistory: (() -> List<AgentModelClient.ConversationMessage>)? = null,
+    ) {
+        if (!observes(target.runId, observer)) return
+        val noStartResult = !attachOnly && !result.ok && result.runId.isBlank()
+        if ((!noStartResult && result.runId != target.runId) || result.contextSnapshotRef.isNotBlank()) {
+            failAttachment(target, observer, R.string.voice_tasks_unavailable)
+            return
+        }
+        flushPendingDelta(target.runId)
+        endGuideInput()
+        activeTask = null
+        runConfirmed = false
+        stopRequested = false
+        taskNotice = null
+        attachmentJob = null
+        if (!attachOnly) {
+            conversationHistory = result.contextSnapshot?.messages ?: if (result.ok && fallbackHistory != null) {
+                fallbackHistory()
+            } else conversationHistory
+        }
+        uiState = uiState.copy(
+            phase = if (result.ok) EtaVoicePhase.READY else EtaVoicePhase.ERROR,
+            messages = finishRunMessages(target.runId, result),
+        )
+        if (!taskPicker && !hiddenForForegroundOperation && windowView?.isShown == true && result.ok &&
+            getSystemService(PowerManager::class.java).isInteractive &&
+            speechConfig?.autoSpeak == true && speechConfig.tts != TtsProvider.NONE) {
+            val messageId = uiState.messages.filterIsInstance<AgentMessageUi>().lastOrNull()?.id ?: target.runId
+            playback.speak(messageId, result.content, settings = speechConfig)
+        }
+        updateSoftInput(visible = false)
+        if (hiddenForForegroundOperation) {
+            removeWindow()
+            stopSelf()
+        }
+    }
+
+    private fun observes(runId: String, observer: Long): Boolean =
+        observer == observerVersion && activeRunId == runId
+
+    private fun handleRuntimeEvent(
+        target: AgentRuntimeWire.ActiveRunSnapshot,
+        observer: Long,
+        event: AgentEvent,
+        replay: Boolean = false,
+        attached: Boolean = false,
+    ) {
+        val runId = target.runId
         scope.launch(Dispatchers.Main.immediate) {
-            if (activeRunId != runId) return@launch
-            if (AgentOverlayVisibilityPolicy.shouldDismissEntrySurfaceFor(event)) {
+            if (!observes(runId, observer)) return@launch
+            if (event is AgentEvent.RunStarted) runConfirmed = true
+            if ((attached || replay) && event is AgentEvent.UserSupplementReceived) {
+                recordGuideReceipt(steeringCoordinator, target, event)
+            }
+            if (!replay && AgentOverlayVisibilityPolicy.shouldDismissEntrySurfaceFor(event)) {
                 hideForForegroundOperation()
             }
             if (event is AgentEvent.AssistantBlockDelta) {
@@ -603,7 +834,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                     deltaFlushJob = scope.launch(Dispatchers.Main.immediate) {
                         delay(50)
                         deltaFlushJob = null
-                        if (activeRunId == runId) flushPendingDelta(runId)
+                        if (observes(runId, observer)) flushPendingDelta(runId)
                     }
                 }
             } else {
@@ -670,46 +901,252 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
     }
 
     private fun stopCurrentRun() {
-        val runId = activeRunId
-        if (runId != null) {
-            flushPendingDelta(runId)
-            activeRunId = null
-            requestRuntimeCancellation(runId)
-            runJob?.cancel()
-            runJob = null
-            uiState = uiState.copy(
-                phase = EtaVoicePhase.READY,
-                messages = runMessageProjector.failRunningTools(
-                    SYNTHETIC_STOPPED,
-                    runMessageProjector.finalizeText(
-                        runId,
-                        runMessageProjector.finalizeThinking(runId, uiState.messages),
-                    ),
-                ),
-            )
-            runMessageProjector.clearRun(runId)
-            updateSoftInput(visible = true)
-            inputFocusRequestKey++
-        } else {
-            dismissAndStop()
+        val target = activeTask ?: return
+        if (taskPicker || !target.isVoiceTask() || stopRequested || handoffExitRequested) return
+        stopRequested = true
+        endGuideInput()
+        taskNotice = R.string.voice_stop_requested
+        val client = runtimeClient
+        val local = submissions[target.runId]
+        if (local == null) {
+            runtimeWork.launch { withContext(Dispatchers.IO) { client.cancelRun(target.runId) } }
+        } else if (local.gate.requestStop()) {
+            // run() has no public admission callback. An early CANCEL for an absent ID is a no-op.
+            // Probe only after an explicit stop, until that exact submission is visible or has returned.
+            runtimeWork.launch {
+                while (local.gate.awaitingStop) {
+                    val query = withContext(Dispatchers.IO) { client.queryActiveRuns() }
+                    if (!local.gate.awaitingStop) break
+                    if (query is AgentRuntimeClient.ActiveRunsQuery.Known && query.runs.any {
+                            it.runId == target.runId && it.conversationId == target.conversationId
+                        }) {
+                        withContext(Dispatchers.IO) { client.cancelRun(target.runId) }
+                        break
+                    }
+                    delay(STOP_ADMISSION_RETRY_MS)
+                }
+            }
         }
     }
 
-    private fun cancelCurrentRun() {
+    private fun detachCurrentRun() {
+        observerVersion++
+        tasksQueryJob?.cancel()
+        tasksQueryJob = null
+        attachmentJob?.cancel() // attachRun()'s interrupted wait does not send MSG_CANCEL.
+        attachmentJob = null
+        activeRunId?.let { runId ->
+            flushPendingDelta(runId)
+            runMessageProjector.clearRun(runId)
+        }
+        activeTask = null
+        runConfirmed = false
+        stopRequested = false
+        endGuideInput()
+        attachOnly = false
+        taskNotice = null
         playback.stop()
-        speechInput.cancel()
-        speechState = EtaSpeechState()
-        val runId = activeRunId ?: return
-        flushPendingDelta(runId)
-        activeRunId = null
-        requestRuntimeCancellation(runId)
-        runJob?.cancel()
-        runJob = null
+        cancelSpeech()
     }
 
-    private fun requestRuntimeCancellation(runId: String) {
-        runCatching {
-            cancellationExecutor.execute { runtimeClient.cancelRun(runId) }
+    private fun refreshTasks(allowAutomaticInput: Boolean = false) {
+        tasksQueryJob?.cancel()
+        taskList = null
+        val generation = entryGeneration
+        val client = runtimeClient
+        tasksQueryJob = scope.launch(Dispatchers.Main.immediate) {
+            val query = runInterruptible(Dispatchers.IO) { client.queryActiveRuns() }
+            if (generation != entryGeneration || !taskPicker || windowView == null || hiddenForForegroundOperation) return@launch
+            val list = EtaVoiceTaskList.from(query, submissions.values.map { it.target })
+            taskList = list
+            if (allowAutomaticInput && !showAllTasks && list.canOpenInputAutomatically) {
+                taskPicker = false
+                presentEntryInput()
+            }
+        }
+    }
+
+    private fun openTaskPicker() {
+        if (taskPicker || windowView == null || handoffInProgress || handoffExitRequested || guideBusy) return
+        entryInputPending = false
+        cancelSpeech()
+        playback.stop()
+        hideKeyboard()
+        pickerCanReturn = true
+        showAllTasks = true
+        taskPicker = true
+        refreshTasks()
+    }
+
+    private fun closeTaskPickerOrWindow() {
+        if (taskPicker && pickerCanReturn) {
+            taskPicker = false
+            tasksQueryJob?.cancel()
+            return
+        }
+        dismissAndStop()
+    }
+
+    private fun chooseNewTask() {
+        if (!taskPicker || taskList?.known != true || hiddenForForegroundOperation || windowView == null || handoffExitRequested) return
+        detachCurrentRun()
+        conversationKey = newConversationKey()
+        conversationHistory = emptyList()
+        inputText = ""
+        uiState = EtaVoiceUiState()
+        taskPicker = false
+        // Choosing is not itself a submission. Preserve the wake input mode for an explicit new task.
+        entryInputPending = true
+        presentEntryInput()
+    }
+
+    private fun continueTask(row: EtaVoiceTaskList.Row) {
+        val list = taskList ?: return
+        if (!taskPicker || !list.known || row !in list.rows || !row.admitted ||
+            windowView == null || hiddenForForegroundOperation || handoffExitRequested) return
+        val target = row.run
+        if (target.runId == activeRunId) {
+            taskPicker = false
+            return
+        }
+        val local = submissions[target.runId]?.takeIf { it.target.conversationId == target.conversationId }
+        detachCurrentRun()
+        taskPicker = false
+        attachOnly = true
+        entryInputPending = false
+        hideKeyboard()
+        inputText = ""
+        conversationKey = local?.conversationKey
+        conversationHistory = emptyList()
+        activeTask = target
+        stopRequested = local?.gate?.stopRequested == true
+        if (stopRequested) taskNotice = R.string.voice_stop_requested
+        val observer = observerVersion
+        val overlay = WeakReference(this)
+        val client = runtimeClient
+        uiState = EtaVoiceUiState(phase = EtaVoicePhase.PROCESSING, messages = local?.let {
+            listOf(UserMessageUi(id = "user-${target.runId}", content = it.prompt))
+        }.orEmpty())
+        attachmentJob = scope.launch(Dispatchers.Main.immediate) {
+            val outcome = runInterruptible(Dispatchers.IO) {
+                client.attachRun(target.runId,
+                    onReplay = { events -> overlay.get()?.onAttachmentReplay(target, observer, events) },
+                    onEvent = { event -> overlay.get()?.handleRuntimeEvent(target, observer, event, attached = true) },
+                )
+            }
+            when (outcome) {
+                is AgentRuntimeClient.AttachOutcome.Completed -> completeObservedRun(target, observer, outcome.result)
+                AgentRuntimeClient.AttachOutcome.NotActive -> failAttachment(target, observer, R.string.voice_task_ended)
+                AgentRuntimeClient.AttachOutcome.Unavailable -> failAttachment(target, observer, R.string.voice_tasks_unavailable)
+            }
+        }
+    }
+
+    private fun onAttachmentReplay(target: AgentRuntimeWire.ActiveRunSnapshot, observer: Long, events: List<AgentEvent>) {
+        scope.launch(Dispatchers.Main.immediate) {
+            if (!observes(target.runId, observer)) return@launch
+            runConfirmed = true
+            // Replay restores the view and receipts, but cannot take over the foreground or speak again.
+            events.forEach { handleRuntimeEvent(target, observer, it, replay = true) }
+        }
+    }
+
+    private fun failAttachment(target: AgentRuntimeWire.ActiveRunSnapshot, observer: Long, notice: Int) {
+        if (!observes(target.runId, observer)) return
+        flushPendingDelta(target.runId)
+        endGuideInput()
+        activeTask = null
+        attachOnly = true // An unknown result must not allow a START on an existing conversation key.
+        runConfirmed = false
+        stopRequested = false
+        attachmentJob = null
+        runMessageProjector.clearRun(target.runId)
+        uiState = uiState.copy(phase = EtaVoicePhase.ERROR)
+        taskNotice = notice
+        if (hiddenForForegroundOperation) stopSelf()
+    }
+
+    private fun openGuideInput() {
+        val target = activeTask ?: return
+        if (!target.isVoiceTask() || !runConfirmed || guideBusy || stopRequested || taskPicker || handoffExitRequested ||
+            hiddenForForegroundOperation || windowView == null) return
+        val observer = observerVersion
+        guideBusy = true
+        taskNotice = R.string.voice_tasks_loading
+        val client = runtimeClient
+        scope.launch(Dispatchers.Main.immediate) {
+            val ready = runInterruptible(Dispatchers.IO) { client.queryActiveRuns().canGuideVoiceTask(target) }
+            if (!observes(target.runId, observer) || !guideBusy) return@launch
+            guideBusy = false
+            if (stopRequested || hiddenForForegroundOperation || taskPicker || windowView == null) return@launch
+            taskNotice = if (ready) R.string.voice_guide_input else R.string.voice_guide_not_ready
+            if (ready) {
+                guideInput = true
+                showKeyboard()
+            }
+        }
+    }
+
+    private fun endGuideInput() {
+        if (!guideInput && !guideBusy) return
+        guideInput = false
+        guideBusy = false
+        inputText = ""
+        cancelSpeech()
+        hideKeyboard()
+    }
+
+    private fun submitGuide(target: AgentRuntimeWire.ActiveRunSnapshot, text: String) {
+        if (!guideInput || !runConfirmed || !target.isVoiceTask()) return
+        val observer = observerVersion
+        val coordinator = steeringCoordinator
+        guideBusy = true
+        entryInputPending = false
+        cancelSpeech()
+        playback.stop()
+        // Leave definite rejections editable. Unknown deliveries are never returned to the send path.
+        inputText = text
+        hideKeyboard()
+        taskNotice = R.string.voice_guide_sending
+        runtimeWork.launch {
+            val outcome = coordinator.submit(target, text,
+                stillSelected = { observes(target.runId, observer) && guideBusy && !stopRequested &&
+                    !taskPicker && windowView != null && !hiddenForForegroundOperation },
+                onPersisted = { inputText = "" },
+            )
+            if (!observes(target.runId, observer) || !guideBusy) return@launch
+            guideBusy = false
+            when (outcome) {
+                EtaAssistantSteeringCoordinator.Outcome.Accepted -> {
+                    endGuideInput()
+                    taskNotice = R.string.voice_guide_accepted
+                }
+                EtaAssistantSteeringCoordinator.Outcome.Rejected, EtaAssistantSteeringCoordinator.Outcome.NotReady -> {
+                    inputText = text
+                    taskNotice = R.string.voice_guide_not_ready
+                }
+                EtaAssistantSteeringCoordinator.Outcome.PendingReceipt -> {
+                    inputText = text
+                    taskNotice = R.string.voice_guide_pending_receipt
+                }
+                EtaAssistantSteeringCoordinator.Outcome.Unconfirmed -> {
+                    endGuideInput()
+                    taskNotice = R.string.voice_guide_unconfirmed
+                }
+                EtaAssistantSteeringCoordinator.Outcome.SaveFailed -> {
+                    inputText = text
+                    taskNotice = R.string.voice_guide_storage_failed
+                }
+            }
+        }
+    }
+
+    private fun hideKeyboard() {
+        inputFocusRequestKey = -1
+        updateSoftInput(visible = false)
+        windowView?.let { view ->
+            (getSystemService(INPUT_METHOD_SERVICE) as? InputMethodManager)?.hideSoftInputFromWindow(view.windowToken, 0)
+            view.clearFocus()
         }
     }
 
@@ -808,7 +1245,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
         entryGeneration++
         EtaAssistantScreenContexts.release(entryScreenContext?.id)
         entryScreenContext = null
-        cancelCurrentRun()
+        detachCurrentRun()
         handoffExitRequested = true
         dismissalJob = scope.launch(Dispatchers.Main.immediate) {
             delay(HANDOFF_EXIT_DURATION_MS)
@@ -818,13 +1255,15 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
     }
 
     private fun openConversation() {
-        if (handoffInProgress || activeRunId != null || uiState.messages.isEmpty()) return
+        if (taskPicker || handoffInProgress || activeRunId != null || uiState.messages.isEmpty()) return
+        val key = conversationKey ?: return
         handoffInProgress = true
+        val generation = entryGeneration
         AndroidAgentLogger.info("Eta assistant handoff requested")
         updateSoftInput(visible = false)
         val intent = Intent(this, MainActivity::class.java)
             .setAction(ACTION_OPEN_CONVERSATION)
-            .putExtra(EXTRA_CONVERSATION_KEY, conversationKey)
+            .putExtra(EXTRA_CONVERSATION_KEY, key)
             .addFlags(
                 Intent.FLAG_ACTIVITY_NEW_TASK or
                     Intent.FLAG_ACTIVITY_CLEAR_TOP or
@@ -866,7 +1305,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
             }
         scope.launch(Dispatchers.Main.immediate) {
             delay(HANDOFF_TIMEOUT_MS)
-            if (handoffInProgress) {
+            if (generation == entryGeneration && handoffInProgress) {
                 AndroidAgentLogger.warn("Eta assistant handoff timed out waiting for chat")
                 handoffInProgress = false
             }
@@ -878,25 +1317,54 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
         if (handoffExitRequested) return
         AndroidAgentLogger.info("Eta assistant handoff chat ready")
         handoffExitRequested = true
+        val generation = entryGeneration
         scope.launch(Dispatchers.Main.immediate) {
             delay(HANDOFF_EXIT_DURATION_MS)
+            if (generation != entryGeneration) return@launch
             handoffInProgress = false
             removeWindow()
             stopSelf()
         }
     }
 
+    private data class VoiceSubmission(
+        val target: AgentRuntimeWire.ActiveRunSnapshot,
+        val conversationKey: String,
+        val prompt: String,
+        val gate: EtaVoiceSubmissionGate = EtaVoiceSubmissionGate(),
+    )
+
     internal companion object {
+        // Main-confined, bounded by submitted workers; no Service lifetime owns these jobs.
+        private val runtimeWork = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+        private val submissions = linkedMapOf<String, VoiceSubmission>()
+        private const val STOP_ADMISSION_RETRY_MS = 250L
+
+        private fun recordGuideReceipt(
+            coordinator: EtaAssistantSteeringCoordinator,
+            target: AgentRuntimeWire.ActiveRunSnapshot,
+            receipt: AgentEvent.UserSupplementReceived,
+        ) {
+            if (!target.isVoiceTask() || receipt.index <= 0 || receipt.queueMessageId.isBlank()) return
+            runtimeWork.launch {
+                runCatching { coordinator.acknowledge(target, receipt.queueMessageId) }.onFailure { failure ->
+                    AndroidAgentLogger.warn("Eta voice receipt could not be settled: type=${failure.javaClass.simpleName}")
+                }
+            }
+        }
+
+        private fun newConversationKey() = "eta_assistant_${UUID.randomUUID()}"
+
         const val ACTION_SHOW = "io.github.mangi.eta.agent.voice.SHOW"
         const val ACTION_OPEN_CONVERSATION = "io.github.mangi.eta.agent.voice.OPEN_CONVERSATION"
         const val EXTRA_CONVERSATION_KEY = "io.github.mangi.eta.agent.voice.extra.CONVERSATION_KEY"
         private const val EXTRA_SCREEN_CONTEXT_ID = "assistant_screen_context_id"
+        private const val EXTRA_INVOCATION_ID = "assistant_invocation_id"
         private const val ACTION_HANDOFF_READY = "io.github.mangi.eta.agent.voice.HANDOFF_READY"
         private const val HANDOFF_TIMEOUT_MS = 5_000L
         private const val HANDOFF_EXIT_DURATION_MS = 220L
         private const val HANDOFF_REQUEST_CODE = 0x455441
         private const val LEGACY_STOPPED_ERROR = "已停止"
-        private const val SYNTHETIC_STOPPED = "eta_status:stopped"
         private const val SYNTHETIC_RUNTIME_FAILED = "eta_status:runtime_failed"
         private const val FOREGROUND_DISMISS_TIMEOUT_MS = 2_000L
         internal const val FRESH_ENTRY_COALESCE_WINDOW_MS = 5_000L
@@ -973,7 +1441,8 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
             context.applicationContext.startService(
                 Intent(context.applicationContext, EtaAssistantOverlayService::class.java)
                     .setAction(ACTION_SHOW)
-                    .putExtra(EXTRA_SCREEN_CONTEXT_ID, screenContextId),
+                    .putExtra(EXTRA_SCREEN_CONTEXT_ID, screenContextId)
+                    .putExtra(EXTRA_INVOCATION_ID, UUID.randomUUID().toString()),
             )
         }
 

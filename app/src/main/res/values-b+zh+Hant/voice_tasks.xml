@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="voice_tasks_title">語音任務</string>
+    <string name="voice_tasks_continue">繼續 · %1$s</string>
+    <string name="voice_tasks_view">檢視 · %1$s</string>
+    <string name="voice_tasks_new">新增任務（不停止既有任務）</string>
+    <string name="voice_tasks_all">檢視所有進行中的任務</string>
+    <string name="voice_tasks_empty">沒有進行中的任務</string>
+    <string name="voice_tasks_no_voice">沒有進行中的語音任務</string>
+    <string name="voice_tasks_loading">正在查詢任務狀態…</string>
+    <string name="voice_tasks_unavailable">無法確認任務狀態，請重新查詢再傳送。</string>
+    <string name="voice_task_preparing">正在等待執行階段確認此任務…</string>
+    <string name="voice_task_ended">此任務已不在執行，請重新檢視任務清單。</string>
+    <string name="voice_task_read_only">目前僅供檢視。若要傳送新請求，請選擇「新增任務」。</string>
+    <string name="voice_task_identity">%1$s · %2$s · %3$s</string>
+    <string name="voice_task_source_voice">語音</string>
+    <string name="voice_task_source_app">聊天</string>
+    <string name="voice_task_source_other">其他任務</string>
+    <string name="voice_task_phase_preparing">準備中</string>
+    <string name="voice_task_phase_running">執行中</string>
+    <string name="voice_task_phase_waiting">等待螢幕控制權</string>
+    <string name="voice_task_phase_paused">已暫停</string>
+    <string name="voice_task_phase_committing">正在儲存結果</string>
+    <string name="voice_stop_task">停止此任務</string>
+    <string name="voice_stop_requested">已要求停止，正在等待任務結果。</string>
+    <string name="voice_guide">引導此任務</string>
+    <string name="voice_guide_input">輸入文字或語音，為此任務補充指令。</string>
+    <string name="voice_guide_sending">正在確認狀態並傳送引導…</string>
+    <string name="voice_guide_accepted">任務已收到引導。</string>
+    <string name="voice_guide_not_ready">未傳送引導。請確認任務正在執行再試一次。</string>
+    <string name="voice_guide_unconfirmed">無法確認是否送達。指令已保留，不會自動重送。</string>
+    <string name="voice_guide_storage_failed">無法儲存引導或回執，請檢視任務再試一次。</string>
+    <string name="voice_tasks_refresh">重新整理任務清單</string>
+    <string name="voice_task_selected">%1$s · %2$s</string>
+    <string name="voice_guide_pending_receipt">上一則指令仍未確認，未傳送新的引導。</string>
+</resources>

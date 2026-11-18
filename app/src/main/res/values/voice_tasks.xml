@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="voice_tasks_title">Voice tasks</string>
+    <string name="voice_tasks_continue">Continue · %1$s</string>
+    <string name="voice_tasks_view">View · %1$s</string>
+    <string name="voice_tasks_new">New task (keep existing tasks running)</string>
+    <string name="voice_tasks_all">View all active tasks</string>
+    <string name="voice_tasks_empty">No active tasks</string>
+    <string name="voice_tasks_no_voice">No active voice tasks</string>
+    <string name="voice_tasks_loading">Checking task status…</string>
+    <string name="voice_tasks_unavailable">Task status is unavailable. Check again before sending.</string>
+    <string name="voice_task_preparing">Waiting for the runtime to confirm this task…</string>
+    <string name="voice_task_ended">This task is no longer active. Check the task list again.</string>
+    <string name="voice_task_read_only">Viewing only. Choose New task to send a new request.</string>
+    <string name="voice_task_identity">%1$s · %2$s · %3$s</string>
+    <string name="voice_task_source_voice">Voice</string>
+    <string name="voice_task_source_app">Chat</string>
+    <string name="voice_task_source_other">Other task</string>
+    <string name="voice_task_phase_preparing">Preparing</string>
+    <string name="voice_task_phase_running">Running</string>
+    <string name="voice_task_phase_waiting">Waiting for screen control</string>
+    <string name="voice_task_phase_paused">Paused</string>
+    <string name="voice_task_phase_committing">Saving result</string>
+    <string name="voice_stop_task">Stop this task</string>
+    <string name="voice_stop_requested">Stop requested. Waiting for the result.</string>
+    <string name="voice_guide">Guide this task</string>
+    <string name="voice_guide_input">Type or speak an instruction for this task.</string>
+    <string name="voice_guide_sending">Checking and sending guidance…</string>
+    <string name="voice_guide_accepted">The task received your guidance.</string>
+    <string name="voice_guide_not_ready">Guidance was not sent. Check that the task is running before trying again.</string>
+    <string name="voice_guide_unconfirmed">Delivery could not be confirmed. The instruction is saved and will not be resent automatically.</string>
+    <string name="voice_guide_storage_failed">Could not save the instruction or its receipt. Check the task before trying again.</string>
+    <string name="voice_tasks_refresh">Refresh task list</string>
+    <string name="voice_task_selected">%1$s · %2$s</string>
+    <string name="voice_guide_pending_receipt">An earlier instruction is still unconfirmed. No new guidance was sent.</string>
+</resources>
