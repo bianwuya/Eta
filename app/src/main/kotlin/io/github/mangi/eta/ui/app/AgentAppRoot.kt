@@ -510,6 +510,9 @@ fun AgentAppRoot(
                     entry<AppRoute.Subagents>(swipeDismiss = activeSwipeDismiss) {
                         SubagentSettingsScreen(onBack = ::popRoute)
                     }
+                    entry<AppRoute.ImageGenSettings>(swipeDismiss = activeSwipeDismiss) {
+                        io.github.mangi.eta.local.imagegen.ImageGenSettingsScreen(onBack = ::popRoute)
+                    }
                     entry<AppRoute.ConversationTitleSettings>(swipeDismiss = activeSwipeDismiss) {
                         ConversationTitleSettingsScreen(onBack = ::popRoute)
                     }

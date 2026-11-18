@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="image_gen_settings_title">生圖設定</string>
+    <string name="image_gen_settings_summary">設定獨立的 OpenAI Images 相容連線。生圖工具只使用此頁儲存的連線，不沿用聊天模型或登入。</string>
+    <string name="image_gen_config_working">正在處理…</string>
+    <string name="image_gen_config_active">生圖工具已設定，將使用上次儲存的連線。</string>
+    <string name="image_gen_config_inactive">請儲存獨立連線、API Key 和模型後再使用生圖工具。</string>
+    <string name="image_gen_endpoint">生圖服務位址</string>
+    <string name="image_gen_endpoint_hint">支援 HTTPS 根位址、/v1 或完整的 /images/generations 位址。HTTP 僅限本機回環位址。</string>
+    <string name="image_gen_api_key">獨立 API Key</string>
+    <string name="image_gen_key_saved">留空將保留此位址的金鑰。更換位址時需重新輸入。</string>
+    <string name="image_gen_model">生圖模型</string>
+    <string name="image_gen_save">儲存連線</string>
+    <string name="image_gen_saved">已儲存連線，未送出生圖請求。</string>
+    <string name="image_gen_read_failed">無法讀取生圖連線，工具不會使用無法讀取的設定。</string>
+    <string name="image_gen_save_failed">無法儲存生圖連線，請檢查位址、金鑰及裝置儲存空間後重試。</string>
+    <string name="image_gen_remove">刪除生圖連線</string>
+    <string name="image_gen_remove_summary">刪除獨立生圖連線並停用生圖工具，不影響聊天設定和已產生的檔案。</string>
+    <string name="image_gen_remove_confirm">刪除</string>
+    <string name="image_gen_removed">已刪除生圖連線。</string>
+    <string name="image_gen_remove_failed">無法刪除生圖連線，請重試。</string>
+    <string name="image_gen_picker_title">選擇生圖模型</string>
+    <string name="image_gen_search">搜尋生圖模型</string>
+    <string name="image_gen_refresh">重新整理模型清單</string>
+    <string name="image_gen_catalog_loading">正在讀取模型…</string>
+    <string name="image_gen_catalog_empty">目錄未列出生圖模型，可在下方手動輸入模型 ID。</string>
+    <string name="image_gen_catalog_failed">無法讀取生圖目錄。可重新整理重試，或在下方手動輸入模型 ID。</string>
+    <string name="image_gen_catalog_needs_connection">請填寫有效的生圖位址及對應金鑰後讀取目錄，也可在下方手動輸入模型 ID。</string>
+    <string name="image_gen_no_match">沒有符合的生圖模型。</string>
+    <string name="image_gen_model_selected">已選擇</string>
+    <string name="image_gen_manual">手動輸入模型 ID</string>
+    <string name="image_gen_use_manual">選擇此模型 ID</string>
+</resources>

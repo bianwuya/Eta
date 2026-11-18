@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="image_gen_settings_title">Image generation</string>
+    <string name="image_gen_settings_summary">Configure an independent OpenAI Images-compatible connection. The image tool uses only this saved connection, not your chat model or login.</string>
+    <string name="image_gen_config_working">Working…</string>
+    <string name="image_gen_config_active">A saved connection is configured for the image tool.</string>
+    <string name="image_gen_config_inactive">The image tool is unavailable until you save a connection with its own API key and model.</string>
+    <string name="image_gen_endpoint">Images endpoint</string>
+    <string name="image_gen_endpoint_hint">Enter the HTTPS root URL, /v1, or a complete /images/generations URL. HTTP is allowed only for loopback.</string>
+    <string name="image_gen_api_key">Independent API key</string>
+    <string name="image_gen_key_saved">Leave blank to keep the key for this address. Changing the address requires entering a key again.</string>
+    <string name="image_gen_model">Image model</string>
+    <string name="image_gen_save">Save connection</string>
+    <string name="image_gen_saved">Connection saved. No image was generated.</string>
+    <string name="image_gen_read_failed">Could not read the image connection. The image tool will not use an unreadable connection.</string>
+    <string name="image_gen_save_failed">Could not save the image connection. Check the address, key and device storage, then try again.</string>
+    <string name="image_gen_remove">Remove image connection</string>
+    <string name="image_gen_remove_summary">Remove the independent image connection and disable the image tool. This leaves chat settings and generated files unchanged.</string>
+    <string name="image_gen_remove_confirm">Remove</string>
+    <string name="image_gen_removed">Image connection removed.</string>
+    <string name="image_gen_remove_failed">Could not remove the image connection. Try again.</string>
+    <string name="image_gen_picker_title">Choose an image model</string>
+    <string name="image_gen_search">Search image models</string>
+    <string name="image_gen_refresh">Refresh model list</string>
+    <string name="image_gen_catalog_loading">Loading models…</string>
+    <string name="image_gen_catalog_empty">The catalog lists no image models. You can enter a model ID below.</string>
+    <string name="image_gen_catalog_failed">Could not load the image catalog. Refresh to retry or enter a model ID below.</string>
+    <string name="image_gen_catalog_needs_connection">To fetch models, enter a valid Images address and a key for that address. You can also enter a model ID below.</string>
+    <string name="image_gen_no_match">No matching image models.</string>
+    <string name="image_gen_model_selected">Selected</string>
+    <string name="image_gen_manual">Model ID (manual)</string>
+    <string name="image_gen_use_manual">Use entered model ID</string>
+</resources>

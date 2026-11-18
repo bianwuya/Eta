@@ -6,6 +6,7 @@ import io.github.mangi.eta.agent.model.AgentTerminalToolCatalog
 import io.github.mangi.eta.agent.model.AgentFileToolCatalog
 import io.github.mangi.eta.agent.model.AgentPhoneToolCatalog
 import io.github.mangi.eta.agent.context.PersonalSearchTools
+import io.github.mangi.eta.local.imagegen.ImageGenToolCatalog
 
 internal enum class RootRequirement { NONE, PARTIAL, REQUIRED }
 internal enum class LsposedRequirement { NONE, OPTIONAL, REQUIRED }
@@ -32,6 +33,7 @@ internal object AgentToolRequirements {
         }
         register(
             RootRequirement.NONE,
+            ImageGenToolCatalog.TOOL_NAME,
             "get_current_context", "search_apps", "launch_app", "present_to_user", "open_uri", "browser_use", "web_search", "fetch_url",
             "observe_screen", "release_gui", "tap", "tap_area", "tap_element", "long_press",
             "long_press_element", "swipe", "scroll", "scroll_element", "type_text", "input_text",

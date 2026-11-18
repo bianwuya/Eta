@@ -26,6 +26,7 @@ import androidx.compose.material.icons.rounded.Code
 import androidx.compose.material.icons.rounded.Dashboard
 import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.Hub
+import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.ImportContacts
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Inventory2
@@ -610,6 +611,12 @@ private fun SettingsPageContent(
                     )
                     CouiIconDivider()
                     CouiPreference(
+                        title = stringResource(R.string.image_gen_settings_title),
+                        icon = { CouiSettingsIcon(Icons.Rounded.Image, SettingsIconColors.Orange) },
+                        onClick = { onNavigate(AppRoute.ImageGenSettings) },
+                    )
+                    CouiIconDivider()
+                    CouiPreference(
                         title = stringResource(R.string.route_skills),
                         icon = {
                             CouiSettingsIcon(
@@ -1017,6 +1024,11 @@ private fun SettingsPageContent(
                             title = "Subagent",
                             startAction = { SettingsIcon(Icons.Rounded.Hub) },
                             onClick = { onNavigate(AppRoute.Subagents) },
+                        )
+                        ArrowPreference(
+                            title = stringResource(R.string.image_gen_settings_title),
+                            startAction = { SettingsIcon(Icons.Rounded.Image) },
+                            onClick = { onNavigate(AppRoute.ImageGenSettings) },
                         )
                         ArrowPreference(
                             title = stringResource(R.string.route_skills),

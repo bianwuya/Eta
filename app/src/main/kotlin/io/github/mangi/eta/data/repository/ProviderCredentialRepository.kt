@@ -9,6 +9,7 @@ import io.github.mangi.eta.agent.auth.ProviderCredentialSessions
 import io.github.mangi.eta.agent.auth.ProviderCredentialBinding
 import io.github.mangi.eta.agent.auth.ProviderLoginPrompt
 import io.github.mangi.eta.agent.runtime.AgentRunController
+import io.github.mangi.eta.local.imagegen.ImageGenAvailability
 
 /** 仅由 Eta 主进程初始化和访问；调用方在 I/O 线程执行，不将返回的令牌写入配置。 */
 internal object ProviderCredentialRepository {
@@ -18,6 +19,7 @@ internal object ProviderCredentialRepository {
     fun init(context: Context) {
         if (sessions != null) return
         sessions = ProviderCredentialSessions(EncryptedProviderCredentialStorage(context), LiveProviderOAuthClient())
+        ImageGenAvailability.init(context)
     }
 
     fun account(providerId: String, authMode: String): ProviderAccountSummary? =

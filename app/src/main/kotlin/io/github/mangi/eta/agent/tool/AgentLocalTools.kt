@@ -61,6 +61,8 @@ import io.github.mangi.eta.data.repository.AgentMemoryRepository
 import io.github.mangi.eta.data.repository.AgentMemoryWriteResult
 import io.github.mangi.eta.data.repository.LinuxEnvironmentSettingsRepository
 import io.github.mangi.eta.data.repository.WebToolsSettingsRepository
+import io.github.mangi.eta.local.imagegen.ImageGenTool
+import io.github.mangi.eta.local.imagegen.ImageGenToolCatalog
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
@@ -132,6 +134,7 @@ internal class AgentLocalTools(
         foregroundAction = ::executeForegroundIntent,
     )
     private val imageTools = AgentImageTools(context, rootCommandExecutor, rootAvailable)
+    private val imageGeneration = ImageGenTool(context)
     private val webTools = AgentWebTools(
         transport = WebHttpTransport(AgentHttpClient.client),
         localNetworkAccess = { LocalNetworkPermission.accessState(context).name.lowercase(Locale.ROOT) },
@@ -172,6 +175,7 @@ internal class AgentLocalTools(
         if (!closed.compareAndSet(false, true)) return
         publishedObservation.set(PublishedObservation())
         if (browserSessionRef.isInitialized()) browserSessionRef.value.interruptAgentAction(browserRunId)
+        imageGeneration.close()
         webTools.close()
         terminalController.interruptAll()
         deviceController.close()
@@ -237,6 +241,7 @@ internal class AgentLocalTools(
                 }
             }
             when (toolCall.name) {
+                ImageGenToolCatalog.TOOL_NAME -> imageGeneration.execute(toolCall.id, args)
                 "get_current_context" -> textResult(DeviceContextTool.current(context))
                 "search_apps" -> textResult(searchApps(args))
                 "launch_app" -> {

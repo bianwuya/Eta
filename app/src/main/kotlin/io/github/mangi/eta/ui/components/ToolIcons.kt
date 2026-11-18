@@ -58,6 +58,7 @@ import androidx.compose.material.icons.rounded.TravelExplore
 import androidx.compose.material.icons.rounded.WebAsset
 import androidx.compose.material.icons.rounded.Wifi
 import androidx.compose.ui.graphics.vector.ImageVector
+import io.github.mangi.eta.local.imagegen.ImageGenToolCatalog
 
 internal fun iconForTool(toolId: String): ImageVector = when (toolId) {
     "observe", "observe_screen" -> Icons.Rounded.DocumentScanner
@@ -85,7 +86,7 @@ internal fun iconForTool(toolId: String): ImageVector = when (toolId) {
     "file_search", "file_search_call", "文件搜索" -> Icons.AutoMirrored.Rounded.ManageSearch
     "code_interpreter", "code_interpreter_call", "代码执行" -> Icons.Rounded.Terminal
     "computer", "computer_call", "计算机操作" -> Icons.Rounded.Computer
-    "image_generation", "image_generation_call", "图像生成" -> Icons.Rounded.Image
+    ImageGenToolCatalog.TOOL_NAME, "image_generation", "image_generation_call", "图像生成" -> Icons.Rounded.Image
     "mcp_call", "MCP 工具" -> Icons.Rounded.Extension
     "memory_get", "memory_write", "character_memory_get", "character_memory_write" ->
         Icons.Rounded.Psychology

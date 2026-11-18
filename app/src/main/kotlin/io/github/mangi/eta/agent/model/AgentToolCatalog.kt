@@ -2,6 +2,8 @@ package io.github.mangi.eta.agent.model
 
 import io.github.mangi.eta.agent.tool.AgentToolCapabilities
 import io.github.mangi.eta.config.Prefs
+import io.github.mangi.eta.local.imagegen.ImageGenAvailability
+import io.github.mangi.eta.local.imagegen.ImageGenToolCatalog
 import org.json.JSONArray
 
 /** 声明模型可见的工具及其 JSON Schema；不包含任何执行逻辑。 */
@@ -19,9 +21,11 @@ internal object AgentToolCatalog {
         capabilities: AgentToolCapabilities = AgentToolCapabilities(rootAvailable = true),
         localWebSearch: Boolean = true,
         disabledTools: Set<String> = emptySet(),
+        imageGeneration: Boolean = ImageGenAvailability.available,
     ): JSONArray =
         capabilities.project(JSONArray().also { tools ->
             AgentContextAppToolCatalog.appendTo(tools)
+            if (imageGeneration) tools.put(ImageGenToolCatalog.schema())
             AgentGestureToolCatalog.appendTo(tools)
             AgentTextSystemToolCatalog.appendTo(tools)
             AgentDeviceToolCatalog.appendTo(
