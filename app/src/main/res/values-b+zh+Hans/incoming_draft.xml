@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="incoming_draft_after_edit">完成或取消编辑后，分享内容会加入草稿。</string>
+</resources>

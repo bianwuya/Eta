@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="incoming_draft_after_edit">Finish or cancel editing before adding the share to your draft.</string>
+</resources>

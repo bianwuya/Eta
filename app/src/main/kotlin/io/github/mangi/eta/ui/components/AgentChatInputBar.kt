@@ -98,6 +98,8 @@ import com.itos.coui.menu.rememberCouiMenuAnchor
 import com.itos.coui.shape.CouiShape
 import com.itos.coui.theme.CouiTheme
 import io.github.mangi.eta.R
+import io.github.mangi.eta.ui.app.BindIncomingDraft
+import io.github.mangi.eta.ui.app.appendSharedDraft
 import io.github.mangi.eta.data.model.AppearanceUiStyle
 import io.github.mangi.eta.data.model.ReasoningEffort
 import io.github.mangi.eta.data.repository.SpeechSettingsRepository
@@ -175,6 +177,11 @@ internal fun AgentChatInputBar(
     val hapticFeedback = LocalHapticFeedback.current
     val focusRequester = remember { FocusRequester() }
     val textFieldState = rememberTextFieldState(initialText = input)
+    BindIncomingDraft { incoming ->
+        appendSharedDraft(textFieldState.text.toString(), incoming).also { merged ->
+            textFieldState.setTextAndPlaceCursorAtEnd(merged)
+        }
+    }
     val speechSettings by remember { SpeechSettingsRepository.settingsFlow() }.collectAsState(initial = null)
     val recognitionEnabled = speechSettings?.recognitionEnabled == true
     val dictation = rememberSpeechInput(

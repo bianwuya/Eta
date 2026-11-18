@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -277,16 +278,29 @@ fun AgentAppRoot(
         onAssistantConversationOpened(opened)
     }
 
-    LaunchedEffect(sharedContent) {
+    val draftReader = remember { IncomingDraftReader() }
+    val draftOwner = agentState.conversationPaneState.selectedConversationId
+    val atHome = backStack.lastOrNull() == AppRoute.Home
+    val draftSource = draftReader.source?.takeIf { it.conversationId == draftOwner }
+    val canAcceptShare = agentState.canAcceptSharedContent
+    val editingDraft = agentState.homeState.messageEdit != null
+    LaunchedEffect(sharedContent, editingDraft) {
+        if (sharedContent != null && editingDraft) {
+            Toast.makeText(context, R.string.incoming_draft_after_edit, Toast.LENGTH_SHORT).show()
+        }
+    }
+    LaunchedEffect(sharedContent, atHome, draftSource, canAcceptShare) {
         val request = sharedContent ?: return@LaunchedEffect
-        focusManager.clearFocus()
-        conversationPaneOpen = false
-        if (backStack.lastOrNull() != AppRoute.Home) {
+        if (!atHome) {
             navigator.popToHome()
             navigationResetKey++
+            return@LaunchedEffect
         }
-        agentState.acceptSharedContent(request)
-        onSharedContentAccepted()
+        val source = draftSource ?: return@LaunchedEffect
+        if (canAcceptShare && agentState.acceptSharedContent(request, source.append)) {
+            conversationPaneOpen = false
+            onSharedContentAccepted()
+        }
     }
 
     fun pushRoute(
@@ -410,66 +424,74 @@ fun AgentAppRoot(
         ) {
                     entry<AppRoute.Home>(swipeDismiss = activeSwipeDismiss) {
                         RoutedShell(route = AppRoute.Home, applyShellPadding = false) { shellPadding ->
-                            AgentHomeScreen(
-                                state = agentState.homeState,
-                                modelPickerState = agentState.modelPickerState,
-                                isBranching = agentState.isBranchingCurrentConversation,
-                                conversationKey = agentState.conversationPaneState.selectedConversationId,
-                                topInset = shellPadding.calculateTopPadding(),
-                                onAction = { action ->
-                                    when (action) {
-                                        is AgentHomeAction.ReasoningEffortChanged ->
-                                            agentState.updateReasoningEffort(action.effort)
-                                        AgentHomeAction.CompactContext -> agentState.compactCurrentContext()
-                                        AgentHomeAction.LoadEarlierMessages -> agentState.loadEarlierMessages()
-                                        is AgentHomeAction.HistoryViewportChanged -> agentState.updateHistoryViewport(action.atLatest)
-                                        AgentHomeAction.RetryConversationLoad -> agentState.retryConversationLoad()
-                                        is AgentHomeAction.ModelSelected -> agentState.selectModel(action.modelId)
-                                        is AgentHomeAction.SubmitMessage -> { requestExecutionNotifications(); agentState.sendCurrentMessage(action.text) }
-                                        is AgentHomeAction.InterruptAndSubmitMessage -> { requestExecutionNotifications(); agentState.interruptAndSendCurrentMessage(action.text) }
-                                        is AgentHomeAction.SteerQueuedMessage -> { requestExecutionNotifications(); agentState.steerQueuedMessage(action.id) }
-                                        is AgentHomeAction.RecallQueuedMessage -> agentState.recallQueuedMessage(action.id, action.currentDraftText)
-                                        is AgentHomeAction.RemoveQueuedMessage -> agentState.removeQueuedMessage(action.id)
-                                        AgentHomeAction.StopRun -> agentState.stopCurrentRun()
-                                        is AgentHomeAction.ImageAttached -> agentState.attachImage(action.uri)
-                                        is AgentHomeAction.RemoveImage -> agentState.removePendingImage(action.id)
-                                        is AgentHomeAction.FilesAttached -> agentState.attachFiles(action.uris)
-                                        is AgentHomeAction.FolderAttached -> agentState.attachFolder(action.uri)
-                                        is AgentHomeAction.FilePathAttached -> agentState.attachFilePath(action.path)
-                                        is AgentHomeAction.RemoveFileReference ->
-                                            agentState.removePendingFileReference(action.id)
-                                        is AgentHomeAction.EditMessage -> agentState.beginMessageEdit(action.id)
-                                        AgentHomeAction.CancelMessageEdit -> agentState.cancelMessageEdit()
-                                        is AgentHomeAction.DeleteMessage -> {
-                                            agentState.messageRevisionImpact(action.id)?.let { impact ->
-                                                messageDeleteTarget = MessageMutationTarget(action.id, impact.laterTurnCount)
+                            val binding = remember(draftOwner, draftReader) { IncomingDraftBinding(draftReader, draftOwner) }
+                            val dropTarget = incomingDraftDropTarget(atHome && !conversationPaneOpen && canAcceptShare && draftSource != null) { request, release ->
+                                draftReader.source?.takeIf { it.conversationId == agentState.conversationPaneState.selectedConversationId }
+                                    ?.let { agentState.acceptSharedContent(request, it.append, onFinished = release) } == true
+                            }
+                            CompositionLocalProvider(LocalIncomingDraftBinding provides binding) {
+                                AgentHomeScreen(
+                                    state = agentState.homeState,
+                                    modifier = dropTarget,
+                                    modelPickerState = agentState.modelPickerState,
+                                    isBranching = agentState.isBranchingCurrentConversation,
+                                    conversationKey = agentState.conversationPaneState.selectedConversationId,
+                                    topInset = shellPadding.calculateTopPadding(),
+                                    onAction = { action ->
+                                        when (action) {
+                                            is AgentHomeAction.ReasoningEffortChanged ->
+                                                agentState.updateReasoningEffort(action.effort)
+                                            AgentHomeAction.CompactContext -> agentState.compactCurrentContext()
+                                            AgentHomeAction.LoadEarlierMessages -> agentState.loadEarlierMessages()
+                                            is AgentHomeAction.HistoryViewportChanged -> agentState.updateHistoryViewport(action.atLatest)
+                                            AgentHomeAction.RetryConversationLoad -> agentState.retryConversationLoad()
+                                            is AgentHomeAction.ModelSelected -> agentState.selectModel(action.modelId)
+                                            is AgentHomeAction.SubmitMessage -> { requestExecutionNotifications(); agentState.sendCurrentMessage(action.text) }
+                                            is AgentHomeAction.InterruptAndSubmitMessage -> { requestExecutionNotifications(); agentState.interruptAndSendCurrentMessage(action.text) }
+                                            is AgentHomeAction.SteerQueuedMessage -> { requestExecutionNotifications(); agentState.steerQueuedMessage(action.id) }
+                                            is AgentHomeAction.RecallQueuedMessage -> agentState.recallQueuedMessage(action.id, action.currentDraftText)
+                                            is AgentHomeAction.RemoveQueuedMessage -> agentState.removeQueuedMessage(action.id)
+                                            AgentHomeAction.StopRun -> agentState.stopCurrentRun()
+                                            is AgentHomeAction.ImageAttached -> agentState.attachImage(action.uri)
+                                            is AgentHomeAction.RemoveImage -> agentState.removePendingImage(action.id)
+                                            is AgentHomeAction.FilesAttached -> agentState.attachFiles(action.uris)
+                                            is AgentHomeAction.FolderAttached -> agentState.attachFolder(action.uri)
+                                            is AgentHomeAction.FilePathAttached -> agentState.attachFilePath(action.path)
+                                            is AgentHomeAction.RemoveFileReference ->
+                                                agentState.removePendingFileReference(action.id)
+                                            is AgentHomeAction.EditMessage -> agentState.beginMessageEdit(action.id)
+                                            AgentHomeAction.CancelMessageEdit -> agentState.cancelMessageEdit()
+                                            is AgentHomeAction.DeleteMessage -> {
+                                                agentState.messageRevisionImpact(action.id)?.let { impact ->
+                                                    messageDeleteTarget = MessageMutationTarget(action.id, impact.laterTurnCount)
+                                                }
                                             }
-                                        }
-                                        is AgentHomeAction.RegenerateMessage -> {
-                                            val impact = agentState.messageRevisionImpact(action.id)
-                                            if (agentState.homeState.roleplay != null || impact?.laterTurnCount == 0) {
-                                                agentState.regenerateMessage(action.id)
-                                            } else if (impact != null) {
-                                                messageRegenerateTarget = MessageMutationTarget(action.id, impact.laterTurnCount)
+                                            is AgentHomeAction.RegenerateMessage -> {
+                                                val impact = agentState.messageRevisionImpact(action.id)
+                                                if (agentState.homeState.roleplay != null || impact?.laterTurnCount == 0) {
+                                                    agentState.regenerateMessage(action.id)
+                                                } else if (impact != null) {
+                                                    messageRegenerateTarget = MessageMutationTarget(action.id, impact.laterTurnCount)
+                                                }
                                             }
+                                            is AgentHomeAction.BranchConversation ->
+                                                agentState.branchConversation(action.conversationId, action.messageId)
+                                            is AgentHomeAction.SelectReplyCandidate -> agentState.selectReplyCandidate(action.id, action.index)
+                                            AgentHomeAction.OpenTools -> pushRoute(AppRoute.Tools)
+                                            AgentHomeAction.OpenSkills -> pushRoute(AppRoute.Skills)
+                                            AgentHomeAction.OpenPermissions -> pushRoute(AppRoute.Permissions)
+                                            AgentHomeAction.OpenSystemEnhance -> pushRoute(AppRoute.SystemEnhance)
+                                            AgentHomeAction.OpenSettings -> pushRoute(AppRoute.Settings)
+                                            AgentHomeAction.OpenBrowser -> openConversationBrowser()
+                                            AgentHomeAction.ExpandRunTrace -> Unit
                                         }
-                                        is AgentHomeAction.BranchConversation ->
-                                            agentState.branchConversation(action.conversationId, action.messageId)
-                                        is AgentHomeAction.SelectReplyCandidate -> agentState.selectReplyCandidate(action.id, action.index)
-                                        AgentHomeAction.OpenTools -> pushRoute(AppRoute.Tools)
-                                        AgentHomeAction.OpenSkills -> pushRoute(AppRoute.Skills)
-                                        AgentHomeAction.OpenPermissions -> pushRoute(AppRoute.Permissions)
-                                        AgentHomeAction.OpenSystemEnhance -> pushRoute(AppRoute.SystemEnhance)
-                                        AgentHomeAction.OpenSettings -> pushRoute(AppRoute.Settings)
-                                        AgentHomeAction.OpenBrowser -> openConversationBrowser()
-                                        AgentHomeAction.ExpandRunTrace -> Unit
-                                    }
-                                },
-                                isLoadingConversation = agentState.isLoadingConversation,
-                                conversationLoadFailed = agentState.conversationLoadFailed,
-                                historyLoadState = agentState.historyLoadState,
-                                isDrawerOpen = conversationPaneOpen,
-                            )
+                                    },
+                                    isLoadingConversation = agentState.isLoadingConversation,
+                                    conversationLoadFailed = agentState.conversationLoadFailed,
+                                    historyLoadState = agentState.historyLoadState,
+                                    isDrawerOpen = conversationPaneOpen,
+                                )
+                            }
                         }
                     }
                     entry<AppRoute.Browser> { route ->

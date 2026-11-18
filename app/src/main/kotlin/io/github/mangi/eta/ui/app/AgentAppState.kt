@@ -2176,45 +2176,33 @@ internal class AgentAppState(
         )
     }
 
-    fun acceptSharedContent(request: IncomingShareRequest) {
-        val canReuseCurrentDraft = homeState.isConversationLoaded &&
-            homeState.roleplay == null &&
-            selectedConversationId?.isReadOnlyExternalArchiveConversation() != true &&
-            homeState.messages.isEmpty() &&
-            !homeState.hasEarlierMessages &&
-            !homeState.isStreaming &&
-            !homeState.isCompacting &&
-            homeState.messageEdit == null &&
-            homeState.input.isBlank() &&
-            homeState.pendingImages.isEmpty() &&
-            homeState.pendingFileReferences.isEmpty() &&
-            homeState.queuedMessages.isEmpty()
-        if (!canReuseCurrentDraft) {
-            createConversation()
-        }
+    val canAcceptSharedContent: Boolean
+        get() = homeState.isConversationLoaded && homeState.messageEdit == null && !isBranchingCurrentConversation
+
+    fun acceptSharedContent(request: IncomingShareRequest, appendDraft: (String) -> String, onFinished: () -> Unit = {}): Boolean {
+        if (!canAcceptSharedContent) return false
         request.text?.takeIf(String::isNotBlank)?.let { sharedText ->
-            val mergedInput = when {
-                homeState.input.isBlank() -> sharedText
-                else -> homeState.input.trimEnd() + "\n" + sharedText
-            }
-            updateCurrentConversation(
-                homeState.copy(
-                    input = mergedInput,
-                    inputSyncVersion = homeState.inputSyncVersion + 1,
-                    focusInputOnSync = false,
-                ),
-                updateTimestamp = false,
-            )
+            updateCurrentConversation(homeState.copy(
+                input = appendDraft(sharedText),
+            ), updateTimestamp = false)
         }
-        if (request.uris.isEmpty()) return
+        if (request.uris.isEmpty()) {
+            onFinished()
+            return true
+        }
         val ownerVersion = fileAttachmentOwnerVersion
-        scope.launch(Dispatchers.IO) {
-            val gateway = AgentFileReferenceGateway(appContext, AndroidAgentLogger)
+        val import = scope.launch(Dispatchers.IO) {
             val resolvedImages = mutableListOf<PendingImageUi>()
             val resolvedFileReferences = mutableListOf<AgentFileReference>()
             val failures = mutableListOf<AgentFileReferenceGateway.Error>()
-            request.uris.forEach { rawUri ->
+            val uris = request.uris.distinct()
+            repeat((uris.size - 24).coerceAtLeast(0).coerceAtMost(24)) { failures += AgentFileReferenceGateway.Error.ImportTooLarge }
+            uris.take(24).forEach { rawUri ->
                 val uri = Uri.parse(rawUri)
+                if (!canReadSharedUri(uri)) {
+                    failures += AgentFileReferenceGateway.Error.AccessDenied
+                    return@forEach
+                }
                 if (isSharedImageCandidate(uri, request.mimeType, isSingleUri = request.uris.size == 1)) {
                     val image = AgentImageCodec.fromReference(
                         context = appContext,
@@ -2232,7 +2220,7 @@ internal class AgentAppState(
                         return@forEach
                     }
                 }
-                when (val resolution = resolveSharedFileUri(gateway, uri)) {
+                when (val resolution = AgentFileReferenceGateway.importDocumentUri(appContext, uri)) {
                     is AgentFileReferenceGateway.Resolution.Success -> resolvedFileReferences += resolution.reference
                     is AgentFileReferenceGateway.Resolution.Failure -> failures += resolution.error
                 }
@@ -2284,7 +2272,14 @@ internal class AgentAppState(
                 }
             }
         }
+        import.invokeOnCompletion { onFinished() }
+        return true
     }
+
+    private fun canReadSharedUri(uri: Uri): Boolean = uri.scheme == ContentResolver.SCHEME_CONTENT && runCatching {
+        appContext.checkUriPermission(uri, android.os.Process.myPid(), android.os.Process.myUid(),
+            Intent.FLAG_GRANT_READ_URI_PERMISSION) == android.content.pm.PackageManager.PERMISSION_GRANTED
+    }.getOrDefault(false)
 
     private fun isSharedImageCandidate(
         uri: Uri,
@@ -2303,20 +2298,6 @@ internal class AgentAppState(
         val extension = path.substringAfterLast('.', "").lowercase()
         if (extension in SHARED_IMAGE_EXTENSIONS) return true
         return isSingleUri && intentMimeType?.startsWith("image/", ignoreCase = true) == true
-    }
-
-    private fun resolveSharedFileUri(
-        gateway: AgentFileReferenceGateway,
-        uri: Uri,
-    ): AgentFileReferenceGateway.Resolution = when (uri.scheme) {
-        ContentResolver.SCHEME_FILE -> gateway.resolveAbsolutePath(
-            rawPath = uri.path.orEmpty(),
-            expectedKind = AgentFileReferenceKind.File,
-        )
-        else -> gateway.resolveDocumentUri(
-            uri = uri,
-            expectedKind = AgentFileReferenceKind.File,
-        )
     }
 
     private fun resolveAndAttachFileReferences(
