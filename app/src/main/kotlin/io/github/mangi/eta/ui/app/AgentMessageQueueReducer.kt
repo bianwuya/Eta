@@ -65,18 +65,20 @@ internal object AgentMessageQueueReducer {
     /**
      * 将队列中的指定消息提升为立即插话。
      *
-     * - 若当前仍在流式运行（非压缩）：将其移至队首并标记 [QueuedMessageUi.immediateInterrupt]，等待当前运行取消后自动发出。
+     * - 压缩期间不改变队列，也不返回待派发项。
+     * - 若当前仍在流式运行：将其移至队首并标记 [QueuedMessageUi.immediateInterrupt]，等待引导确认。
      * - 若当前已空闲：直接从队列弹出并返回，由调用方立即发起新运行。
      */
     fun promoteToInterrupt(
         state: AgentChatUiState,
         id: String,
     ): Pair<AgentChatUiState, QueuedMessageUi?> {
+        if (state.isCompacting) return state to null
         val target = state.queuedMessages.firstOrNull { it.id == id } ?: return state to null
         val rest = state.queuedMessages
             .filterNot { it.id == id }
             .map { it.copy(immediateInterrupt = false) }
-        return if (state.isStreaming && !state.isCompacting) {
+        return if (state.isStreaming) {
             val promoted = target.copy(immediateInterrupt = true)
             state.copy(queuedMessages = listOf(promoted) + rest) to promoted
         } else {

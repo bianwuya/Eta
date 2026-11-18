@@ -1308,9 +1308,9 @@ internal class AgentAppState(
     }
 
     fun steerQueuedMessage(id: String) {
-        if (!homeState.isConversationLoaded) return
+        if (!homeState.isConversationLoaded || homeState.isCompacting) return
         val target = homeState.queuedMessages.firstOrNull { it.id == id } ?: return
-        if (homeState.isStreaming && !homeState.isCompacting) {
+        if (homeState.isStreaming) {
             if (target.pendingImages.isNotEmpty()) {
                 val headState = AgentMessageQueueReducer.promoteToQueueHead(homeState, id)
                 if (headState !== homeState) {

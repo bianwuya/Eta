@@ -252,6 +252,7 @@ internal fun AgentChatInputBar(
             AgentChatQueueStrip(
                 queuedMessages = queuedMessages,
                 isStreaming = isStreaming,
+                steerEnabled = !isCompacting,
                 onSteer = onSteerQueuedMessage,
                 onRecall = { id -> onRecallQueuedMessage(id, textFieldState.text.toString()) },
                 onRemove = onRemoveQueuedMessage,

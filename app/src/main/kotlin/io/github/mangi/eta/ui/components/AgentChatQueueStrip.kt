@@ -67,6 +67,7 @@ private val WHITESPACE_REGEX = Regex("\\s+")
 internal fun AgentChatQueueStrip(
     queuedMessages: List<QueuedMessageUi>,
     isStreaming: Boolean,
+    steerEnabled: Boolean,
     onSteer: (String) -> Unit,
     onRecall: (String) -> Unit,
     onRemove: (String) -> Unit,
@@ -158,6 +159,7 @@ internal fun AgentChatQueueStrip(
                 QueuedMessageItemActions(
                     item = first,
                     isStreaming = isStreaming,
+                    steerEnabled = steerEnabled,
                     onSteer = { onSteer(first.id) },
                     onRemove = { onRemove(first.id) },
                 )
@@ -207,6 +209,7 @@ internal fun AgentChatQueueStrip(
                         QueuedMessageItemActions(
                             item = item,
                             isStreaming = isStreaming,
+                            steerEnabled = steerEnabled,
                             onSteer = { onSteer(item.id) },
                             onRemove = { onRemove(item.id) },
                         )
@@ -262,6 +265,7 @@ private fun QueuedMessagePreviewText(
 private fun QueuedMessageItemActions(
     item: QueuedMessageUi,
     isStreaming: Boolean,
+    steerEnabled: Boolean,
     onSteer: () -> Unit,
     onRemove: () -> Unit,
 ) {
@@ -269,6 +273,7 @@ private fun QueuedMessageItemActions(
         if (!item.immediateInterrupt) {
             IconButton(
                 onClick = onSteer,
+                enabled = steerEnabled,
                 minWidth = QueueActionSize,
                 minHeight = QueueActionSize,
             ) {
@@ -276,7 +281,8 @@ private fun QueuedMessageItemActions(
                     imageVector = if (isStreaming) Icons.Rounded.Bolt else Icons.Rounded.ArrowUpward,
                     contentDescription = stringResource(R.string.chat_queue_steer_now),
                     modifier = Modifier.size(15.dp),
-                    tint = MiuixTheme.colorScheme.primary,
+                    tint = if (steerEnabled) MiuixTheme.colorScheme.primary
+                    else MiuixTheme.colorScheme.onSurfaceVariantActions.copy(alpha = 0.38f),
                 )
             }
         }

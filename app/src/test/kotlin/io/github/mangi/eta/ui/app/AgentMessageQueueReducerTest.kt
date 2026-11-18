@@ -10,6 +10,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -178,6 +179,24 @@ class AgentMessageQueueReducerTest {
         assertEquals("", enqueuedHead.input)
         assertEquals(listOf("q-3", "q-2", "q-1"), enqueuedHead.queuedMessages.map { it.id })
         assertFalse(enqueuedHead.queuedMessages.first().immediateInterrupt)
+    }
+
+    @Test
+    fun compactionRefusesSteeringWithoutMutatingTextAttachmentsOrQueueOrder() {
+        val image = PendingImageUi("img-1", "file:///1.jpg", "data:image/jpeg;base64,AA==", "image/jpeg")
+        val file = PendingFileReferenceUi("file-1", AgentFileReference("Notes", "/workspace/notes.txt", AgentFileReferenceKind.File))
+        val queued = listOf(
+            QueuedMessageUi("q-1", "先前消息"),
+            QueuedMessageUi("q-2", "保留文字和附件", listOf(image), listOf(file)),
+        )
+        for (streaming in listOf(true, false)) {
+            val initial = baseState(isStreaming = streaming, input = "未发送草稿")
+                .copy(isCompacting = true, queuedMessages = queued)
+            val (after, toDispatch) = AgentMessageQueueReducer.promoteToInterrupt(initial, "q-2")
+            assertSame(initial, after)
+            assertEquals(queued, after.queuedMessages)
+            assertNull(toDispatch)
+        }
     }
 
     private fun baseState(
