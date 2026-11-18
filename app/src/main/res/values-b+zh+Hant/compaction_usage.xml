@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="context_usage_before_compaction">上次壓縮前實測：%1$s tokens。取得新的實測值後會更新目前用量。</string>
+</resources>

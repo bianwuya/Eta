@@ -10,12 +10,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import io.github.mangi.eta.R
 import io.github.mangi.eta.ui.model.AgentContextUsageUi
 import io.github.mangi.eta.ui.model.formatContextUsage
+import java.text.NumberFormat
 import top.yukonga.miuix.kmp.basic.CircularProgressIndicator
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.ProgressIndicatorDefaults
@@ -46,14 +48,23 @@ internal fun AgentContextUsageButton(
         noLimitText = stringResource(R.string.context_no_model_limit),
         locale = locale,
     )
+    val beforeCompactionDetail = usage.beforeCompactionTokens?.takeIf { usage.contextTokens == null }?.let {
+        stringResource(
+            R.string.context_usage_before_compaction,
+            NumberFormat.getIntegerInstance(locale).format(it),
+        )
+    }
+    val hasContextWindow = (usage.contextWindow ?: 0) > 0
     val detail = when {
-        usage.contextWindow == null -> summary
+        beforeCompactionDetail != null && !hasContextWindow -> "$beforeCompactionDetail\n$summary"
+        beforeCompactionDetail != null -> beforeCompactionDetail
+        !hasContextWindow -> summary
         usage.contextTokens == null -> stringResource(R.string.context_usage_after_response)
         else -> stringResource(R.string.context_usage_previous_response, summary)
     }
     val usageDescription = stringResource(
         R.string.context_usage_description,
-        summary.replace('\n', ' '),
+        (beforeCompactionDetail ?: summary).replace('\n', ' '),
     )
     var showPopover by remember { mutableStateOf(false) }
 
@@ -62,20 +73,21 @@ internal fun AgentContextUsageButton(
             onClick = { showPopover = !showPopover },
             minWidth = 34.dp,
             minHeight = 34.dp,
+            modifier = Modifier.semantics { contentDescription = usageDescription },
         ) {
-            CircularProgressIndicator(
-                progress = progress ?: 0f,
-                colors = ProgressIndicatorDefaults.progressIndicatorColors(
-                    foregroundColor = progressColor,
-                    disabledForegroundColor = progressColor,
-                    backgroundColor = trackColor,
-                ),
-                strokeWidth = 1.8.dp,
-                size = 16.dp,
-                modifier = Modifier.semantics {
-                    contentDescription = usageDescription
-                },
-            )
+            // 空轨道不代表实测为 0%，也不要让无障碍服务读出一个占比。
+            Box(modifier = if (progress == null) Modifier.clearAndSetSemantics {} else Modifier) {
+                CircularProgressIndicator(
+                    progress = progress ?: 0f,
+                    colors = ProgressIndicatorDefaults.progressIndicatorColors(
+                        foregroundColor = progressColor,
+                        disabledForegroundColor = progressColor,
+                        backgroundColor = trackColor,
+                    ),
+                    strokeWidth = 1.8.dp,
+                    size = 16.dp,
+                )
+            }
         }
         if (showPopover) {
             ContextUsageStatsPopoverPopup(

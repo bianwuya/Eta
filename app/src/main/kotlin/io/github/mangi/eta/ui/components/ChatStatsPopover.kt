@@ -11,13 +11,18 @@ import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -31,6 +36,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.shadow.Shadow
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.SpanStyle
@@ -40,6 +46,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntRect
 import androidx.compose.ui.unit.IntSize
@@ -369,6 +376,13 @@ internal fun ChatStatsPopoverPopup(
 ) {
     val density = LocalDensity.current
     val positionProvider = remember(density) { StatsPopoverPositionProvider(density) }
+    // 从宿主窗口取可用高度，避开系统栏及 IME；Popup 自身的窗口大小是测量结果。
+    val windowHeight = LocalWindowInfo.current.containerSize.height
+    val safeDrawing = WindowInsets.safeDrawing
+    val visibleHeight = with(density) {
+        (windowHeight - safeDrawing.getTop(this) - safeDrawing.getBottom(this)).toDp()
+    }
+    val maxHeight = statsPopoverMaxHeight(visibleHeight)
     val isCoui = LocalUiStyle.current == AppearanceUiStyle.COUI
     val couiDark = CouiTheme.isDark
 
@@ -413,7 +427,10 @@ internal fun ChatStatsPopoverPopup(
         }
 
         Column(
-            modifier = cardModifier.padding(horizontal = 16.dp, vertical = 14.dp),
+            modifier = cardModifier
+                .heightIn(max = maxHeight)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp, vertical = 14.dp),
             content = content,
         )
     }
@@ -564,10 +581,15 @@ private fun StatsOutputRow(
     }
 }
 
+private val StatsPopoverWindowMargin = 12.dp
+
+internal fun statsPopoverMaxHeight(visibleHeight: Dp): Dp =
+    ((visibleHeight - StatsPopoverWindowMargin * 2f) * 0.75f).coerceIn(0.dp, 480.dp)
+
 private class StatsPopoverPositionProvider(
     density: Density,
 ) : PopupPositionProvider {
-    private val marginPx = with(density) { 12.dp.roundToPx() }
+    private val marginPx = with(density) { StatsPopoverWindowMargin.roundToPx() }
     private val verticalGapPx = with(density) { 8.dp.roundToPx() }
 
     override fun calculatePosition(

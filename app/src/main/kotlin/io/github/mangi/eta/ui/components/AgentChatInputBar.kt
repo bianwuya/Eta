@@ -514,7 +514,7 @@ internal fun AgentChatInputBar(
 
                         Spacer(modifier = Modifier.weight(1f))
 
-                        if (showContextUsage && contextUsage.contextTokens != null) {
+                        if (showContextUsage && contextUsage.hasMeasurement) {
                             AgentContextUsageButton(
                                 usage = contextUsage,
                                 onCompact = onCompactContext,

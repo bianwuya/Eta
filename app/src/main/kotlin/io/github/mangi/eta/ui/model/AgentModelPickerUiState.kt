@@ -91,7 +91,12 @@ internal data class AgentContextUsageUi(
     val contextTokens: Int?,
     val contextWindow: Int?,
     val sessionStats: SessionStatsSummaryUi = SessionStatsSummaryUi(),
+    /** 实测的压缩前用量，不代表压缩后的占用。 */
+    val beforeCompactionTokens: Int? = null,
 ) {
+    val hasMeasurement: Boolean
+        get() = contextTokens != null || beforeCompactionTokens != null
+
     val progress: Float?
         get() = contextUsageProgress(contextTokens, contextWindow)
 }
@@ -182,18 +187,30 @@ internal fun latestContextUsage(
     selectedModel: AgentModelOptionUi?,
 ): AgentContextUsageUi {
     val sessionStats = deriveSessionStatsSummary(messages)
+    val contextWindow = selectedModel?.contextWindow
+    var lookingForPreCompactionMeasurement = false
     for (message in messages.asReversed()) {
         when (message) {
-            is AgentMessageUi -> message.usage?.contextTokens?.let {
-                return AgentContextUsageUi(it, selectedModel?.contextWindow, sessionStats)
+            is AgentMessageUi -> {
+                val measured = message.usage?.contextTokens?.takeIf { it >= 0 } ?: continue
+                return if (lookingForPreCompactionMeasurement) {
+                    AgentContextUsageUi(null, contextWindow, sessionStats, beforeCompactionTokens = measured)
+                } else {
+                    AgentContextUsageUi(measured, contextWindow, sessionStats)
+                }
             }
             is SystemNoticeMessageUi -> if (message.code == SystemNoticeCode.ContextCompaction) {
-                return AgentContextUsageUi(null, selectedModel?.contextWindow, sessionStats)
+                if (lookingForPreCompactionMeasurement) break
+                message.tokensBefore?.takeIf { it >= 0 }?.let {
+                    return AgentContextUsageUi(null, contextWindow, sessionStats, beforeCompactionTokens = it)
+                }
+                // 只回退到两次压缩之间的模型实测，不读通知上的旧版 tokensAfter 或压缩请求用量。
+                lookingForPreCompactionMeasurement = true
             }
             else -> Unit
         }
     }
-    return AgentContextUsageUi(null, selectedModel?.contextWindow, sessionStats)
+    return AgentContextUsageUi(null, contextWindow, sessionStats)
 }
 
 internal fun deriveSessionStatsSummary(messages: List<AgentChatMessageUi>): SessionStatsSummaryUi {

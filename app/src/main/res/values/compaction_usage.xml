@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="context_usage_before_compaction">Last measured before compaction: %1$s tokens. Current usage will update when the model reports a new measurement.</string>
+</resources>
