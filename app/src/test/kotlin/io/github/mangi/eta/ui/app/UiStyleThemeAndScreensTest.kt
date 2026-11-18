@@ -32,6 +32,7 @@ import io.github.mangi.eta.agent.overlay.AgentOverlayStatus
 import io.github.mangi.eta.agent.overlay.AgentResultCard
 import io.github.mangi.eta.data.model.AppearanceSettings
 import io.github.mangi.eta.data.model.AppearanceUiStyle
+import io.github.mangi.eta.testing.ComposeFrameFixture
 import io.github.mangi.eta.ui.AppearanceSettingsScreen
 import io.github.mangi.eta.ui.SettingsScreen
 import io.github.mangi.eta.ui.model.AgentMemoryUiState
@@ -91,7 +92,7 @@ class UiStyleThemeAndScreensTest {
     fun switchingUiStylePreservesStateAndSynchronizesPageAndDialogScaleWith100PercentBaseline() {
         val controller = Robolectric.buildActivity(ComponentActivity::class.java).setup().visible()
         val activity = controller.get()
-        val looper = shadowOf(Looper.getMainLooper())
+        val frames = ComposeFrameFixture(activity, widthPx = 1080, heightPx = 2400)
         val baseDensity = activity.resources.configuration.densityDpi.toFloat() / DisplayMetrics.DENSITY_DEFAULT
 
         var appearance by mutableStateOf(
@@ -107,7 +108,7 @@ class UiStyleThemeAndScreensTest {
         var latestDraft = ""
 
         try {
-            activity.setContent {
+            frames.setContent {
                 AgentAppTheme(
                     appearance = appearance,
                     applyInterfaceScale = true,
@@ -128,9 +129,7 @@ class UiStyleThemeAndScreensTest {
                     }
                 }
             }
-            looper.idle()
-            measureAndLayoutActivity(activity)
-            looper.idle()
+            repeat(8) { frames.advanceFrame() }
 
             assertEquals(AppearanceUiStyle.COUI, observedStyle)
             assertEquals(1, mountCount)
@@ -143,9 +142,7 @@ class UiStyleThemeAndScreensTest {
                 uiStyle = AppearanceUiStyle.MIUIX,
                 interfaceScale = 0.9f,
             )
-            looper.idle()
-            measureAndLayoutActivity(activity)
-            looper.idle()
+            repeat(8) { frames.advanceFrame() }
 
             assertEquals(AppearanceUiStyle.MIUIX, observedStyle)
             assertEquals(1, mountCount)
@@ -155,14 +152,13 @@ class UiStyleThemeAndScreensTest {
 
             // 再切回 COUI：状态依然保持不变
             appearance = appearance.copy(uiStyle = AppearanceUiStyle.COUI)
-            looper.idle()
-            measureAndLayoutActivity(activity)
-            looper.idle()
+            repeat(8) { frames.advanceFrame() }
 
             assertEquals(AppearanceUiStyle.COUI, observedStyle)
             assertEquals(1, mountCount)
             assertEquals("edited-draft-1", latestDraft)
         } finally {
+            frames.close()
             controller.pause().stop().destroy()
         }
     }
