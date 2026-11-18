@@ -161,6 +161,18 @@ fun AgentAppRoot(
     var navigationResetKey by rememberSaveable { mutableIntStateOf(0) }
     val appViewModel = viewModel<AgentAppViewModel>()
     val agentState = appViewModel.state
+    val kimiTarget by appViewModel.kimiWebTarget.collectAsState()
+    val kimiState by appViewModel.kimiWeb.state.collectAsState()
+    val kimiFailure: (String) -> Unit = { code ->
+        Toast.makeText(context, kimiWebErrorLabel(code), Toast.LENGTH_SHORT).show()
+    }
+    val kimiWeb = KimiWebControls(
+        target = kimiTarget,
+        state = kimiState.takeIf { it.target == kimiTarget } ?: KimiWebUiState(kimiTarget),
+        refresh = { appViewModel.kimiWeb.refresh(kimiTarget) },
+        launch = { appViewModel.kimiWeb.launch(kimiTarget, kimiFailure) },
+        stop = { appViewModel.kimiWeb.stop(kimiTarget, kimiFailure) },
+    )
     val keepScreenOn by AgentRuntimeService.keepScreenOn.collectAsState()
     val view = LocalView.current
     DisposableEffect(view, keepScreenOn) {
@@ -335,6 +347,7 @@ fun AgentAppRoot(
             onNewConversation = { createConversation() },
             onOpenTerminal = { pushRoute(AppRoute.Terminal) },
             onOpenBrowser = { openConversationBrowser() },
+            kimiWeb = kimiWeb,
             onSelectConversation = { conversationId -> selectConversation(conversationId) },
             onConversationTogglePin = { conversation ->
                 agentState.toggleConversationPin(conversation.id)
@@ -759,6 +772,7 @@ fun AgentAppRoot(
                     entry<AppRoute.LinuxEnvironment>(swipeDismiss = activeSwipeDismiss) {
                         LinuxEnvironmentScreen(
                             context = context,
+                            kimiWeb = kimiWeb,
                             onNavigate = { route -> pushRoute(route) },
                             onBack = ::popRoute,
                         )

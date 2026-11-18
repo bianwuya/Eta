@@ -3,7 +3,10 @@ package io.github.mangi.eta.ui.screens.terminal
 import android.content.Context
 import android.text.format.Formatter
 import androidx.annotation.StringRes
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -45,7 +48,13 @@ import com.itos.coui.text.CouiTextKind
 import com.itos.coui.text.Text as CouiText
 import io.github.mangi.eta.data.model.AppearanceUiStyle
 import io.github.mangi.eta.data.repository.LinuxEnvironmentSettingsRepository
+import io.github.mangi.eta.ui.app.KimiWebControls
+import io.github.mangi.eta.ui.app.KimiWebTarget
+import io.github.mangi.eta.ui.app.KimiWebUiState
 import io.github.mangi.eta.ui.app.LocalUiStyle
+import io.github.mangi.eta.ui.app.RefreshKimiWebWhileVisible
+import io.github.mangi.eta.ui.app.actionLabel
+import io.github.mangi.eta.ui.app.kimiWebErrorLabel
 import io.github.mangi.eta.ui.app.launchForegroundExecution
 import io.github.mangi.eta.ui.app.rememberDeviceCapabilities
 import io.github.mangi.eta.ui.app.rememberExecutionNotificationRequest
@@ -111,6 +120,7 @@ private val packageProfileUis = listOf(
 @Composable
 internal fun LinuxEnvironmentScreen(
     context: Context,
+    kimiWeb: KimiWebControls,
     onNavigate: (AppRoute) -> Unit,
     onBack: () -> Unit,
 ) {
@@ -131,6 +141,10 @@ internal fun LinuxEnvironmentScreen(
         initial = LinuxEnvironmentSettingsRepository.backend(appContext, selectedDistribution),
     )
     val requiresRoot = backend == LinuxExecutionBackend.CHROOT && !capabilities.root.isGranted
+    val kimiTarget = KimiWebTarget(selectedDistribution, backend)
+    val isKimiTargetCurrent = kimiWeb.target == kimiTarget
+    val kimiState = kimiWeb.state.takeIf { isKimiTargetCurrent } ?: KimiWebUiState(kimiTarget)
+    RefreshKimiWebWhileVisible(kimiWeb, isKimiTargetCurrent)
     val installer = remember(appContext, backend) { AlpineEnvironmentInstaller(appContext) }
     val debianInstaller = remember(appContext, backend) { DebianEnvironmentInstaller(appContext) }
     val apkAnalysisInstaller = remember(appContext, selectedDistribution, backend) {
@@ -371,6 +385,10 @@ internal fun LinuxEnvironmentScreen(
                     }
                 }
             }
+        }
+
+        item(key = "kimi-web") {
+            KimiWebSection(kimiWeb, kimiState, uiStyle, canAct = isKimiTargetCurrent && busyTarget == null)
         }
 
         if (selectedToolsReady) {
@@ -701,3 +719,31 @@ private fun ApkAnalysisInstallStage.displayName(context: Context): String = cont
         ApkAnalysisInstallStage.COMPLETE -> R.string.linux_apk_stage_complete
     },
 )
+
+@Composable
+private fun KimiWebSection(controls: KimiWebControls, state: KimiWebUiState, uiStyle: AppearanceUiStyle, canAct: Boolean) {
+    val coui = uiStyle == AppearanceUiStyle.COUI
+    val title = stringResource(R.string.capability_kimi_title)
+    val summary = stringResource(state.errorCode?.let(::kimiWebErrorLabel) ?: R.string.capability_kimi_existing_command)
+    val action = stringResource(state.actionLabel)
+    val buttonModifier = Modifier.fillMaxWidth()
+    val content: @Composable () -> Unit = {
+        if (coui) CouiPreference(title = title, summary = summary, showChevron = false)
+        else BasicComponent(title = title, summary = summary)
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            if (coui) CouiButton(text = action, onClick = controls.launch, modifier = buttonModifier, enabled = canAct && state.canLaunch)
+            else TextButton(text = action, onClick = controls.launch, modifier = buttonModifier, enabled = canAct && state.canLaunch)
+            if (state.canStop) {
+                val stop = stringResource(R.string.capability_kimi_stop)
+                if (coui) CouiButton(text = stop, onClick = controls.stop, modifier = buttonModifier, enabled = canAct)
+                else TextButton(text = stop, onClick = controls.stop, modifier = buttonModifier, enabled = canAct)
+            }
+        }
+    }
+    val modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp).padding(bottom = 12.dp)
+    if (coui) Group(modifier = modifier) { content() }
+    else Card(modifier = modifier) { content() }
+}

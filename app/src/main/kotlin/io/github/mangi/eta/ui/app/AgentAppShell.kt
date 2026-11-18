@@ -135,6 +135,7 @@ internal fun AgentAppShell(
     onNewConversation: () -> Unit,
     onOpenTerminal: () -> Unit,
     onOpenBrowser: () -> Unit,
+    kimiWeb: KimiWebControls,
     onSelectConversation: (String) -> Unit,
     onConversationTogglePin: (ConversationSummaryUi) -> Unit,
     onConversationRename: (ConversationSummaryUi) -> Unit,
@@ -218,6 +219,7 @@ internal fun AgentAppShell(
                                                 onNewConversation = onNewConversation,
                                                 onOpenTerminal = onOpenTerminal,
                                                 onOpenBrowser = onOpenBrowser,
+                                                kimiWeb = kimiWeb,
                                             )
                                         }
                                     }
@@ -257,6 +259,7 @@ internal fun AgentAppShell(
                                 onNewConversation = onNewConversation,
                                 onOpenTerminal = onOpenTerminal,
                                 onOpenBrowser = onOpenBrowser,
+                                kimiWeb = kimiWeb,
                                 homeTitle = homeTitle,
                                 homeCharacter = homeCharacter,
                                 homeModelPickerState = homeModelPickerState,
@@ -324,6 +327,7 @@ private fun CouiTopBarOverflowMenu(
     onNewConversation: () -> Unit,
     onOpenTerminal: () -> Unit,
     onOpenBrowser: () -> Unit,
+    kimiWeb: KimiWebControls,
 ) {
     var showMenu by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
@@ -335,6 +339,9 @@ private fun CouiTopBarOverflowMenu(
     val newConversationText = stringResource(R.string.action_new_conversation)
     val openTerminalText = stringResource(R.string.action_open_terminal)
     val openBrowserText = stringResource(R.string.action_open_browser)
+    val kimiWebText = stringResource(kimiWeb.state.actionLabel)
+    val stopKimiWebText = stringResource(R.string.capability_kimi_stop)
+    RefreshKimiWebWhileVisible(kimiWeb, showMenu)
     val autoReadText = stringResource(
         if (autoReadEnabled) R.string.speech_disable_auto_read else R.string.speech_enable_auto_read,
     )
@@ -342,6 +349,10 @@ private fun CouiTopBarOverflowMenu(
         newConversationText,
         openTerminalText,
         openBrowserText,
+        kimiWebText,
+        stopKimiWebText,
+        kimiWeb.state.canLaunch,
+        kimiWeb.state.canStop,
         autoReadText,
         hasSpeechPlayback,
         autoReadEnabled,
@@ -350,6 +361,8 @@ private fun CouiTopBarOverflowMenu(
             add(CouiMenuItem(value = 0, text = newConversationText, icon = Icons.Rounded.MapsUgc))
             add(CouiMenuItem(value = 1, text = openTerminalText, icon = Icons.Rounded.Terminal))
             add(CouiMenuItem(value = 2, text = openBrowserText, icon = Icons.Rounded.Language))
+            add(CouiMenuItem(value = 4, text = kimiWebText, icon = Icons.Rounded.Language, enabled = kimiWeb.state.canLaunch))
+            if (kimiWeb.state.canStop) add(CouiMenuItem(value = 5, text = stopKimiWebText))
             if (hasSpeechPlayback) {
                 add(
                     CouiMenuItem(
@@ -383,6 +396,8 @@ private fun CouiTopBarOverflowMenu(
                     0 -> onNewConversation()
                     1 -> onOpenTerminal()
                     2 -> onOpenBrowser()
+                    4 -> kimiWeb.launch()
+                    5 -> kimiWeb.stop()
                     3 -> speechSettings?.let { current ->
                         scope.launch {
                             SpeechSettingsRepository.save(current.copy(chatAutoSpeak = !current.chatAutoSpeak))
@@ -405,6 +420,7 @@ private fun AgentTopBar(
     onNewConversation: () -> Unit,
     onOpenTerminal: () -> Unit,
     onOpenBrowser: () -> Unit,
+    kimiWeb: KimiWebControls,
     homeTitle: String?,
     homeCharacter: RoleplayChatUi?,
     homeModelPickerState: AgentModelPickerUiState?,
@@ -420,6 +436,7 @@ private fun AgentTopBar(
             onNewConversation = onNewConversation,
             onOpenTerminal = onOpenTerminal,
             onOpenBrowser = onOpenBrowser,
+            kimiWeb = kimiWeb,
         ) {
             AgentTopBarChatHeader(
                 conversationTitle = homeTitle,
@@ -450,6 +467,7 @@ private fun HomeMiuixTopBar(
     onNewConversation: () -> Unit,
     onOpenTerminal: () -> Unit,
     onOpenBrowser: () -> Unit,
+    kimiWeb: KimiWebControls,
     centerContent: @Composable () -> Unit,
 ) {
     val surfaceColor = MiuixTheme.colorScheme.surface
@@ -525,6 +543,7 @@ private fun HomeMiuixTopBar(
                     onNewConversation = onNewConversation,
                     onOpenTerminal = onOpenTerminal,
                     onOpenBrowser = onOpenBrowser,
+                    kimiWeb = kimiWeb,
                 )
             }
         },
@@ -551,6 +570,7 @@ private fun TopBarOverflowMenu(
     onNewConversation: () -> Unit,
     onOpenTerminal: () -> Unit,
     onOpenBrowser: () -> Unit,
+    kimiWeb: KimiWebControls,
 ) {
     var showMenu by remember { mutableStateOf(false) }
     val moreAnchor = rememberGlassPopupAnchor()
@@ -561,6 +581,9 @@ private fun TopBarOverflowMenu(
     val newConversationText = stringResource(R.string.action_new_conversation)
     val openTerminalText = stringResource(R.string.action_open_terminal)
     val openBrowserText = stringResource(R.string.action_open_browser)
+    val kimiWebText = stringResource(kimiWeb.state.actionLabel)
+    val stopKimiWebText = stringResource(R.string.capability_kimi_stop)
+    RefreshKimiWebWhileVisible(kimiWeb, showMenu)
     val autoReadText = stringResource(
         if (autoReadEnabled) R.string.speech_disable_auto_read else R.string.speech_enable_auto_read,
     )
@@ -624,6 +647,19 @@ private fun TopBarOverflowMenu(
                     onOpenBrowser()
                 },
             )
+            GlassPopupItem(
+                text = kimiWebText,
+                icon = MiuixIcons.Glass.GlobalVpn,
+                enabled = kimiWeb.state.canLaunch,
+                onClick = { showMenu = false; kimiWeb.launch() },
+            )
+            if (kimiWeb.state.canStop) {
+                GlassPopupItem(
+                    text = stopKimiWebText,
+                    icon = MiuixIcons.Glass.Computer,
+                    onClick = { showMenu = false; kimiWeb.stop() },
+                )
+            }
             if (hasSpeechPlayback) {
                 GlassPopupItem(
                     text = autoReadText,

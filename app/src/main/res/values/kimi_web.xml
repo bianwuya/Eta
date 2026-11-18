@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="capability_kimi_title">Kimi Web</string>
+    <string name="capability_kimi_existing_command">Uses the Kimi Web command already available in the selected Linux environment.</string>
+    <string name="action_launch_kimi_web">Launch Kimi Web</string>
+    <string name="capability_kimi_checking">Checking Kimi Web…</string>
+    <string name="capability_kimi_preparing">Preparing Kimi Web…</string>
+    <string name="capability_kimi_open">Open Kimi Web · Running</string>
+    <string name="capability_kimi_retry">Retry Kimi Web</string>
+    <string name="capability_kimi_stop">Stop Kimi Web</string>
+    <string name="capability_kimi_stopping">Stopping Kimi Web…</string>
+    <string name="capability_kimi_stop_failed">Kimi Web did not stop. Try again or check Background Tasks.</string>
+    <string name="capability_kimi_root_required">The selected Linux environment requires Root authorization.</string>
+    <string name="capability_kimi_exited">Kimi Web exited. Check the terminal or Background Tasks and retry.</string>
+    <string name="capability_kimi_unconfirmed">Kimi Web process could not be confirmed. Check Background Tasks and retry.</string>
+    <string name="capability_kimi_environment">The selected Linux environment is not ready. Check its status in Linux Settings.</string>
+    <string name="capability_kimi_command_missing">No kimi command was found in the selected Linux environment.</string>
+    <string name="capability_kimi_logs_unavailable">Kimi Web startup logs are unavailable. Check Background Tasks and retry.</string>
+    <string name="linux_kimi_web_failed_start">Kimi Web failed to start.</string>
+    <string name="linux_kimi_web_failed_url">No reachable local Kimi Web address was found.</string>
+    <string name="linux_kimi_web_failed_browser">No browser is available to open Kimi Web.</string>
+</resources>

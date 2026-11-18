@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="capability_kimi_title">Kimi Web</string>
+    <string name="capability_kimi_existing_command">使用所選 Linux 環境中已有的 Kimi Web 命令。</string>
+    <string name="action_launch_kimi_web">啟動 Kimi Web</string>
+    <string name="capability_kimi_checking">檢查 Kimi Web…</string>
+    <string name="capability_kimi_preparing">Kimi Web 準備中…</string>
+    <string name="capability_kimi_open">開啟 Kimi Web · 執行中</string>
+    <string name="capability_kimi_retry">重試 Kimi Web</string>
+    <string name="capability_kimi_stop">停止 Kimi Web</string>
+    <string name="capability_kimi_stopping">正在停止 Kimi Web…</string>
+    <string name="capability_kimi_stop_failed">Kimi Web 未停止，請重試或檢查背景工作。</string>
+    <string name="capability_kimi_root_required">所選 Linux 環境需要 Root 授權。</string>
+    <string name="capability_kimi_exited">Kimi Web 已退出，請檢查終端機或背景工作後重試。</string>
+    <string name="capability_kimi_unconfirmed">無法確認 Kimi Web 程序，請檢查背景工作後重試。</string>
+    <string name="capability_kimi_environment">所選 Linux 環境未就緒，請檢查 Linux 設定。</string>
+    <string name="capability_kimi_command_missing">所選 Linux 環境中找不到 kimi 命令。</string>
+    <string name="capability_kimi_logs_unavailable">無法讀取 Kimi Web 啟動記錄，請檢查背景工作後重試。</string>
+    <string name="linux_kimi_web_failed_start">Kimi Web 啟動失敗。</string>
+    <string name="linux_kimi_web_failed_url">找不到可存取的本機 Kimi Web 位址。</string>
+    <string name="linux_kimi_web_failed_browser">沒有可開啟 Kimi Web 的瀏覽器。</string>
+</resources>
