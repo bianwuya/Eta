@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="subagent_priority_title">子代理模型優先順序</string>
+    <string name="subagent_priority_hint">長按拖曳控點調整順序，僅在順序變更時儲存。新啟動的子代理使用同一連線中排名最高的可用模型。</string>
+    <string name="subagent_priority_not_enough_models">同一連線中至少需要兩個已啟用且支援工具的模型才能排序。</string>
+    <string name="subagent_priority_save_failed">無法儲存順序，請重新調整。</string>
+    <string name="subagent_priority_row">%1$d. %2$s</string>
+    <string name="subagent_priority_handle">調整 %1$s 的優先順序</string>
+    <string name="subagent_priority_position">優先順序第 %1$d 位</string>
+    <string name="subagent_priority_move_up">上移</string>
+    <string name="subagent_priority_move_down">下移</string>
+</resources>

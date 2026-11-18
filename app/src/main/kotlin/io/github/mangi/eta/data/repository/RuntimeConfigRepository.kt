@@ -20,11 +20,14 @@ import io.github.mangi.eta.data.model.SubagentSettings
 import io.github.mangi.eta.data.model.enabledModel
 import io.github.mangi.eta.data.model.runtimeProviderType
 import io.github.mangi.eta.data.model.selectedOrFirstModel
+import io.github.mangi.eta.data.model.subagentPriorityModels
 import io.github.mangi.eta.data.provider.GeminiModelCapabilities
 import io.github.mangi.eta.data.provider.ProviderSourceRegistry
 import io.github.mangi.eta.data.provider.ProviderConnectionProfile
 import io.github.mangi.eta.data.provider.ReasoningCapabilityResolver
 import io.github.libxposed.service.XposedService
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
@@ -40,8 +43,19 @@ internal object RuntimeConfigRepository {
 
     fun subagentSettingsFlow() = SettingsDataStore.subagentSettingsFlow()
 
-    suspend fun setSubagentSettings(settings: SubagentSettings) {
-        SettingsDataStore.setSubagentSettings(settings)
+    // Serialize the subagent page's field edits without replacing a stale UI snapshot.
+    private val subagentSettingsMutex = Mutex()
+
+    suspend fun updateSubagentSettings(transform: (SubagentSettings) -> SubagentSettings) {
+        subagentSettingsMutex.withLock {
+            val current = SettingsDataStore.subagentSettings()
+            val updated = transform(current)
+            if (updated != current) SettingsDataStore.setSubagentSettings(updated)
+        }
+    }
+
+    suspend fun setSubagentModelPriority(ids: List<String>) {
+        updateSubagentSettings { it.withModelPriority(ids) }
     }
 
     fun conversationTitleSettingsFlow() = SettingsDataStore.conversationTitleSettingsFlow()
@@ -163,7 +177,7 @@ internal object RuntimeConfigRepository {
     /**
      * 解析 Subagent 实际运行所用的模型配置。
      *
-     * 指定了独立子模型且该模型仍处于启用状态时优先使用子模型，否则平滑回退到主模型；
+     * 已保存的优先级只在同连接内生效；无可用排序项时仍使用原选定子模型或主模型。
      * 工具开关继承父请求，并强制关闭 `subagentTools` 防止递归派发。
      */
     suspend fun subagentRuntimeConfig(
@@ -177,9 +191,17 @@ internal object RuntimeConfigRepository {
         } else {
             null
         }
-        val base = resolvedSecondary?.let { (provider, model) ->
+        val fallback = resolvedSecondary?.let { (provider, model) ->
             buildRuntimeConfig(provider, model)
         } ?: primaryConfig
+        val preferred = if (settings.modelPriority.isNotEmpty()) {
+            val provider = resolvedSecondary?.provider ?: fallback.providerId.takeIf { it.isNotBlank() }
+                ?.let { ProviderRepository.providerById(it) }
+            resolveSubagentPriorityConfig(fallback, provider, settings.modelPriority)
+        } else {
+            null
+        }
+        val base = preferred ?: fallback
         val explicitEffort = settings.resolvedReasoningEffort
         val effort = when {
             explicitEffort != null -> {
@@ -191,6 +213,11 @@ internal object RuntimeConfigRepository {
                 }
             }
             resolvedSecondary != null -> base.effectiveReasoningEffort
+            preferred != null -> {
+                val inherited = primaryConfig.effectiveReasoningEffort
+                base.reasoningCapabilities?.normalize(inherited)
+                    ?: if (inherited == ReasoningEffort.OFF) inherited else base.effectiveReasoningEffort
+            }
             else -> primaryConfig.effectiveReasoningEffort
         }
         return base.copy(
@@ -205,6 +232,23 @@ internal object RuntimeConfigRepository {
             autoCompactionEnabled = primaryConfig.autoCompactionEnabled,
             supportsSearchSuggestions = false,
         )
+    }
+
+    internal fun resolveSubagentPriorityConfig(
+        fallback: AgentModelClient.ModelConfig,
+        provider: ProviderSetting?,
+        priorityIds: List<String>,
+    ): AgentModelClient.ModelConfig? {
+        if (provider == null || provider.id != fallback.providerId || provider.authMode != fallback.authMode) {
+            return null
+        }
+        val eligibleById = provider.subagentPriorityModels().associateBy { it.id }
+        val model = priorityIds.firstNotNullOfOrNull(eligibleById::get) ?: return null
+        return buildRuntimeConfig(provider, model).takeIf {
+            it.baseUrl == fallback.baseUrl && it.apiKey == fallback.apiKey &&
+                it.providerType == fallback.providerType && it.openAiEndpointMode == fallback.openAiEndpointMode &&
+                it.anthropicVersion == fallback.anthropicVersion
+        }
     }
 
     suspend fun selectedProvider(): ProviderSetting? {

@@ -48,6 +48,7 @@ import com.itos.coui.dialog.CouiDialogPlacement
 import com.itos.coui.dialog.Dialog
 import com.itos.coui.icons.CouiIcons
 import com.itos.coui.layout.Divider
+import com.itos.coui.layout.Footer
 import com.itos.coui.layout.Group
 import com.itos.coui.menu.rememberCouiWindowBackdrop
 import com.itos.coui.text.CouiTextKind
@@ -62,8 +63,10 @@ import io.github.mangi.eta.data.model.AppearanceUiStyle
 import io.github.mangi.eta.data.model.ReasoningEffort
 import io.github.mangi.eta.data.model.SubagentSettings
 import io.github.mangi.eta.data.model.enabledModel
+import io.github.mangi.eta.data.model.subagentPriorityModels
 import io.github.mangi.eta.data.repository.ProviderRepository
 import io.github.mangi.eta.data.repository.RuntimeConfigRepository
+import io.github.mangi.eta.local.subagent.SubagentPriorityRows
 import io.github.mangi.eta.ui.app.LocalUiStyle
 import io.github.mangi.eta.ui.components.EtaChoiceChip
 import io.github.mangi.eta.ui.components.ListEmptyState
@@ -90,6 +93,7 @@ import io.github.mangi.eta.ui.components.glassOverlayTextFieldColors
 import io.github.mangi.eta.ui.model.AgentModelOptionUi
 import io.github.mangi.eta.ui.model.AgentModelPickerProjector
 import io.github.mangi.eta.ui.model.filterGroups
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -131,7 +135,8 @@ internal fun SubagentSettingsScreen(
     val providers by ProviderRepository.providersFlow().collectAsState(initial = emptyList())
     val primaryProviderId by RuntimeConfigRepository.selectedProviderIdFlow().collectAsState(initial = null)
     val primaryModelId by RuntimeConfigRepository.selectedModelIdFlow().collectAsState(initial = null)
-    val subagentSettings by RuntimeConfigRepository.subagentSettingsFlow().collectAsState(initial = SubagentSettings())
+    val savedSubagentSettings by RuntimeConfigRepository.subagentSettingsFlow().collectAsState(initial = null)
+    val subagentSettings = savedSubagentSettings ?: SubagentSettings()
 
     var customProfiles by remember { mutableStateOf<List<SubagentProfile>>(emptyList()) }
     fun reloadCustomProfiles() {
@@ -161,12 +166,58 @@ internal fun SubagentSettingsScreen(
         else -> "跟随主模型"
     }
 
-    val effectiveCapabilities = remember(providers, resolvedSecondary, primaryProviderId, primaryModelId) {
-        val target = resolvedSecondary ?: providers.enabledModel(primaryModelId)
-        target?.let { (provider, model) ->
-            RuntimeConfigRepository.reasoningCapabilities(provider, model)
+    val ordinaryPrimary = remember(providers, primaryModelId) { providers.enabledModel(primaryModelId) }
+    val priorityProvider = resolvedSecondary?.provider ?: ordinaryPrimary?.provider
+        ?: providers.firstOrNull { it.id == primaryProviderId }
+    val priorityModels = remember(priorityProvider) { priorityProvider?.subagentPriorityModels().orEmpty() }
+    val effectiveCapabilities = remember(
+        resolvedSecondary, ordinaryPrimary, priorityProvider, priorityModels, subagentSettings.modelPriority,
+    ) {
+        val priorityById = priorityModels.associateBy { it.id }
+        val preferred = subagentSettings.modelPriority.firstNotNullOfOrNull(priorityById::get)
+        if (preferred != null && priorityProvider != null) {
+            RuntimeConfigRepository.reasoningCapabilities(priorityProvider, preferred)
+        } else {
+            (resolvedSecondary ?: ordinaryPrimary)?.let { (provider, model) ->
+                RuntimeConfigRepository.reasoningCapabilities(provider, model)
+            }
         }
     }
+    var savingPriority by remember { mutableStateOf(false) }
+    var prioritySaveFailed by remember { mutableStateOf(false) }
+    val priorityRows: @Composable () -> Unit = {
+        SubagentPriorityRows(
+            models = priorityModels,
+            priority = subagentSettings.modelPriority,
+            ordinaryModelId = resolvedSecondary?.model?.id ?: primaryModelId,
+            enabled = savedSubagentSettings != null && subagentEnabled && !savingPriority,
+            onSave = { ids ->
+                if (!savingPriority) {
+                    savingPriority = true
+                    prioritySaveFailed = false
+                    scope.launch {
+                        try {
+                            RuntimeConfigRepository.setSubagentModelPriority(ids)
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (_: Exception) {
+                            prioritySaveFailed = true
+                        } finally {
+                            savingPriority = false
+                        }
+                    }
+                }
+            },
+        )
+    }
+    val priorityTitle = stringResource(R.string.subagent_priority_title)
+    val priorityNote = stringResource(
+        when {
+            prioritySaveFailed -> R.string.subagent_priority_save_failed
+            priorityModels.size < 2 -> R.string.subagent_priority_not_enough_models
+            else -> R.string.subagent_priority_hint
+        },
+    )
     val effortOptions = remember(effectiveCapabilities) {
         val efforts = effectiveCapabilities?.selectableEfforts.orEmpty()
         listOf<ReasoningEffort?>(null) + efforts
@@ -207,9 +258,7 @@ internal fun SubagentSettingsScreen(
     val onEffortChange: (Int) -> Unit = { index ->
         val chosen = effortOptions.getOrNull(index)
         scope.launch {
-            RuntimeConfigRepository.setSubagentSettings(
-                subagentSettings.copy(reasoningEffort = chosen?.wireValue),
-            )
+            RuntimeConfigRepository.updateSubagentSettings { it.copy(reasoningEffort = chosen?.wireValue) }
         }
     }
     val onSaveDraft: (CustomSubagentDraft) -> Unit = { activeDraft ->
@@ -284,9 +333,7 @@ internal fun SubagentSettingsScreen(
                             onSelectModel = { modelId ->
                                 showModelSheet = false
                                 scope.launch {
-                                    RuntimeConfigRepository.setSubagentSettings(
-                                        subagentSettings.copy(modelId = modelId),
-                                    )
+                                    RuntimeConfigRepository.updateSubagentSettings { it.copy(modelId = modelId) }
                                 }
                             },
                         )
@@ -424,6 +471,11 @@ internal fun SubagentSettingsScreen(
                     }
                 }
 
+                if (priorityModels.isNotEmpty()) {
+                    Group(title = priorityTitle) { priorityRows() }
+                }
+                Footer(text = priorityNote)
+
                 Group(title = "Built-in Subagents") {
                     SubagentProfile.BUILTIN_PROFILES.forEachIndexed { index, profile ->
                         CouiPreference(
@@ -503,9 +555,7 @@ internal fun SubagentSettingsScreen(
                             onSelectModel = { modelId ->
                                 showModelSheet = false
                                 scope.launch {
-                                    RuntimeConfigRepository.setSubagentSettings(
-                                        subagentSettings.copy(modelId = modelId),
-                                    )
+                                    RuntimeConfigRepository.updateSubagentSettings { it.copy(modelId = modelId) }
                                 }
                             },
                         )
@@ -658,6 +708,19 @@ internal fun SubagentSettingsScreen(
                             )
                         }
                     }
+                }
+
+                item(key = "model_priority") {
+                    SmallTitle(priorityTitle)
+                    if (priorityModels.isNotEmpty()) {
+                        Card(Modifier.padding(horizontal = 12.dp)) { priorityRows() }
+                    }
+                    Text(
+                        text = priorityNote,
+                        color = if (prioritySaveFailed) StatusError else MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                        style = MiuixTheme.textStyles.footnote2,
+                        modifier = Modifier.padding(horizontal = 28.dp, vertical = 8.dp),
+                    )
                 }
 
                 item(key = "builtin_group") {

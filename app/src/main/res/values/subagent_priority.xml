@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="subagent_priority_title">Subagent model priority</string>
+    <string name="subagent_priority_hint">Long-press a handle and drag to reorder. Only a changed order is saved. New subagent runs use the highest-ranked available model on the same connection.</string>
+    <string name="subagent_priority_not_enough_models">Reordering requires at least two enabled models with tool support on the same connection.</string>
+    <string name="subagent_priority_save_failed">Could not save the order. Try reordering again.</string>
+    <string name="subagent_priority_row">%1$d. %2$s</string>
+    <string name="subagent_priority_handle">Reorder %1$s</string>
+    <string name="subagent_priority_position">Priority %1$d</string>
+    <string name="subagent_priority_move_up">Move up</string>
+    <string name="subagent_priority_move_down">Move down</string>
+</resources>
