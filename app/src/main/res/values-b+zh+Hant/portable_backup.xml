@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="portable_backup_warning">備份可能包含個人資料。對話、設定和 MCP 必須加密；不包含 Codex 登入與生圖 API 金鑰。</string>
+    <string name="portable_backup_export_all">匯出所有類別</string>
+    <string name="portable_backup_export_all_note">建立包含全部六類的加密備份。</string>
+    <string name="portable_backup_export_selected">匯出所選類別</string>
+    <string name="portable_backup_export_note">對話、設定和 MCP 需要密碼。加密壓縮檔上限為 %1$d MiB。</string>
+    <string name="portable_backup_import_note">開啟分類備份或官方 Eta JSON 備份。</string>
+    <string name="portable_backup_export_parts">選擇匯出類別</string>
+    <string name="portable_backup_restore_parts">選擇還原類別</string>
+    <string name="portable_backup_restore">還原所選類別</string>
+    <string name="portable_backup_discard">放棄此次還原</string>
+    <string name="portable_backup_legacy">舊版 JSON 已驗證。勾選資料類即可還原。</string>
+    <string name="portable_backup_verified">已驗證完整性，請勾選要還原的類別。</string>
+    <string name="portable_backup_part_data">對話、供應商、記憶與角色</string>
+    <string name="portable_backup_part_skills">Skills 與啟用狀態</string>
+    <string name="portable_backup_part_subagents">自訂子代理</string>
+    <string name="portable_backup_part_settings">應用程式與路由設定</string>
+    <string name="portable_backup_part_image">獨立生圖連線</string>
+    <string name="portable_backup_image_note">不備份 API 金鑰。僅在本機已授權相同端點時還原模型。</string>
+    <string name="portable_backup_part_mcp">MCP 伺服器與授權</string>
+    <string name="portable_backup_set_password">加密備份</string>
+    <string name="portable_backup_enter_password">解鎖備份</string>
+    <string name="portable_backup_password">備份密碼</string>
+    <string name="portable_backup_password_note">請使用至少 8 個字元。請妥善保存密碼，Eta 無法找回。</string>
+    <string name="portable_backup_confirm">還原所選類別？</string>
+    <string name="portable_backup_confirm_note">所選：%1$s。資料類會取代對話、非 Codex 供應商與記憶。既有 Skill 和子代理檔案不會被覆寫，匯入的 MCP 伺服器預設停用。</string>
+    <string name="portable_backup_inspecting">正在驗證備份…</string>
+    <string name="portable_backup_exporting">正在寫入備份…</string>
+    <string name="portable_backup_preparing">正在驗證所選類別…</string>
+    <string name="portable_backup_applying">正在還原所選類別…</string>
+    <string name="portable_backup_wait">請等待操作完成，此階段無法取消。</string>
+    <string name="portable_backup_exported">已匯出 %1$d 個類別</string>
+    <string name="portable_backup_restored">已還原所選類別</string>
+    <string name="portable_backup_image_skipped">生圖連線未變更。如要使用，請在獨立生圖設定中設定並授權端點。</string>
+    <string name="portable_backup_failed">備份操作未完成。請檢查檔案或重試。</string>
+    <string name="portable_backup_too_large">備份超過支援的大小上限。</string>
+    <string name="portable_backup_bad_password">密碼不正確，或加密備份已損毀。</string>
+    <string name="portable_backup_conflict">所選類別與現有項目衝突，不會覆寫衝突的項目。</string>
+    <string name="portable_backup_runtime_busy">請先停止執行中的 Agent 工作，並等待會話儲存完成。</string>
+    <string name="portable_backup_committed_warning">資料已提交，但清理或重新載入失敗。請先核對目前資料，不要直接重試。</string>
+    <string name="portable_backup_rollback_warning">還原失敗，部分變更未復原。請核對目前資料及 Skills 復原頁面。</string>
+</resources>

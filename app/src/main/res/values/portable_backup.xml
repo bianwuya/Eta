@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="portable_backup_warning">Backups may contain personal data. Conversations, settings and MCP require encryption. Codex logins and image API keys are never included.</string>
+    <string name="portable_backup_export_all">Export all categories</string>
+    <string name="portable_backup_export_all_note">Create an encrypted package of all six categories.</string>
+    <string name="portable_backup_export_selected">Export selected categories</string>
+    <string name="portable_backup_export_note">Data, settings and MCP require a password. The encrypted ZIP payload limit is %1$d MiB.</string>
+    <string name="portable_backup_import_note">Open a category package or an official Eta JSON backup.</string>
+    <string name="portable_backup_export_parts">Categories to export</string>
+    <string name="portable_backup_restore_parts">Categories to restore</string>
+    <string name="portable_backup_restore">Restore selection</string>
+    <string name="portable_backup_discard">Discard staged backup</string>
+    <string name="portable_backup_legacy">Legacy JSON verified. Select Data to restore it.</string>
+    <string name="portable_backup_verified">Integrity checked. Select the categories to restore.</string>
+    <string name="portable_backup_part_data">Conversations, providers, memory and characters</string>
+    <string name="portable_backup_part_skills">Skills and enabled states</string>
+    <string name="portable_backup_part_subagents">Custom subagents</string>
+    <string name="portable_backup_part_settings">App and routing settings</string>
+    <string name="portable_backup_part_image">Image generation connection</string>
+    <string name="portable_backup_image_note">No API key is backed up. The model can be restored only to a locally authorized connection at the same endpoint.</string>
+    <string name="portable_backup_part_mcp">MCP servers and authorization</string>
+    <string name="portable_backup_set_password">Encrypt the backup</string>
+    <string name="portable_backup_enter_password">Unlock backup</string>
+    <string name="portable_backup_password">Backup password</string>
+    <string name="portable_backup_password_note">Use at least 8 characters. Keep the password safe; Eta cannot recover it.</string>
+    <string name="portable_backup_confirm">Restore selected categories?</string>
+    <string name="portable_backup_confirm_note">Selected: %1$s. Data replaces conversations, non-Codex providers and memory. Existing Skill and subagent files are not overwritten; imported MCP servers start disabled.</string>
+    <string name="portable_backup_inspecting">Checking backup…</string>
+    <string name="portable_backup_exporting">Writing backup…</string>
+    <string name="portable_backup_preparing">Validating selection…</string>
+    <string name="portable_backup_applying">Applying restore…</string>
+    <string name="portable_backup_wait">Wait for this operation to finish. It cannot be cancelled here.</string>
+    <string name="portable_backup_exported">Exported %1$d categories</string>
+    <string name="portable_backup_restored">Selected categories restored</string>
+    <string name="portable_backup_image_skipped">Image connection not changed. To use it, set up and authorize the endpoint in Image Generation.</string>
+    <string name="portable_backup_failed">The backup operation failed. Check the file or try again.</string>
+    <string name="portable_backup_too_large">The backup exceeds the supported size limit.</string>
+    <string name="portable_backup_bad_password">Incorrect password or damaged encrypted backup.</string>
+    <string name="portable_backup_conflict">The selected categories conflict with existing items. No existing item is overwritten by the conflict.</string>
+    <string name="portable_backup_runtime_busy">Stop running Agent tasks and wait for conversation saves before restoring.</string>
+    <string name="portable_backup_committed_warning">Data was committed, but cleanup or reload failed. Check the current data before retrying.</string>
+    <string name="portable_backup_rollback_warning">The restore failed and some changes could not be undone. Check current data and the Skills recovery page.</string>
+</resources>

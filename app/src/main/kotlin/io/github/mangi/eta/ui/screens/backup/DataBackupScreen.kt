@@ -1,280 +1,52 @@
 package io.github.mangi.eta.ui.screens.backup
 
 import android.content.Context
-import android.net.Uri
-import android.widget.Toast
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
-import com.itos.coui.layout.Divider
 import com.itos.coui.layout.Group
-import com.itos.coui.text.CouiTextKind
-import com.itos.coui.text.Text as CouiText
 import io.github.mangi.eta.R
-import io.github.mangi.eta.core.AndroidAgentLogger
-import io.github.mangi.eta.core.safeLogType
-import io.github.mangi.eta.core.safeStackTrace
 import io.github.mangi.eta.data.model.AppearanceUiStyle
-import io.github.mangi.eta.data.repository.EtaBackupSummary
+import io.github.mangi.eta.data.repository.EtaPortableBackup
+import io.github.mangi.eta.data.repository.EtaPortableManifest
+import io.github.mangi.eta.data.repository.EtaPortablePart
 import io.github.mangi.eta.ui.app.LocalUiStyle
-import io.github.mangi.eta.ui.components.MiuixDialogActions
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
-import io.github.mangi.eta.ui.components.coui.CouiConfirmDialog
 import io.github.mangi.eta.ui.components.coui.CouiPageBottomSpacer
 import io.github.mangi.eta.ui.components.coui.CouiPreference
 import io.github.mangi.eta.ui.components.coui.CouiScaffoldPage
-import io.github.mangi.eta.ui.components.currentGlassOverlayBackdrop
-import java.io.InputStream
 import java.io.OutputStream
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.Card
-import top.yukonga.miuix.kmp.basic.InfiniteProgressIndicator
-import top.yukonga.miuix.kmp.basic.SmallTitle
-import top.yukonga.miuix.kmp.glass.GlassDialog
-import top.yukonga.miuix.kmp.preference.ArrowPreference
 
 @Composable
 internal fun DataBackupScreen(
     context: Context,
     onBack: () -> Unit,
-    onExport: suspend (OutputStream) -> EtaBackupSummary,
-    onImport: suspend (InputStream) -> EtaBackupSummary,
+    onExport: suspend (Set<EtaPortablePart>, String?, () -> OutputStream) -> EtaPortableManifest,
+    onImport: suspend (EtaPortableBackup.Staged, Set<EtaPortablePart>, suspend () -> Unit) -> EtaPortableBackup.RestoreResult,
 ) {
-    val scope = rememberCoroutineScope()
-    var busy by remember { mutableStateOf(false) }
-    var pendingImportUri by remember { mutableStateOf<Uri?>(null) }
-    var showImportDialog by remember { mutableStateOf(false) }
-
-    fun showFailure(throwable: Throwable) {
-        if (throwable is CancellationException) throw throwable
-        AndroidAgentLogger.error("Agent backup UI failed: type=${throwable.safeLogType()}\n${throwable.safeStackTrace()}")
-        Toast.makeText(
-            context,
-            throwable.message ?: context.getString(R.string.data_backup_failed),
-            Toast.LENGTH_LONG,
-        ).show()
-    }
-
-    val exportLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.CreateDocument("application/json"),
-    ) { uri ->
-        if (uri == null) return@rememberLauncherForActivityResult
-        scope.launch {
-            busy = true
-            try {
-                val output = context.contentResolver.openOutputStream(uri)
-                    ?: error(context.getString(R.string.data_backup_file_open_failed))
-                val summary = output.use { onExport(it) }
-                Toast.makeText(
-                    context,
-                    context.getString(
-                        R.string.data_backup_exported,
-                        summary.conversationCount,
-                        summary.providerCount,
-                    ),
-                    Toast.LENGTH_SHORT,
-                ).show()
-            } catch (throwable: Throwable) {
-                showFailure(throwable)
-            } finally {
-                busy = false
-            }
-        }
-    }
-
-    val importLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument(),
-    ) { uri ->
-        if (uri != null) {
-            pendingImportUri = uri
-            showImportDialog = true
-        }
-    }
-
-    val confirmImportText = if (busy) {
-        stringResource(R.string.data_backup_working)
-    } else {
-        stringResource(R.string.action_import)
-    }
-    val onDismissImport: () -> Unit = {
-        if (!busy) {
-            showImportDialog = false
-            pendingImportUri = null
-        }
-    }
-    val onConfirmImport: () -> Unit = {
-        val uri = pendingImportUri
-        if (uri != null) {
-            showImportDialog = false
-            scope.launch {
-                busy = true
-                try {
-                    val input = context.contentResolver.openInputStream(uri)
-                        ?: error(context.getString(R.string.data_backup_file_open_failed))
-                    val summary = input.use { onImport(it) }
-                    Toast.makeText(
-                        context,
-                        context.getString(
-                            R.string.data_backup_imported,
-                            summary.conversationCount,
-                            summary.providerCount,
-                        ),
-                        Toast.LENGTH_SHORT,
-                    ).show()
-                } catch (throwable: Throwable) {
-                    showFailure(throwable)
-                } finally {
-                    pendingImportUri = null
-                    busy = false
-                }
-            }
-        }
-    }
-
+    val controls = rememberEtaPortableBackupControls(context, onExport, onImport)
+    val goBack = { if (controls.phase == PortableBackupPhase.IDLE) onBack() }
+    val title = stringResource(R.string.data_backup_title)
+    val warningTitle = stringResource(R.string.data_backup_warning_title)
+    val warning = stringResource(R.string.portable_backup_warning)
+    val overlay: @Composable () -> Unit = { EtaPortableBackupDialog(controls) }
     when (LocalUiStyle.current) {
-        AppearanceUiStyle.COUI -> {
-            CouiScaffoldPage(
-                title = stringResource(R.string.data_backup_title),
-                onBack = onBack,
-            ) {
-                Group {
-                    CouiPreference(
-                        title = stringResource(R.string.data_backup_warning_title),
-                        summary = stringResource(R.string.data_backup_warning_summary),
-                        showChevron = false,
-                    )
-                }
-                Group(title = stringResource(R.string.data_backup_actions)) {
-                    CouiPreference(
-                        title = stringResource(R.string.data_backup_export),
-                        summary = if (busy) {
-                            stringResource(R.string.data_backup_working)
-                        } else {
-                            stringResource(R.string.data_backup_export_summary)
-                        },
-                        enabled = !busy,
-                        trailing = if (busy) {
-                            { InfiniteProgressIndicator(size = 20.dp) }
-                        } else {
-                            null
-                        },
-                        onClick = { exportLauncher.launch(defaultBackupFileName()) },
-                    )
-                    Divider()
-                    CouiPreference(
-                        title = stringResource(R.string.data_backup_import),
-                        summary = stringResource(R.string.data_backup_import_summary),
-                        enabled = !busy,
-                        onClick = {
-                            importLauncher.launch(arrayOf("application/json", "text/plain"))
-                        },
-                    )
-                }
-                CouiPageBottomSpacer()
-            }
-
-            if (showImportDialog) {
-                CouiConfirmDialog(
-                    visible = true,
-                    title = stringResource(R.string.data_backup_import_confirm_title),
-                    message = stringResource(R.string.data_backup_import_confirm_summary),
-                    confirmText = confirmImportText,
-                    confirmEnabled = !busy,
-                    cancelEnabled = !busy,
-                    destructive = true,
-                    onConfirm = onConfirmImport,
-                    onDismissRequest = onDismissImport,
-                )
-            }
+        AppearanceUiStyle.COUI -> CouiScaffoldPage(title = title, onBack = goBack, overlay = overlay) {
+            Group { CouiPreference(title = warningTitle, summary = warning, showChevron = false) }
+            EtaPortableBackupControls(controls)
+            CouiPageBottomSpacer()
         }
-
-        AppearanceUiStyle.MIUIX -> {
-            MiuixScaffoldPage(
-                title = stringResource(R.string.data_backup_title),
-                onBack = onBack,
-                overlay = {
-                    GlassDialog(
-                        show = showImportDialog,
-                        backdrop = currentGlassOverlayBackdrop(),
-                        title = stringResource(R.string.data_backup_import_confirm_title),
-                        summary = stringResource(R.string.data_backup_import_confirm_summary),
-                        onDismissRequest = onDismissImport,
-                    ) {
-                        MiuixDialogActions(
-                            confirmText = confirmImportText,
-                            destructive = true,
-                            cancelEnabled = !busy,
-                            confirmEnabled = !busy,
-                            onCancel = onDismissImport,
-                            onConfirm = onConfirmImport,
-                        )
-                    }
-                },
-            ) {
-                item(key = "warning") {
-                    Card(
-                        modifier = Modifier
-                            .padding(horizontal = 12.dp)
-                            .padding(top = 8.dp, bottom = 12.dp),
-                    ) {
-                        BasicComponent(
-                            title = stringResource(R.string.data_backup_warning_title),
-                            summary = stringResource(R.string.data_backup_warning_summary),
-                        )
-                    }
-                }
-                item(key = "actions") {
-                    SmallTitle(stringResource(R.string.data_backup_actions))
-                    Card(
-                        modifier = Modifier
-                            .padding(horizontal = 12.dp)
-                            .padding(bottom = 12.dp),
-                    ) {
-                        ArrowPreference(
-                            title = stringResource(R.string.data_backup_export),
-                            summary = if (busy) {
-                                stringResource(R.string.data_backup_working)
-                            } else {
-                                stringResource(R.string.data_backup_export_summary)
-                            },
-                            enabled = !busy,
-                            endActions = {
-                                if (busy) {
-                                    InfiniteProgressIndicator(size = 20.dp)
-                                }
-                            },
-                            onClick = {
-                                exportLauncher.launch(defaultBackupFileName())
-                            },
-                        )
-                        ArrowPreference(
-                            title = stringResource(R.string.data_backup_import),
-                            summary = stringResource(R.string.data_backup_import_summary),
-                            enabled = !busy,
-                            onClick = {
-                                importLauncher.launch(arrayOf("application/json", "text/plain"))
-                            },
-                        )
-                    }
+        AppearanceUiStyle.MIUIX -> MiuixScaffoldPage(title = title, onBack = goBack, overlay = overlay) {
+            item(key = "warning") {
+                Card(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                    BasicComponent(title = warningTitle, summary = warning)
                 }
             }
+            item(key = "portable") { EtaPortableBackupControls(controls) }
         }
     }
 }
-
-private fun defaultBackupFileName(): String =
-    "Eta-backup-${SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(Date())}.eta-backup.json"

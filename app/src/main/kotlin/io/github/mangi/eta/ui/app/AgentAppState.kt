@@ -316,46 +316,63 @@ internal class AgentAppState(
         }
     }
 
-    suspend fun exportBackup(output: OutputStream): EtaBackupSummary =
-        EtaBackupRepository.export(appContext, output)
+    suspend fun exportBackup(
+        parts: Set<io.github.mangi.eta.data.repository.EtaPortablePart>,
+        password: String?,
+        open: () -> OutputStream,
+    ) = io.github.mangi.eta.data.repository.EtaPortableBackup.export(appContext, parts, password, open)
 
-    suspend fun importBackup(input: InputStream): EtaBackupSummary {
-        val locallyBusy = withContext(Dispatchers.Main.immediate) {
-            branchingConversationId != null || runStore.hasActiveRuns || conversationsById.values.any { it.isStreaming }
-        }
-        if (locallyBusy) {
-            throw IllegalStateException("请先停止正在运行的 Agent 任务")
+    suspend fun importBackup(
+        staged: io.github.mangi.eta.data.repository.EtaPortableBackup.Staged,
+        selected: Set<io.github.mangi.eta.data.repository.EtaPortablePart>,
+        onApplying: suspend () -> Unit,
+    ): io.github.mangi.eta.data.repository.EtaPortableBackup.RestoreResult {
+        val hasData = io.github.mangi.eta.data.repository.EtaPortablePart.DATA in selected
+        fun locallyBusy() = branchingConversationId != null || runStore.hasActiveRuns ||
+            conversationsById.values.any { it.isStreaming }
+        if (withContext(Dispatchers.Main.immediate) { locallyBusy() }) {
+            throw io.github.mangi.eta.data.repository.EtaPortableRuntimeBusy()
         }
 
         val activeRunQuery = withContext(Dispatchers.IO) {
             AgentRuntimeClient(appContext, AndroidAgentLogger).queryActiveRuns()
         }
-        when (val active = activeRunQuery) {
-            is AgentRuntimeClient.ActiveRunsQuery.Known -> {
-                if (active.runIds.isNotEmpty()) {
-                    throw IllegalStateException("请先停止正在运行的 Agent 任务")
-                }
-            }
-            AgentRuntimeClient.ActiveRunsQuery.Unavailable -> {
-                throw IllegalStateException("无法确认 Agent Runtime 状态，请稍后重试")
-            }
+        if (activeRunQuery !is AgentRuntimeClient.ActiveRunsQuery.Known || activeRunQuery.runIds.isNotEmpty()) {
+            throw io.github.mangi.eta.data.repository.EtaPortableRuntimeBusy()
         }
 
-        val pendingPersistence = synchronized(persistenceLock) {
-            check(!persistencePaused && branchingConversationId == null) { "请等待会话保存完成" }
-            persistencePaused = true
-            persistenceJob
-        }
+        var pausedByImport = false
         var imported = false
         var reloaded = false
         try {
+            val pendingPersistence = withContext(Dispatchers.Main.immediate) {
+                synchronized(persistenceLock) {
+                    if (persistencePaused || locallyBusy()) {
+                        throw io.github.mangi.eta.data.repository.EtaPortableRuntimeBusy()
+                    }
+                    persistencePaused = true
+                    pausedByImport = true
+                    persistenceJob
+                }
+            }
             pendingPersistence?.join()
             return conversationLoadMutex.withLock {
                 try {
-                    val summary = EtaBackupRepository.import(appContext, input, onCommitted = { imported = true })
-                    reloadConversationsAfterBackup()
-                    reloaded = true
-                    summary
+                    val result = io.github.mangi.eta.data.repository.EtaPortableBackup.restore(
+                        appContext, staged, selected,
+                        onApplying = {
+                            withContext(Dispatchers.Main.immediate) {
+                                if (locallyBusy()) throw io.github.mangi.eta.data.repository.EtaPortableRuntimeBusy()
+                                onApplying()
+                            }
+                        },
+                        onDataCommitted = { imported = true },
+                    )
+                    if (imported) {
+                        withContext(NonCancellable) { reloadConversationsAfterBackup() }
+                        reloaded = true
+                    }
+                    result
                 } catch (failure: Throwable) {
                     if (imported && !reloaded) {
                         try {
@@ -365,16 +382,21 @@ internal class AgentAppState(
                             failure.addSuppressed(reloadFailure)
                         }
                     }
+                    if (imported && failure !is CancellationException &&
+                        failure !is io.github.mangi.eta.data.repository.EtaPortableIncompleteRestore
+                    ) throw io.github.mangi.eta.data.repository.EtaPortableIncompleteRestore(true, failure)
                     throw failure
                 }
             }
         } finally {
             // 导入已提交但重载失败时内存仍是旧状态，继续暂停，避免覆盖导入结果；重启后按库内数据加载。
-            if (!imported || reloaded) {
+            if (pausedByImport && (!imported || reloaded)) {
                 synchronized(persistenceLock) { persistencePaused = false }
             }
-            // 仅提交前失败才回写旧内存；提交后的清理失败或取消仍以导入数据为准。
-            if (!imported) withContext(Dispatchers.Main.immediate + NonCancellable) { persistConversations() }
+            // 仅 DATA 提交前失败才回写旧内存；提交后的清理失败或取消仍以导入数据为准。
+            if (pausedByImport && hasData && !imported) {
+                withContext(Dispatchers.Main.immediate + NonCancellable) { persistConversations() }
+            }
         }
     }
 

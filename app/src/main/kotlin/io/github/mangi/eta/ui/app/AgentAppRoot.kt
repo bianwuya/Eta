@@ -746,7 +746,8 @@ fun AgentAppRoot(
                     entry<AppRoute.AppearanceSettings>(swipeDismiss = activeSwipeDismiss) {
                         AppearanceSettingsScreen(onBack = ::popRoute)
                     }
-                    entry<AppRoute.DataBackup>(swipeDismiss = activeSwipeDismiss) {
+                    // DataBackupScreen handles Back by phase; do not bypass its modal with the NavDisplay swipe.
+                    entry<AppRoute.DataBackup>(swipeDismiss = null) {
                         DataBackupScreen(
                             context = context,
                             onBack = ::popRoute,

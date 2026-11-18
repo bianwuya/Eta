@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="portable_backup_warning">备份可能包含个人数据。对话、设置和 MCP 必须加密；不包含 Codex 登录与生图 API 密钥。</string>
+    <string name="portable_backup_export_all">导出全部分类</string>
+    <string name="portable_backup_export_all_note">创建包含全部六类的加密备份。</string>
+    <string name="portable_backup_export_selected">导出选中分类</string>
+    <string name="portable_backup_export_note">对话、设置和 MCP 需要密码。加密压缩包上限为 %1$d MiB。</string>
+    <string name="portable_backup_import_note">打开分类备份或官方 Eta JSON 备份。</string>
+    <string name="portable_backup_export_parts">选择导出分类</string>
+    <string name="portable_backup_restore_parts">选择恢复分类</string>
+    <string name="portable_backup_restore">恢复选中分类</string>
+    <string name="portable_backup_discard">放弃此次恢复</string>
+    <string name="portable_backup_legacy">旧版 JSON 已校验。勾选数据类即可恢复。</string>
+    <string name="portable_backup_verified">已校验完整性，请勾选要恢复的分类。</string>
+    <string name="portable_backup_part_data">对话、提供商、记忆与角色</string>
+    <string name="portable_backup_part_skills">Skills 与启用状态</string>
+    <string name="portable_backup_part_subagents">自定义子代理</string>
+    <string name="portable_backup_part_settings">应用及路由设置</string>
+    <string name="portable_backup_part_image">独立生图连接</string>
+    <string name="portable_backup_image_note">不备份 API 密钥。仅在本机已授权同一端点时恢复模型。</string>
+    <string name="portable_backup_part_mcp">MCP 服务器与授权</string>
+    <string name="portable_backup_set_password">加密备份</string>
+    <string name="portable_backup_enter_password">解锁备份</string>
+    <string name="portable_backup_password">备份密码</string>
+    <string name="portable_backup_password_note">请使用至少 8 个字符。请妥善保管密码，Eta 无法找回。</string>
+    <string name="portable_backup_confirm">恢复选中的分类？</string>
+    <string name="portable_backup_confirm_note">选中：%1$s。数据类会替换对话、非 Codex 提供商与记忆。已有 Skill 和子代理文件不会被覆盖，导入的 MCP 服务器默认停用。</string>
+    <string name="portable_backup_inspecting">正在校验备份…</string>
+    <string name="portable_backup_exporting">正在写入备份…</string>
+    <string name="portable_backup_preparing">正在校验所选分类…</string>
+    <string name="portable_backup_applying">正在恢复所选分类…</string>
+    <string name="portable_backup_wait">请等待操作完成，此阶段不能取消。</string>
+    <string name="portable_backup_exported">已导出 %1$d 个分类</string>
+    <string name="portable_backup_restored">已恢复选中的分类</string>
+    <string name="portable_backup_image_skipped">生图连接未更改。如需使用，请在独立生图设置中配置并授权端点。</string>
+    <string name="portable_backup_failed">备份操作未完成。请检查文件或重试。</string>
+    <string name="portable_backup_too_large">备份超过支持的大小上限。</string>
+    <string name="portable_backup_bad_password">密码不正确，或加密备份已损坏。</string>
+    <string name="portable_backup_conflict">所选分类与现有项目冲突，不会覆盖冲突的项目。</string>
+    <string name="portable_backup_runtime_busy">请先停止运行中的 Agent 任务，并等待会话保存完成。</string>
+    <string name="portable_backup_committed_warning">数据已提交，但清理或重载失败。请先核对当前数据，不要直接重试。</string>
+    <string name="portable_backup_rollback_warning">恢复失败，部分更改未撤销。请核对当前数据及 Skills 恢复页面。</string>
+</resources>
