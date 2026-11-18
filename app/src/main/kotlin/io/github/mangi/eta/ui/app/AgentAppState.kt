@@ -635,8 +635,17 @@ internal class AgentAppState(
                 runMessageProjector.finalizeRun(runId, finalizedText)
             }
         }
-        if (interrupted && (checkpoint.contextSnapshot != null || checkpoint.transcript.isNotEmpty())) {
-            applyConversationHistoryResult(runId, checkpoint.transcript, checkpoint.contextSnapshot, true)
+        if (interrupted) {
+            if (checkpoint.contextSnapshot != null || checkpoint.transcript.isNotEmpty()) {
+                applyConversationHistoryResult(runId, checkpoint.transcript, checkpoint.contextSnapshot, true)
+            } else if (checkpoint.operation == AgentRuntimeWire.OP_CHAT) {
+                val receipts = checkpoint.events.filterIsInstance<AgentEvent.UserSupplementReceived>()
+                    .mapTo(linkedSetOf()) { AgentPendingResultRecovery.supplementMessageId(runId, it.index) }
+                conversationsById[conversationId]?.let { current ->
+                    val restored = AgentRuntimeHistoryReducer.retainReceiptsOnInterrupt(current, runId, receipts)
+                    if (restored !== current) updateConversation(conversationId, restored)
+                }
+            }
         }
         conversationsById[conversationId]?.let { state ->
             updateConversation(conversationId, RoleplayConversationReducer.linkRun(state, runId))

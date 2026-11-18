@@ -49,6 +49,29 @@ internal object AgentRuntimeHistoryReducer {
         )
     }
 
+    /** 仅接收回执的中断：只合入已投影的用户补充，不生成回复、工具记录或新的运行。 */
+    fun retainReceiptsOnInterrupt(
+        state: AgentChatHomeUiState,
+        runId: String,
+        receiptMessageIds: Set<String>,
+    ): AgentChatHomeUiState {
+        if (receiptMessageIds.isEmpty() || wasApplied(state, runId)) return state
+        val receipts = state.messages.filterIsInstance<UserMessageUi>()
+            .filter { it.id in receiptMessageIds }
+            .distinctBy { it.id }
+            .map { AgentModelClient.buildUserHistoryMessage(it.content, emptyList()).copy(messageId = it.id) }
+        if (receipts.isEmpty()) return state
+        fun merge(list: List<AgentModelClient.ConversationMessage>): List<AgentModelClient.ConversationMessage> {
+            val existing = list.mapTo(hashSetOf()) { it.messageId }
+            return list + receipts.filterNot { it.messageId in existing }
+        }
+        return state.copy(
+            history = merge(state.history),
+            journal = merge(state.journal.ifEmpty { state.history }),
+            appliedRuntimeRunIds = state.appliedRuntimeRunIds + runId,
+        )
+    }
+
     fun wasApplied(state: AgentChatHomeUiState, runId: String): Boolean =
         runId in state.appliedRuntimeRunIds
 
