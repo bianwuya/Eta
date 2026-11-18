@@ -2,10 +2,12 @@ package io.github.mangi.eta.ui.app
 
 import io.github.mangi.eta.agent.model.AgentFileReference
 import io.github.mangi.eta.agent.model.AgentFileReferenceKind
+import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.ui.model.AgentChatUiState
 import io.github.mangi.eta.ui.model.PendingFileReferenceUi
 import io.github.mangi.eta.ui.model.PendingImageUi
 import io.github.mangi.eta.ui.model.QueuedMessageUi
+import io.github.mangi.eta.ui.model.UserMessageUi
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -118,43 +120,58 @@ class AgentMessageQueueReducerTest {
     }
 
     @Test
-    fun pollNextToSendAfterRunRespectsUserStopExceptForImmediateInterrupt() {
-        val normalQueue = listOf(
-            QueuedMessageUi(id = "q-1", content = "第一条"),
-            QueuedMessageUi(id = "q-2", content = "第二条"),
-        )
-        val state = baseState(isStreaming = false).copy(queuedMessages = normalQueue)
+    fun selectsNextMessageWithoutPoppingAndRespectsUserStop() {
+        val head = QueuedMessageUi(id = "q-1", content = "第一条")
+        val next = QueuedMessageUi(id = "q-2", content = "第二条")
+        val state = baseState(isStreaming = false).copy(queuedMessages = listOf(head, next))
+        assertNull(AgentMessageQueueReducer.nextToSendAfterRun(state, stoppedByUser = true))
+        assertSame(head, AgentMessageQueueReducer.nextToSendAfterRun(state, stoppedByUser = false))
+        assertEquals(listOf(head, next), state.queuedMessages)
 
-        // 用户主动点击停止按钮：队列保留，不自动发出
-        val (stoppedState, stoppedNext) = AgentMessageQueueReducer.pollNextToSendAfterRun(
-            state = state,
-            stoppedByUser = true,
-        )
-        assertNull(stoppedNext)
-        assertEquals(2, stoppedState.queuedMessages.size)
+        val interrupt = head.copy(immediateInterrupt = true)
+        val interruptState = state.copy(queuedMessages = listOf(interrupt, next))
+        assertSame(interrupt, AgentMessageQueueReducer.nextToSendAfterRun(interruptState, stoppedByUser = true))
+        assertEquals(listOf(interrupt, next), interruptState.queuedMessages)
+        assertNull(AgentMessageQueueReducer.nextToSendAfterRun(state.copy(isStreaming = true), stoppedByUser = false))
+    }
 
-        // 自然完成：自动弹出队首第 1 条
-        val (completedState, completedNext) = AgentMessageQueueReducer.pollNextToSendAfterRun(
-            state = state,
-            stoppedByUser = false,
-        )
-        assertEquals("q-1", completedNext?.id)
-        assertEquals(listOf("q-2"), completedState.queuedMessages.map { it.id })
+    @Test
+    fun preparingIsNonMutatingAndReusesTheSameRequestAndUserIds() {
+        val item = QueuedMessageUi(id = "q-1", content = "等待权限校验")
+        val state = baseState(isStreaming = false).copy(queuedMessages = listOf(item))
+        val first = checkNotNull(AgentMessageQueueReducer.prepareDispatch(state, item.id))
+        val retry = checkNotNull(AgentMessageQueueReducer.prepareDispatch(state, item.id))
+        assertEquals("run-q-1", first.runId)
+        assertEquals("user-run-q-1", first.userMessageId)
+        assertEquals(first, retry)
+        assertSame(item, state.queuedMessages.single())
+        assertNull(AgentMessageQueueReducer.prepareDispatch(state.copy(isCompacting = true), item.id))
+        assertNull(AgentMessageQueueReducer.prepareDispatch(state.copy(isConversationLoaded = false), item.id))
+    }
 
-        // 插话触发的中止：即使运行因取消结束，队首插话项仍立即弹出发送
-        val interruptState = state.copy(
-            queuedMessages = listOf(
-                QueuedMessageUi(id = "q-interrupt", content = "立即插话", immediateInterrupt = true),
-                QueuedMessageUi(id = "q-1", content = "第一条"),
-            ),
+    @Test
+    fun failedWriteAheadRestoresOriginalItemWithoutOverwritingNewDraftOrOtherMessages() {
+        val file = PendingFileReferenceUi("f1", AgentFileReference("Notes", "/workspace/notes.txt", AgentFileReferenceKind.File))
+        val first = QueuedMessageUi(id = "q-first", content = "Earlier")
+        val toSend = QueuedMessageUi("q-second", "With file", pendingFileReferences = listOf(file), immediateInterrupt = true)
+        val justQueued = QueuedMessageUi(id = "q-new", content = "New")
+        val initial = baseState(isStreaming = false).copy(queuedMessages = listOf(first, toSend))
+        val dispatch = checkNotNull(AgentMessageQueueReducer.prepareDispatch(initial, toSend.id))
+        val older = UserMessageUi("old", "Earlier message")
+        val staged = UserMessageUi(dispatch.userMessageId, toSend.content)
+        val history = listOf(older, staged).map { AgentModelClient.ConversationMessage("user", it.content, messageId = it.id) }
+        val state = initial.copy(
+            messages = listOf(older, staged), history = history, journal = history,
+            input = "Keep new draft", isStreaming = true, queuedMessages = listOf(first, justQueued),
         )
-        val (afterInterruptState, interruptNext) = AgentMessageQueueReducer.pollNextToSendAfterRun(
-            state = interruptState,
-            stoppedByUser = true,
-        )
-        assertEquals("q-interrupt", interruptNext?.id)
-        assertFalse(interruptNext!!.immediateInterrupt)
-        assertEquals(listOf("q-1"), afterInterruptState.queuedMessages.map { it.id })
+        val restored = AgentMessageQueueReducer.restoreFailedDispatch(state, dispatch)
+        assertEquals(listOf(first, toSend.copy(immediateInterrupt = false), justQueued), restored.queuedMessages)
+        assertEquals(listOf(older), restored.messages)
+        assertEquals(history.take(1), restored.history)
+        assertEquals(restored.history, restored.journal)
+        assertEquals(state.input, restored.input)
+        assertFalse(restored.isStreaming)
+        assertEquals(restored, AgentMessageQueueReducer.restoreFailedDispatch(restored, dispatch))
     }
 
     @Test

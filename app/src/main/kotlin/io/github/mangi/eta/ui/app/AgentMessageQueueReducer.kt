@@ -139,21 +139,36 @@ internal object AgentMessageQueueReducer {
         )
     }
 
-    /**
-     * 当前运行收尾后决定是否自动弹出下一条排队消息：
-     * - 队首为 [QueuedMessageUi.immediateInterrupt] 时，无论本次是否因取消结束，都立即弹出执行。
-     * - 用户主动点击停止按钮（[stoppedByUser]）时，保留剩余队列，不自动发出。
-     * - 其余情况（正常结束）弹出队首第一条消息自动发出。
-     */
-    fun pollNextToSendAfterRun(
-        state: AgentChatUiState,
-        stoppedByUser: Boolean,
-    ): Pair<AgentChatUiState, QueuedMessageUi?> {
-        val first = state.queuedMessages.firstOrNull() ?: return state to null
-        if (!first.immediateInterrupt && stoppedByUser) {
-            return clearInterruptFlags(state) to null
+    /** 收尾时只选下一条；权限检查或注册运行失败不能移除队列项。 */
+    fun nextToSendAfterRun(state: AgentChatUiState, stoppedByUser: Boolean): QueuedMessageUi? {
+        if (state.isStreaming || state.isCompacting) return null
+        return state.queuedMessages.firstOrNull()?.takeIf { !stoppedByUser || it.immediateInterrupt }
+    }
+
+    data class Dispatch(val message: QueuedMessageUi, val originalIndex: Int) {
+        val runId: String get() = "run-${message.id}"
+        val userMessageId: String get() = "user-$runId"
+    }
+
+    fun prepareDispatch(state: AgentChatUiState, id: String): Dispatch? {
+        if (!state.isConversationLoaded || state.isStreaming || state.isCompacting) return null
+        val index = state.queuedMessages.indexOfFirst { it.id == id }
+        return if (index < 0) null else Dispatch(state.queuedMessages[index], index)
+    }
+
+    /** 仅用于写入用户消息失败且 Runtime 尚未接到请求时；保留失败期间新增的草稿和队列。 */
+    fun restoreFailedDispatch(state: AgentChatUiState, dispatch: Dispatch): AgentChatUiState {
+        val queue = state.queuedMessages
+        val restoredQueue = if (queue.any { it.id == dispatch.message.id }) queue else queue.toMutableList().apply {
+            add(dispatch.originalIndex.coerceAtMost(size), dispatch.message.copy(immediateInterrupt = false))
         }
-        val remaining = state.queuedMessages.drop(1)
-        return state.copy(queuedMessages = remaining) to first.copy(immediateInterrupt = false)
+        return state.copy(
+            queuedMessages = restoredQueue,
+            messages = state.messages.filterNot { it.id == dispatch.userMessageId },
+            history = state.history.filterNot { it.messageId == dispatch.userMessageId },
+            journal = state.journal.filterNot { it.messageId == dispatch.userMessageId },
+            isStreaming = false,
+            isCompacting = false,
+        )
     }
 }

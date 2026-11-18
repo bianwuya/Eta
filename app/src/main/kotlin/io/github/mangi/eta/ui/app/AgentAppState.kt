@@ -1069,7 +1069,8 @@ internal class AgentAppState(
                 }
                 if (!state.isConversationLoaded || id == selectedConversationId || id in conversationContentPins ||
                     state.isStreaming || runStore.activeRunId(id) != null ||
-                    state.messageEdit != null || conversationsById[id] !== state) continue
+                    // 队列尚未入库，不把仅存在于内存的待发项换成历史占位。
+                    state.queuedMessages.isNotEmpty() || state.messageEdit != null || conversationsById[id] !== state) continue
                 conversationPersistence.forgetConversation(id)
                 if (id == selectedConversationId || id in conversationContentPins ||
                     runStore.activeRunId(id) != null || conversationsById[id] !== state) continue
@@ -1351,11 +1352,8 @@ internal class AgentAppState(
             if (promoted == null) return
             updateCurrentConversation(nextState, updateTimestamp = false)
             steerToActiveRun(selectedConversationId, promoted)
-        } else if (!homeState.isStreaming) {
-            val (nextState, promoted) = AgentMessageQueueReducer.promoteToInterrupt(homeState, id)
-            if (promoted == null) return
-            updateCurrentConversation(nextState, updateTimestamp = false)
-            dispatchQueuedMessage(selectedConversationId, promoted)
+        } else {
+            dispatchQueuedMessage(selectedConversationId, id)
         }
     }
 
@@ -1524,14 +1522,12 @@ internal class AgentAppState(
         }
     }
 
-    private fun dispatchQueuedMessage(
-        conversationId: String?,
-        item: QueuedMessageUi,
-    ) {
+    private fun dispatchQueuedMessage(conversationId: String?, id: String) {
         val targetConversationId = conversationId ?: return
         if (targetConversationId in pendingConversationDeletes) return
         val state = conversationsById[targetConversationId] ?: return
-        if (state.isStreaming || state.isCompacting) return
+        val dispatch = AgentMessageQueueReducer.prepareDispatch(state, id) ?: return
+        val item = dispatch.message
         val fileReferences = item.pendingFileReferences.map { it.reference }
         if (
             !AgentFileReferencePolicy.canSend(
@@ -1554,7 +1550,7 @@ internal class AgentAppState(
             pendingImages = item.pendingImages,
             pendingFileReferences = item.pendingFileReferences,
             editBoundary = null,
-            preserveCurrentDraft = true,
+            queuedDispatch = dispatch,
         )
     }
 
@@ -1565,13 +1561,13 @@ internal class AgentAppState(
         pendingImages: List<PendingImageUi>,
         pendingFileReferences: List<PendingFileReferenceUi>,
         editBoundary: AgentConversationRevisionReducer.Boundary?,
-        preserveCurrentDraft: Boolean = false,
+        queuedDispatch: AgentMessageQueueReducer.Dispatch? = null,
     ) {
         val fileReferences = pendingFileReferences.map { it.reference }
         val runtimePrompt = AgentFileReferencePromptCodec.format(prompt, fileReferences)
-        val runId = "run-${UUID.randomUUID()}"
+        val runId = queuedDispatch?.runId ?: "run-${UUID.randomUUID()}"
         val userMessage = UserMessageUi(
-            id = editBoundary?.userMessage?.id ?: "user-$runId",
+            id = editBoundary?.userMessage?.id ?: queuedDispatch?.userMessageId ?: "user-$runId",
             content = runtimePrompt,
             images = pendingImages.map { it.dataUrl },
             isEdited = editBoundary != null,
@@ -1623,7 +1619,7 @@ internal class AgentAppState(
             history = history,
             userHistoryMessage = userHistoryMessage,
             messages = messages,
-            state = if (preserveCurrentDraft) {
+            state = if (queuedDispatch != null) {
                 state.copy(
                     history = history,
                     journal = editBoundary?.journalPrefix ?: state.journal,
@@ -1640,6 +1636,7 @@ internal class AgentAppState(
                 )
             },
             reasoningEffort = state.reasoningEffort,
+            queuedDispatch = queuedDispatch,
         )
     }
 
@@ -1840,6 +1837,7 @@ internal class AgentAppState(
         reasoningEffort: ReasoningEffort,
         operation: String = AgentRuntimeWire.OP_CHAT,
         rewriteTargetMessageId: String? = null,
+        queuedDispatch: AgentMessageQueueReducer.Dispatch? = null,
     ) {
         if (conversationId in pendingConversationDeletes || !runStore.register(runId, conversationId)) return
         // 发送即绑定：会话记住本轮实际使用的模型，回落到默认模型时也随之更新。
@@ -1858,6 +1856,8 @@ internal class AgentAppState(
                 isCompacting = operation == AgentRuntimeWire.OP_COMPACT,
                 messages = messages,
                 messageEdit = null,
+                queuedMessages = queuedDispatch?.message?.id?.let { id -> state.queuedMessages.filterNot { it.id == id } }
+                    ?: state.queuedMessages,
             )
         )
         refreshConversationSummaries()
@@ -1867,15 +1867,28 @@ internal class AgentAppState(
             // write-ahead：用户消息未提交前不把可能产生副作用的 run 交给 Runtime。
             if (!initialPersistence.await()) {
                 withContext(Dispatchers.Main) {
-                    applyRunResult(
-                        runId,
-                        AgentRuntimeWire.RunResult(
-                            runId = runId,
-                            ok = false,
-                            content = "",
-                            error = appContext.getString(R.string.conversation_persistence_failed),
+                    if (queuedDispatch != null) {
+                        if (runStore.activeRunId(conversationId) == runId) {
+                            runStore.remove(runId)
+                            abortPendingConversationDelete(conversationId)
+                            conversationsById[conversationId]?.let { current ->
+                                updateConversation(conversationId, AgentMessageQueueReducer.restoreFailedDispatch(current, queuedDispatch))
+                                refreshConversationSummaries()
+                                persistConversations()
+                                Toast.makeText(appContext, R.string.conversation_persistence_failed, Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    } else {
+                        applyRunResult(
+                            runId,
+                            AgentRuntimeWire.RunResult(
+                                runId = runId,
+                                ok = false,
+                                content = "",
+                                error = appContext.getString(R.string.conversation_persistence_failed),
+                            )
                         )
-                    )
+                    }
                 }
                 return@launch
             }
@@ -2531,13 +2544,12 @@ internal class AgentAppState(
             if (finishedState != null && finishedState.queuedMessages.isNotEmpty()) {
                 val stoppedByUser = explicitlyStoppedByUser || stoppedDuringSettlement ||
                     (!result.ok && (result.error == LEGACY_STOPPED_ERROR || result.error == SYNTHETIC_STATUS_STOPPED))
-                val (afterPopState, nextQueued) = AgentMessageQueueReducer.pollNextToSendAfterRun(
-                    state = finishedState,
-                    stoppedByUser = stoppedByUser,
-                )
-                updateConversation(conversationId, afterPopState, updateTimestamp = false)
+                val nextQueued = AgentMessageQueueReducer.nextToSendAfterRun(finishedState, stoppedByUser)
                 if (nextQueued != null) {
-                    dispatchQueuedMessage(conversationId, nextQueued)
+                    dispatchQueuedMessage(conversationId, nextQueued.id)
+                } else if (stoppedByUser) {
+                    val cleared = AgentMessageQueueReducer.clearInterruptFlags(finishedState)
+                    if (cleared !== finishedState) updateConversation(conversationId, cleared, updateTimestamp = false)
                 }
             }
         }
