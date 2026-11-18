@@ -18,6 +18,7 @@ internal data class AgentUiHandoffPayload(
         val index: Int,
         val text: String,
         val createdAt: Long,
+        val queueMessageId: String = "",
     )
 
     fun toJson(): String =
@@ -73,6 +74,7 @@ internal data class AgentUiHandoffPayload(
                 index = optInt("index", defaultIndex),
                 text = text,
                 createdAt = optLong("createdAt"),
+                queueMessageId = optString("queueMessageId", optString("queue_message_id")),
             )
         }
     }
@@ -82,4 +84,5 @@ internal data class AgentUiHandoffPayload(
             .put("index", index)
             .put("text", text)
             .put("createdAt", createdAt)
+            .also { if (queueMessageId.isNotBlank()) it.put("queueMessageId", queueMessageId) }
 }

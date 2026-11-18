@@ -27,9 +27,11 @@ internal object AgentPendingResultRecovery {
         if (result.operation == AgentRuntimeWire.OP_REWRITE_REPLY || runId in state.roleplayMessages.pendingRewrites) {
             return Outcome(RoleplayConversationReducer.applyRewrite(state, runId, result), runId in state.appliedRuntimeRunIds)
         }
-        val stateWithSupplements = state.copy(messages = mergeSupplements(
-            runId, listOfNotNull(promptSupplement) + supplements, state.messages,
-        ))
+        val receipts = listOfNotNull(promptSupplement) + supplements
+        val settled = receipts.fold(state) { current, receipt ->
+            AgentMessageQueueReducer.settleSteering(current, runId, receipt.queueMessageId, accepted = true)
+        }
+        val stateWithSupplements = settled.copy(messages = mergeSupplements(runId, receipts, settled.messages))
         val content = result.content.takeIf { result.ok && it.isNotBlank() }
         val history = AgentRuntimeHistoryReducer.apply(
             state = stateWithSupplements,
@@ -49,7 +51,7 @@ internal object AgentPendingResultRecovery {
                 }
             ) + result.transcript,
         )
-        if (history.alreadyApplied) return Outcome(state, alreadyApplied = true)
+        if (history.alreadyApplied) return Outcome(settled, alreadyApplied = true)
         if (result.operation == AgentRuntimeWire.OP_COMPACT) {
             return Outcome(history.state.copy(isStreaming = false, isCompacting = false,
                 messages = AgentRunMessageProjector.mergeCompactionResultNotice(

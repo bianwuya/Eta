@@ -222,7 +222,11 @@ internal data class QueuedMessageUi(
     val pendingImages: List<PendingImageUi> = emptyList(),
     val pendingFileReferences: List<PendingFileReferenceUi> = emptyList(),
     val immediateInterrupt: Boolean = false,
-)
+    val steeringRunId: String = "",
+    val steeringUnconfirmed: Boolean = false,
+) {
+    val awaitingSteeringReceipt: Boolean get() = steeringRunId.isNotBlank() || steeringUnconfirmed
+}
 
 @Immutable
 data class MessageEditUiState(

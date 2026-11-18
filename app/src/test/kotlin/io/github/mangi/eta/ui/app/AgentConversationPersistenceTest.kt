@@ -10,6 +10,8 @@ import io.github.mangi.eta.agent.roleplay.RoleplayReplyRevision
 import io.github.mangi.eta.data.db.EtaDatabase
 import io.github.mangi.eta.ui.model.AgentChatHomeUiState
 import io.github.mangi.eta.ui.model.AgentMessageUi
+import io.github.mangi.eta.ui.model.PendingImageUi
+import io.github.mangi.eta.ui.model.QueuedMessageUi
 import io.github.mangi.eta.ui.model.ThinkingMessageUi
 import io.github.mangi.eta.ui.model.UserMessageUi
 import kotlinx.coroutines.runBlocking
@@ -307,6 +309,71 @@ class AgentConversationPersistenceTest {
         persistence.save(context, loaded.copy(titles = mapOf("active" to "合法改名")))
         assertEquals("合法改名", EtaDatabase.get(context).conversationDao().conversation("active")!!.title)
         assertEquals(current.roleplayMessages, AgentConversationStore.loadConversation(context, "active")!!.roleplayMessages)
+    }
+
+    @Test
+    fun queueRemovalAndUserHistoryCommitTogetherAcrossColdLoads() = runBlocking {
+        val original = QueuedMessageUi("queue-stable", "保留原文 🚀".repeat(3000), pendingImages = listOf(
+            PendingImageUi("image-fixture", "data:image/png;base64,AA==", "data:image/png;base64,AA==", "image/png"),
+        ))
+        val initial = snapshot(mapOf("active" to state("active").copy(queuedMessages = listOf(original))))
+        AgentConversationPersistence().save(context, initial)
+        EtaDatabase.closeForTests()
+        val cold = AgentConversationStore.load(context)
+        val pending = cold.conversationsById.getValue("active")
+        assertEquals(listOf(original), pending.queuedMessages)
+        val dispatch = checkNotNull(AgentMessageQueueReducer.prepareDispatch(pending, original.id))
+        val user = UserMessageUi(dispatch.userMessageId, original.content, original.pendingImages.map { it.dataUrl })
+        val historyEntry = AgentModelClient.ConversationMessage("user", original.content, messageId = user.id)
+        val next = cold.copy(conversationsById = mapOf("active" to pending.copy(
+            queuedMessages = emptyList(), messages = pending.messages + user,
+            history = pending.history + historyEntry, journal = pending.journal + historyEntry,
+        )))
+        val db = EtaDatabase.get(context).openHelper.writableDatabase
+        db.execSQL("CREATE TRIGGER fixture_reject_dispatch BEFORE INSERT ON conversation_messages " +
+            "WHEN NEW.id = '${user.id}' BEGIN SELECT RAISE(ABORT, 'fixture rollback'); END")
+        val persistence = AgentConversationPersistence(cold)
+        val rejected = runCatching { persistence.save(context, next) }
+        assertTrue(rejected.isFailure)
+        EtaDatabase.closeForTests()
+        val rolledBack = checkNotNull(AgentConversationStore.loadConversation(context, "active"))
+        assertEquals(listOf(original), rolledBack.queuedMessages)
+        assertEquals(pending.history, rolledBack.history)
+        assertTrue(rolledBack.messages.none { it.id == user.id })
+        EtaDatabase.get(context).openHelper.writableDatabase.execSQL("DROP TRIGGER fixture_reject_dispatch")
+        persistence.save(context, next) // Deliberately do not dispatch to a Runtime.
+        repeat(2) {
+            EtaDatabase.closeForTests()
+            val saved = checkNotNull(AgentConversationStore.loadConversation(context, "active"))
+            assertTrue(saved.queuedMessages.isEmpty())
+            assertEquals(user, saved.messages.single { it.id == user.id })
+            assertEquals(1, saved.history.count { it.messageId == user.id })
+            assertEquals(1, saved.journal.count { it.messageId == user.id })
+        }
+    }
+
+    @Test
+    fun aRestoredUncertainSteerIsNotDispatchedAndOnlyMatchingReceiptConsumesIt() = runBlocking {
+        val uncertain = QueuedMessageUi("queue-wait", "等待回执", immediateInterrupt = true, steeringRunId = "run-exact")
+        val initial = snapshot(mapOf("active" to state("active").copy(queuedMessages = listOf(uncertain))))
+        AgentConversationPersistence().save(context, initial)
+        EtaDatabase.closeForTests()
+        val loaded = AgentConversationStore.load(context)
+        val before = loaded.conversationsById.getValue("active")
+        val item = before.queuedMessages.single()
+        assertTrue(item.steeringUnconfirmed)
+        assertEquals(null, AgentMessageQueueReducer.prepareDispatch(before, item.id))
+        assertEquals(null, AgentMessageQueueReducer.nextToSendAfterRun(before, stoppedByUser = false))
+        assertEquals(before, AgentMessageQueueReducer.settleSteering(before, "run-other", item.id, accepted = true))
+        val accepted = AgentMessageQueueReducer.settleSteering(before, "run-exact", item.id, accepted = true)
+        assertTrue(accepted.queuedMessages.isEmpty())
+        val payload = io.github.mangi.eta.agent.runtime.AgentUiHandoffPayload("active", supplements = listOf(
+            io.github.mangi.eta.agent.runtime.AgentUiHandoffPayload.Supplement(1, uncertain.content, 0L, uncertain.id),
+        ))
+        assertEquals(payload, io.github.mangi.eta.agent.runtime.AgentUiHandoffPayload.from(payload.toJson()))
+        val event = io.github.mangi.eta.agent.runtime.AgentEvent.UserSupplementReceived(1, uncertain.content, uncertain.id)
+        assertEquals(event, io.github.mangi.eta.agent.runtime.AgentEventJsonCodec.decode(
+            io.github.mangi.eta.agent.runtime.AgentEventJsonCodec.encode(event)))
     }
 
     private fun state(id: String): AgentChatHomeUiState {

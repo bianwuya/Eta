@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="chat_queue_confirming">等待接收确认</string>
+    <string name="chat_queue_outcome_unknown">接收状态未知</string>
+    <string name="chat_queue_confirming_preview">等待接收确认 · %1$s</string>
+    <string name="chat_queue_unknown_preview">接收状态未知 · %1$s</string>
+</resources>

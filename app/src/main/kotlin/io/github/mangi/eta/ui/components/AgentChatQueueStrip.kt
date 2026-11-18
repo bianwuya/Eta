@@ -128,6 +128,8 @@ internal fun AgentChatQueueStrip(
                 Spacer(modifier = Modifier.width(6.dp))
                 Text(
                     text = when {
+                        first.steeringUnconfirmed -> stringResource(R.string.chat_queue_outcome_unknown)
+                        first.awaitingSteeringReceipt -> stringResource(R.string.chat_queue_confirming)
                         first.immediateInterrupt -> stringResource(R.string.chat_queue_interrupting)
                         hasMultiple -> stringResource(R.string.chat_queue_status_count, queuedMessages.size)
                         else -> stringResource(R.string.chat_queue_status)
@@ -228,16 +230,19 @@ private fun QueuedMessagePreviewText(
 ) {
     val singleLine = item.content.replace(WHITESPACE_REGEX, " ").trim()
     val attachmentCount = item.pendingImages.size + item.pendingFileReferences.size
-    val displayText = when {
+    val preview = when {
         singleLine.isNotEmpty() -> singleLine
         item.pendingImages.isNotEmpty() -> stringResource(R.string.chat_queue_images_only, item.pendingImages.size)
         item.pendingFileReferences.isNotEmpty() -> stringResource(R.string.chat_queue_files_only, item.pendingFileReferences.size)
         else -> ""
     }
+    val displayText = if (item.steeringUnconfirmed) stringResource(R.string.chat_queue_unknown_preview, preview)
+    else if (item.awaitingSteeringReceipt) stringResource(R.string.chat_queue_confirming_preview, preview)
+    else preview
     Row(
         modifier = modifier
             .clip(RoundedCornerShape(6.dp))
-            .clickable(onClick = onClick)
+            .clickable(enabled = !item.awaitingSteeringReceipt, onClick = onClick)
             .padding(horizontal = 4.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.Start,
@@ -270,7 +275,7 @@ private fun QueuedMessageItemActions(
     onRemove: () -> Unit,
 ) {
     Row(verticalAlignment = Alignment.CenterVertically) {
-        if (!item.immediateInterrupt) {
+        if (!item.immediateInterrupt && !item.awaitingSteeringReceipt) {
             IconButton(
                 onClick = onSteer,
                 enabled = steerEnabled,
@@ -288,6 +293,7 @@ private fun QueuedMessageItemActions(
         }
         IconButton(
             onClick = onRemove,
+            enabled = !item.awaitingSteeringReceipt || item.steeringUnconfirmed,
             minWidth = QueueActionSize,
             minHeight = QueueActionSize,
         ) {

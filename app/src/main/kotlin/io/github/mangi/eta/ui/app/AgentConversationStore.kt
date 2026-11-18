@@ -135,6 +135,10 @@ internal object AgentConversationStore {
                                 phase = "write_checkpoint"
                                 dao.updateContextCheckpoint(id, history, journal)
                             }
+                            if (state.queuedMessages != old?.queuedMessages.orEmpty() || old == null && id in stored) {
+                                phase = "write_pending_queue"
+                                AgentPendingQueueCodec.write(appContext, dao, id, state.queuedMessages)
+                            }
                             val oldMessages = old?.messages.orEmpty()
                             var prefix = 0
                             val aligned = old != null && old.messageStartIndex == state.messageStartIndex &&
@@ -265,6 +269,7 @@ internal object AgentConversationStore {
                 journal = journal,
                 messages = page.messages,
                 history = history.ifEmpty { loadLegacyHistory(dao, conversationId) },
+                queuedMessages = AgentPendingQueueCodec.read(dao, conversationId),
                 appliedRuntimeRunIds = conversation.appliedRuntimeRunIdsJson.toStringList(),
                 input = "", isStreaming = false,
                 thinkingEnabled = conversation.reasoningEffortValue.enablesReasoning,
@@ -344,7 +349,7 @@ internal object AgentConversationStore {
             )
             else -> message
         } }),
-        history = emptyList(), journal = emptyList(), roleplay = null, roleplayMessages = RoleplayMessageState(),
+        history = emptyList(), journal = emptyList(), queuedMessages = emptyList(), roleplay = null, roleplayMessages = RoleplayMessageState(),
         appliedRuntimeRunIds = emptyList(), isConversationLoaded = false, messageStartIndex = 0, hasEarlierMessages = false,
         conversationCharacterName = state.roleplay?.characterName ?: state.conversationCharacterName,
         conversationCharacterAvatarPath = state.roleplay?.avatarPath ?: state.conversationCharacterAvatarPath,

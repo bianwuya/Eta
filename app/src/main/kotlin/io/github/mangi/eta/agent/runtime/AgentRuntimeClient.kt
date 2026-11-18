@@ -133,7 +133,7 @@ internal class AgentRuntimeClient(
         }
     }
 
-    fun steerRun(runId: String, text: String): SteerOutcome {
+    fun steerRun(runId: String, text: String, queueMessageId: String = ""): SteerOutcome {
         val trimmed = text.trim()
         if (runId.isBlank() || trimmed.isBlank()) return SteerOutcome.Rejected
         val responseLatch = CountDownLatch(1)
@@ -155,7 +155,7 @@ internal class AgentRuntimeClient(
             lease.binder.linkToDeath(deathRecipient, 0)
             val msg = Message.obtain(null, AgentRuntimeWire.MSG_STEER)
             msg.replyTo = clientMessenger
-            msg.data = AgentRuntimeWire.steerBundle(runId, trimmed, context.cacheDir)
+            msg.data = AgentRuntimeWire.steerBundle(runId, trimmed, context.cacheDir, queueMessageId)
             AgentWireText.send(lease.messenger, msg)
             if (!responseLatch.await(RESPONSE_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
                 SteerOutcome.Unavailable

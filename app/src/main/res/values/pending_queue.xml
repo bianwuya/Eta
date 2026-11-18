@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="chat_queue_confirming">Awaiting receipt</string>
+    <string name="chat_queue_outcome_unknown">Receipt unknown</string>
+    <string name="chat_queue_confirming_preview">Awaiting receipt · %1$s</string>
+    <string name="chat_queue_unknown_preview">Receipt unknown · %1$s</string>
+</resources>

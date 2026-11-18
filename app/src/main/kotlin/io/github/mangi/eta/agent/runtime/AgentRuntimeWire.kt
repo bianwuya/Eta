@@ -671,10 +671,13 @@ internal object AgentRuntimeWire {
 
     fun attachRunSucceeded(bundle: Bundle): Boolean = bundle.getBoolean(KEY_OK)
 
-    fun steerBundle(runId: String, text: String, textCacheDir: File? = null): Bundle = Bundle().apply {
+    fun steerBundle(runId: String, text: String, textCacheDir: File? = null, queueMessageId: String = ""): Bundle = Bundle().apply {
         putString(KEY_RUN_ID, runId)
+        if (queueMessageId.isNotBlank()) putString("queue_message_id", queueMessageId)
         AgentWireText.put(this, KEY_STEER_TEXT, text, textCacheDir)
     }
+
+    fun steerQueueIdFromBundle(bundle: Bundle): String = bundle.getString("queue_message_id").orEmpty()
 
     fun steerTextFromBundle(bundle: Bundle): String =
         AgentWireText.read(bundle, KEY_STEER_TEXT).orEmpty()
@@ -821,6 +824,7 @@ internal object AgentRuntimeWire {
                 putString(KEY_TYPE, "user_supplement_received")
                 putInt("index", event.index)
                 putString("text", event.text)
+                if (event.queueMessageId.isNotBlank()) putString("queue_message_id", event.queueMessageId)
             }
 
             is AgentEvent.ToolStarted -> {
@@ -987,6 +991,7 @@ internal object AgentRuntimeWire {
         "user_supplement_received" -> AgentEvent.UserSupplementReceived(
             index = bundle.getInt("index"),
             text = bundle.getString("text").orEmpty(),
+            queueMessageId = steerQueueIdFromBundle(bundle),
         )
 
         "tool_started" -> AgentEvent.ToolStarted(

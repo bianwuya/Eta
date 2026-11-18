@@ -10,10 +10,11 @@ import io.github.mangi.eta.data.db.EtaDatabase
 import io.github.mangi.eta.data.repository.ConversationBranchRepository
 import io.github.mangi.eta.ui.model.AgentChatHomeUiState
 import io.github.mangi.eta.ui.model.AgentChatMessageUi
+import io.github.mangi.eta.ui.model.QueuedMessageUi
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
-/** 只在事务提交后推进保存基线，不持有输入草稿、待发送图片等临时 UI 状态。 */
+/** 只在事务提交后推进保存基线；不保存尚未提交到队列的草稿。 */
 internal class AgentConversationPersistence(initial: AgentConversationStore.Snapshot? = null) {
     private val mutex = Mutex()
     // 未对齐的会话不进入基线，首次保存按新会话整段写入，重排 sort_index。
@@ -81,6 +82,7 @@ internal class AgentConversationPersistence(initial: AgentConversationStore.Snap
         val journal: List<AgentModelClient.ConversationMessage>,
         val isConversationLoaded: Boolean,
         val messageStartIndex: Int,
+        val queuedMessages: List<QueuedMessageUi>,
     ) {
         constructor(
             state: AgentChatHomeUiState,
@@ -91,7 +93,7 @@ internal class AgentConversationPersistence(initial: AgentConversationStore.Snap
             title, updatedAt, isPinned, state.reasoningEffort, state.appliedRuntimeRunIds,
             state.roleplay, if (state.roleplay == null) RoleplayMessageState() else state.roleplayMessages,
             state.modelId, state.messages, state.history, state.journal.ifEmpty { state.history },
-            state.isConversationLoaded, state.messageStartIndex,
+            state.isConversationLoaded, state.messageStartIndex, state.queuedMessages,
         )
 
         fun sameMetadata(other: Content): Boolean =

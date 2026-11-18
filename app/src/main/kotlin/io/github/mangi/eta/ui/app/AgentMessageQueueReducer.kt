@@ -74,7 +74,7 @@ internal object AgentMessageQueueReducer {
         id: String,
     ): Pair<AgentChatUiState, QueuedMessageUi?> {
         if (state.isCompacting) return state to null
-        val target = state.queuedMessages.firstOrNull { it.id == id } ?: return state to null
+        val target = state.queuedMessages.firstOrNull { it.id == id && !it.awaitingSteeringReceipt } ?: return state to null
         val rest = state.queuedMessages
             .filterNot { it.id == id }
             .map { it.copy(immediateInterrupt = false) }
@@ -142,7 +142,9 @@ internal object AgentMessageQueueReducer {
     /** 收尾时只选下一条；权限检查或注册运行失败不能移除队列项。 */
     fun nextToSendAfterRun(state: AgentChatUiState, stoppedByUser: Boolean): QueuedMessageUi? {
         if (state.isStreaming || state.isCompacting) return null
-        return state.queuedMessages.firstOrNull()?.takeIf { !stoppedByUser || it.immediateInterrupt }
+        return state.queuedMessages.firstOrNull()?.takeIf {
+            !it.awaitingSteeringReceipt && (!stoppedByUser || it.immediateInterrupt)
+        }
     }
 
     data class Dispatch(val message: QueuedMessageUi, val originalIndex: Int) {
@@ -152,8 +154,16 @@ internal object AgentMessageQueueReducer {
 
     fun prepareDispatch(state: AgentChatUiState, id: String): Dispatch? {
         if (!state.isConversationLoaded || state.isStreaming || state.isCompacting) return null
-        val index = state.queuedMessages.indexOfFirst { it.id == id }
+        val index = state.queuedMessages.indexOfFirst { it.id == id && !it.awaitingSteeringReceipt }
         return if (index < 0) null else Dispatch(state.queuedMessages[index], index)
+    }
+
+    fun settleSteering(state: AgentChatUiState, runId: String, queueId: String, accepted: Boolean): AgentChatUiState {
+        if (runId.isBlank() || queueId.isBlank() || state.queuedMessages.none { it.id == queueId && it.steeringRunId == runId }) return state
+        return state.copy(queuedMessages = if (accepted) state.queuedMessages.filterNot { it.id == queueId }
+            else state.queuedMessages.map { item ->
+                if (item.id != queueId) item else item.copy(immediateInterrupt = false, steeringRunId = "", steeringUnconfirmed = false)
+            })
     }
 
     /** 仅用于写入用户消息失败且 Runtime 尚未接到请求时；保留失败期间新增的草稿和队列。 */

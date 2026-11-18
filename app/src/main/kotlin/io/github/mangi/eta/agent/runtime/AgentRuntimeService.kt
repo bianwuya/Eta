@@ -872,7 +872,8 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
             AgentWireText.close(data)
         }
         val run = runId.takeIf(String::isNotBlank)?.let(runs::get)
-        val event = if (run != null && text.isNotBlank()) run.supplement(text) else null
+        val queueMessageId = AgentRuntimeWire.steerQueueIdFromBundle(data).takeIf { it.length <= 128 }.orEmpty()
+        val event = if (run != null && text.isNotBlank()) run.supplement(text, queueMessageId) else null
         if (run == null || event == null) {
             sendSteerResponse(runId, replyTo, accepted = false)
             return
@@ -883,6 +884,23 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         run.overlayState = run.overlayState.applyEvent(event)
         if (displayedRun === run && guiControl.state.value.ownerRunId == run.runId && !guiControl.state.value.userPaused) {
             state.value = run.overlayState
+        }
+        if (queueMessageId.isNotBlank() && run.request.handoff?.source == AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE) {
+            // Receipt lane is disjoint from the chronological model-event recorder. A failed append
+            // does not reject work already accepted: the client retains its unresolved item.
+            val receiptRunId = run.runId
+            try {
+                resultIo.execute {
+                    runCatching { AgentRunCheckpointStore.append(this, receiptRunId, (1 shl 30) + event.index, event) }
+                        .onFailure { failure ->
+                            AndroidAgentLogger.warnThrottled("steering_checkpoint_failed") {
+                                "Steering receipt checkpoint failed: type=${failure.safeLogType()}"
+                            }
+                        }
+                }
+            } catch (_: RejectedExecutionException) {
+                // The outbox can still carry this receipt; do not claim the operation was rejected.
+            }
         }
         sendSteerResponse(runId, replyTo, accepted = true, supplementIndex = event.index)
     }

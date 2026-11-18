@@ -515,14 +515,19 @@ internal class AgentAppState(
                         ) || stateChanged
                     }
                     val result = completedRun.result
+                    val current = conversationsById[conversationId] ?: state
                     val recovery = AgentPendingResultRecovery.apply(
-                        state = conversationsById[conversationId] ?: state,
+                        state = current,
                         runId = runId,
                         result = result,
                         promptSupplement = payload.promptSupplement,
                         supplements = payload.supplements,
                     )
                     if (recovery.alreadyApplied) {
+                        if (recovery.state !== current) {
+                            updateConversation(conversationId, recovery.state, updateTimestamp = false)
+                            stateChanged = true
+                        }
                         acknowledgeAfterSave += runId
                         return@forEach
                     }
@@ -1069,8 +1074,8 @@ internal class AgentAppState(
                 }
                 if (!state.isConversationLoaded || id == selectedConversationId || id in conversationContentPins ||
                     state.isStreaming || runStore.activeRunId(id) != null ||
-                    // 队列尚未入库，不把仅存在于内存的待发项换成历史占位。
-                    state.queuedMessages.isNotEmpty() || state.messageEdit != null || conversationsById[id] !== state) continue
+                    state.queuedMessages.any { it.awaitingSteeringReceipt && !it.steeringUnconfirmed } ||
+                    state.messageEdit != null || conversationsById[id] !== state) continue
                 conversationPersistence.forgetConversation(id)
                 if (id == selectedConversationId || id in conversationContentPins ||
                     runStore.activeRunId(id) != null || conversationsById[id] !== state) continue
@@ -1319,12 +1324,13 @@ internal class AgentAppState(
 
     fun steerQueuedMessage(id: String) {
         if (!homeState.isConversationLoaded || homeState.isCompacting) return
-        val target = homeState.queuedMessages.firstOrNull { it.id == id } ?: return
+        val target = homeState.queuedMessages.firstOrNull { it.id == id && !it.awaitingSteeringReceipt } ?: return
         if (homeState.isStreaming) {
             if (target.pendingImages.isNotEmpty()) {
                 val headState = AgentMessageQueueReducer.promoteToQueueHead(homeState, id)
                 if (headState !== homeState) {
                     updateCurrentConversation(headState, updateTimestamp = false)
+                    persistQueueEdit()
                 }
                 Toast.makeText(
                     appContext,
@@ -1358,20 +1364,28 @@ internal class AgentAppState(
     }
 
     fun recallQueuedMessage(id: String, currentDraftText: String) {
-        if (!homeState.isConversationLoaded) return
+        if (!homeState.isConversationLoaded || homeState.queuedMessages.any { it.id == id && it.awaitingSteeringReceipt }) return
         val nextState = AgentMessageQueueReducer.recallToDraft(
             state = homeState,
             currentInputText = currentDraftText,
             id = id,
         ) ?: return
         updateCurrentConversation(nextState, updateTimestamp = false)
+        persistQueueEdit()
     }
 
     fun removeQueuedMessage(id: String) {
         if (!homeState.isConversationLoaded) return
-        val nextState = AgentMessageQueueReducer.remove(homeState, id)
-        if (nextState !== homeState) {
-            updateCurrentConversation(nextState, updateTimestamp = false)
+        val target = homeState.queuedMessages.firstOrNull { it.id == id } ?: return
+        if (target.awaitingSteeringReceipt && !target.steeringUnconfirmed) return
+        updateCurrentConversation(AgentMessageQueueReducer.remove(homeState, id), updateTimestamp = false)
+        persistQueueEdit()
+    }
+
+    private fun persistQueueEdit() {
+        val saved = persistConversations()
+        scope.launch {
+            if (!saved.await()) Toast.makeText(appContext, R.string.conversation_persistence_failed, Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -1430,6 +1444,7 @@ internal class AgentAppState(
                     state = AgentMessageQueueReducer.enqueueAtHead(homeState, queued),
                     updateTimestamp = false,
                 )
+                persistQueueEdit()
                 Toast.makeText(
                     appContext,
                     appContext.getString(R.string.chat_queue_steer_images_deferred),
@@ -1441,9 +1456,8 @@ internal class AgentAppState(
                 state = AgentMessageQueueReducer.enqueue(homeState, queued),
                 updateTimestamp = false,
             )
-            if (immediateInterrupt) {
-                steerToActiveRun(selectedConversationId, queued)
-            }
+            if (immediateInterrupt) steerToActiveRun(selectedConversationId, queued)
+            else persistQueueEdit()
             return
         }
 
@@ -1478,48 +1492,55 @@ internal class AgentAppState(
         item: QueuedMessageUi,
     ) {
         val targetConversationId = conversationId ?: return
-        fun demoteToQueueHead() {
-            val current = conversationsById[targetConversationId] ?: return
-            val demoted = AgentMessageQueueReducer.clearInterruptFlag(current, item.id)
-            if (demoted !== current) {
-                updateConversation(targetConversationId, demoted, updateTimestamp = false)
-            }
-        }
+        val state = conversationsById[targetConversationId] ?: return
         val activeRunId = runStore.activeRunId(targetConversationId)
-        val steerPrompt = AgentFileReferencePromptCodec.format(
-            item.content,
-            item.pendingFileReferences.map { it.reference },
-        ).trim()
+        val steerPrompt = AgentFileReferencePromptCodec.format(item.content, item.pendingFileReferences.map { it.reference }).trim()
         if (activeRunId == null || steerPrompt.isBlank()) {
-            demoteToQueueHead()
+            updateConversation(targetConversationId, AgentMessageQueueReducer.clearInterruptFlag(state, item.id), updateTimestamp = false)
+            persistQueueEdit()
             return
         }
-        scope.launch(Dispatchers.IO) {
-            val outcome = AgentRuntimeClient(appContext, AndroidAgentLogger).steerRun(activeRunId, steerPrompt)
-            withContext(Dispatchers.Main) {
-                val current = conversationsById[targetConversationId] ?: return@withContext
-                if (current.queuedMessages.none { it.id == item.id }) return@withContext
-                when (outcome) {
-                    is AgentRuntimeClient.SteerOutcome.Accepted -> {
-                        val updated = AgentMessageQueueReducer.remove(current, item.id)
-                        if (updated !== current) {
-                            updateConversation(targetConversationId, updated, updateTimestamp = false)
-                        }
-                        if (outcome.supplementIndex > 0) {
-                            insertSupplementMessage(
-                                runId = activeRunId,
-                                index = outcome.supplementIndex,
-                                text = steerPrompt,
-                                persist = true,
-                            )
-                        }
-                    }
-                    AgentRuntimeClient.SteerOutcome.Rejected,
-                    AgentRuntimeClient.SteerOutcome.Unavailable,
-                    -> demoteToQueueHead()
+        // Persist the exact run/queue binding before sending. An IPC timeout does not prove rejection.
+        updateConversation(targetConversationId, state.copy(queuedMessages = state.queuedMessages.map {
+            if (it.id == item.id) it.copy(steeringRunId = activeRunId) else it
+        }), updateTimestamp = false)
+        val saved = persistConversations()
+        scope.launch {
+            val committed = saved.await()
+            if (!committed || runStore.activeRunId(targetConversationId) != activeRunId || runStore.isStopRequested(activeRunId)) {
+                val current = conversationsById[targetConversationId] ?: return@launch
+                val demoted = AgentMessageQueueReducer.settleSteering(current, activeRunId, item.id, accepted = false)
+                if (demoted !== current) {
+                    updateConversation(targetConversationId, demoted, updateTimestamp = false)
+                    persistQueueEdit()
                 }
+                return@launch
+            }
+            val outcome = withContext(Dispatchers.IO) {
+                AgentRuntimeClient(appContext, AndroidAgentLogger).steerRun(activeRunId, steerPrompt, item.id)
+            }
+            val current = conversationsById[targetConversationId] ?: return@launch
+            if (current.queuedMessages.none { it.id == item.id && it.steeringRunId == activeRunId }) return@launch
+            when (outcome) {
+                is AgentRuntimeClient.SteerOutcome.Accepted -> if (outcome.supplementIndex > 0) {
+                    insertSupplementMessage(activeRunId, outcome.supplementIndex, steerPrompt, queueId = item.id,
+                        conversationId = targetConversationId)
+                } else markSteeringUnknown(targetConversationId, current, activeRunId, item.id)
+                AgentRuntimeClient.SteerOutcome.Rejected -> {
+                    updateConversation(targetConversationId,
+                        AgentMessageQueueReducer.settleSteering(current, activeRunId, item.id, accepted = false), updateTimestamp = false)
+                    persistQueueEdit()
+                }
+                AgentRuntimeClient.SteerOutcome.Unavailable -> markSteeringUnknown(targetConversationId, current, activeRunId, item.id)
             }
         }
+    }
+
+    private fun markSteeringUnknown(conversationId: String, state: AgentChatHomeUiState, runId: String, queueId: String) {
+        updateConversation(conversationId, state.copy(queuedMessages = state.queuedMessages.map {
+            if (it.id == queueId && it.steeringRunId == runId) it.copy(steeringUnconfirmed = true) else it
+        }), updateTimestamp = false)
+        persistQueueEdit()
     }
 
     private fun dispatchQueuedMessage(conversationId: String?, id: String) {
@@ -2421,7 +2442,7 @@ internal class AgentAppState(
                 refreshConversationSummaries()
             }
             is AgentEvent.UserSupplementReceived ->
-                insertSupplementMessage(runId, event.index, event.text, persist = persistSupplement)
+                insertSupplementMessage(runId, event.index, event.text, persist = persistSupplement, queueId = event.queueMessageId)
             is AgentEvent.RunStarted -> if (runStore.isStopRequested(runId)) scope.launch(Dispatchers.IO) {
                 AgentRuntimeClient(appContext, AndroidAgentLogger).cancelRun(runId)
             }
@@ -2634,15 +2655,16 @@ internal class AgentAppState(
         index: Int,
         text: String,
         persist: Boolean = true,
+        queueId: String = "",
+        conversationId: String? = conversationIdForRun(runId),
     ) {
-        updateMessages(runId) { messages ->
-            val id = AgentPendingResultRecovery.supplementMessageId(runId, index)
-            if (messages.any { it.id == id }) {
-                messages
-            } else {
-                messages + UserMessageUi(id = id, content = text)
-            }
-        }
+        val owner = conversationId ?: return
+        val current = conversationsById[owner] ?: return
+        val id = AgentPendingResultRecovery.supplementMessageId(runId, index)
+        val settled = AgentMessageQueueReducer.settleSteering(current, runId, queueId, accepted = true)
+        val messages = if (settled.messages.any { it.id == id }) settled.messages else settled.messages + UserMessageUi(id, text)
+        if (settled === current && messages === current.messages) return
+        updateConversation(owner, settled.copy(messages = messages))
         refreshConversationSummaries()
         if (persist) persistConversations()
     }
