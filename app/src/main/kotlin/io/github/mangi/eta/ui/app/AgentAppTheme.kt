@@ -3,17 +3,22 @@ package io.github.mangi.eta.ui.app
 import android.util.DisplayMetrics
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.movableContentOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -30,7 +35,14 @@ import io.github.mangi.eta.data.model.AppearanceThemeMode
 import io.github.mangi.eta.data.model.AppearanceUiStyle
 import io.github.mangi.eta.data.model.DEFAULT_INTERFACE_SCALE
 import io.github.mangi.eta.data.model.normalizeInterfaceScale
-import top.yukonga.miuix.kmp.blur.isRuntimeShaderSupported
+import io.github.mangi.eta.ui.components.DemandSceneBackdrop
+import io.github.mangi.eta.ui.components.EtaTopLayerHost
+import io.github.mangi.eta.ui.components.EtaTopLayerState
+import io.github.mangi.eta.ui.components.captureGlassBackdrop
+import io.github.mangi.eta.ui.components.rememberGlassBackdrop
+import kotlinx.coroutines.delay
+import top.yukonga.miuix.kmp.basic.Scaffold
+import top.yukonga.miuix.kmp.material.isRuntimeShaderSupported
 import top.yukonga.miuix.kmp.theme.ColorSchemeMode
 import top.yukonga.miuix.kmp.theme.LocalContentColor
 import top.yukonga.miuix.kmp.theme.MiuixTheme
@@ -38,11 +50,13 @@ import top.yukonga.miuix.kmp.theme.ThemeColorSpec
 import top.yukonga.miuix.kmp.theme.ThemeController
 import top.yukonga.miuix.kmp.theme.ThemePaletteStyle
 import top.yukonga.miuix.kmp.theme.platformDynamicColors
+import top.yukonga.miuix.kmp.utils.MiuixPopupUtils.Companion.MiuixPopupHost
 
 @Composable
 fun AgentAppTheme(
     appearance: AppearanceSettings,
     applyInterfaceScale: Boolean,
+    provideGlassHost: Boolean = false,
     onResolvedDarkModeChange: (Boolean) -> Unit = {},
     content: @Composable () -> Unit,
 ) {
@@ -179,27 +193,20 @@ fun AgentAppTheme(
         }
 
         val blurSupported = isRuntimeShaderSupported()
-        val effectiveBlur = if (appearance.uiStyle == AppearanceUiStyle.COUI) {
-            blurSupported
-        } else {
-            appearance.blurEnabled && blurSupported
-        }
 
         MiuixTheme(colors = themedMiuixColors) {
             CompositionLocalProvider(
                 LocalContentColor provides themedMiuixColors.onBackground,
                 LocalCouiDarkTheme provides isDark,
-                LocalCouiContourGlowEnabled provides effectiveBlur,
+                LocalCouiContourGlowEnabled provides blurSupported,
                 LocalAppearanceSettings provides appearance,
                 LocalUiStyle provides appearance.uiStyle,
-                LocalBlurEnabled provides effectiveBlur,
-                LocalTopBarBlurStyle provides appearance.topBarBlurStyle,
                 LocalPlatformDensity provides platformDensity,
                 LocalDensity provides appDensity,
             ) {
                 if (appearance.uiStyle == AppearanceUiStyle.COUI) {
                     CouiTheme(darkTheme = isDark, colorScheme = couiNative) {
-                        if (effectiveBlur) {
+                        if (blurSupported) {
                             ProvideCouiMenuBackdrop(isolateContent = false) { windowSource ->
                                 Box(Modifier.fillMaxSize().then(windowSource)) {
                                     scopedContent()
@@ -207,6 +214,64 @@ fun AgentAppTheme(
                             }
                         } else {
                             scopedContent()
+                        }
+                    }
+                } else if (provideGlassHost) {
+                    val surfaceColor = themedMiuixColors.surface
+                    val delegateBackdrop = rememberGlassBackdrop(surfaceColor)
+                    val sceneBackdrop = remember(delegateBackdrop, surfaceColor) {
+                        delegateBackdrop?.let { DemandSceneBackdrop(it, fallbackColor = surfaceColor) }
+                    }
+                    val topLayer = remember { EtaTopLayerState() }
+                    var hasActiveMiuixPopup by remember { mutableStateOf(false) }
+                    var hasActiveTopLayerOverlay by remember { mutableStateOf(false) }
+                    val hasActiveOverlay = hasActiveMiuixPopup || hasActiveTopLayerOverlay
+                    val captureActive = hasActiveOverlay || sceneBackdrop?.isActive == true
+                    if (sceneBackdrop != null) {
+                        SideEffect {
+                            sceneBackdrop.setDelegateAttached(captureActive)
+                        }
+                        LaunchedEffect(sceneBackdrop.isActive, hasActiveOverlay) {
+                            if (!sceneBackdrop.isActive || hasActiveOverlay) return@LaunchedEffect
+                            while (sceneBackdrop.isActive && !hasActiveOverlay) {
+                                delay(250L)
+                                sceneBackdrop.refreshIdleState()
+                            }
+                        }
+                    }
+                    Scaffold(
+                        modifier = Modifier.fillMaxSize(),
+                        containerColor = Color.Transparent,
+                        contentWindowInsets = WindowInsets(0),
+                        popupHost = {
+                            Box(
+                                modifier = Modifier.onSizeChanged { size ->
+                                    hasActiveMiuixPopup = size.width > 0 && size.height > 0
+                                },
+                            ) {
+                                MiuixPopupHost()
+                            }
+                        },
+                    ) {
+                        CompositionLocalProvider(
+                            LocalGlassSceneBackdrop provides sceneBackdrop,
+                            LocalEtaTopLayer provides topLayer,
+                        ) {
+                            Box(modifier = Modifier.fillMaxSize()) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .captureGlassBackdrop(
+                                            if (captureActive) delegateBackdrop else null,
+                                        ),
+                                ) {
+                                    scopedContent()
+                                }
+                                EtaTopLayerHost(
+                                    state = topLayer,
+                                    onActiveOverlayChanged = { hasActiveTopLayerOverlay = it },
+                                )
+                            }
                         }
                     }
                 } else {
@@ -227,6 +292,7 @@ private fun AppearancePaletteStyle.toMiuixPaletteStyle(): ThemePaletteStyle = wh
     AppearancePaletteStyle.MONOCHROME -> ThemePaletteStyle.Monochrome
     AppearancePaletteStyle.FIDELITY -> ThemePaletteStyle.Fidelity
     AppearancePaletteStyle.CONTENT -> ThemePaletteStyle.Content
+    AppearancePaletteStyle.CMF -> ThemePaletteStyle.Cmf
 }
 
 private fun AppearanceAccentColor.seedColor(): Color = when (this) {

@@ -3,6 +3,8 @@ package io.github.mangi.eta.ui.pages.providers
 import androidx.compose.runtime.saveable.mapSaver
 import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.model.CustomHeaderFilter
+import io.github.mangi.eta.agent.model.ProviderUrls
+import io.github.mangi.eta.data.model.GeminiEndpointMode
 import io.github.mangi.eta.data.model.GeminiProviderSetting
 import io.github.mangi.eta.data.model.AnthropicProviderSetting
 import io.github.mangi.eta.data.model.CustomHeader
@@ -33,6 +35,8 @@ internal data class ProviderConfigDraft(
     val anthropicVersion: String,
     val headers: List<ProviderHeaderDraft> = emptyList(),
     val authMode: String = ProviderAuthModes.API_KEY,
+    val vertexProject: String = "",
+    val vertexLocation: String = GeminiProviderSetting.DEFAULT_VERTEX_LOCATION,
 ) {
     companion object {
         fun from(provider: ProviderSetting): ProviderConfigDraft {
@@ -48,11 +52,16 @@ internal data class ProviderConfigDraft(
                 endpointMode = profile?.endpointMode ?: when (provider) {
                     is OpenAiCompatibleProviderSetting -> provider.endpointMode
                     is CustomProviderSetting -> provider.endpointMode
-                    is AnthropicProviderSetting, is GeminiProviderSetting -> ""
+                    is GeminiProviderSetting -> GeminiEndpointMode.normalize(provider.endpointMode)
+                    is AnthropicProviderSetting -> ""
                 },
                 hostedWebSearchEnabled = provider.hostedWebSearchEnabled,
                 anthropicVersion = (provider as? AnthropicProviderSetting)?.anthropicVersion
                     ?: AnthropicProviderSetting.DEFAULT_ANTHROPIC_VERSION,
+                vertexProject = (provider as? GeminiProviderSetting)?.vertexProject.orEmpty(),
+                vertexLocation = (provider as? GeminiProviderSetting)?.vertexLocation
+                    ?.ifBlank { GeminiProviderSetting.DEFAULT_VERTEX_LOCATION }
+                    ?: GeminiProviderSetting.DEFAULT_VERTEX_LOCATION,
             )
         }
     }
@@ -71,6 +80,8 @@ internal val ProviderConfigDraftSaver = mapSaver(
             "endpointMode" to draft.endpointMode,
             "hostedWebSearchEnabled" to draft.hostedWebSearchEnabled,
             "anthropicVersion" to draft.anthropicVersion,
+            "vertexProject" to draft.vertexProject,
+            "vertexLocation" to draft.vertexLocation,
         )
     },
     restore = { state ->
@@ -87,6 +98,10 @@ internal val ProviderConfigDraftSaver = mapSaver(
             endpointMode = state.getValue("endpointMode") as String,
             hostedWebSearchEnabled = state.getValue("hostedWebSearchEnabled") as Boolean,
             anthropicVersion = state.getValue("anthropicVersion") as String,
+            vertexProject = state["vertexProject"] as? String ?: "",
+            vertexLocation = (state["vertexLocation"] as? String)
+                ?.takeIf(String::isNotBlank)
+                ?: GeminiProviderSetting.DEFAULT_VERTEX_LOCATION,
         )
     },
 )
@@ -103,6 +118,8 @@ internal fun buildUpdatedProvider(
     anthropicVersion: String,
     customHeaders: List<CustomHeader>,
     authMode: String = source.authMode,
+    vertexProject: String = "",
+    vertexLocation: String = GeminiProviderSetting.DEFAULT_VERTEX_LOCATION,
 ): ProviderSetting {
     val prompt = systemPrompt.trim().takeIf { it.isNotBlank() }
     val profile = ProviderConnectionProfile.forAuthMode(authMode)
@@ -137,6 +154,9 @@ internal fun buildUpdatedProvider(
             systemPrompt = prompt,
             isEnabled = isEnabled,
             hostedWebSearchEnabled = hostedWebSearchEnabled,
+            endpointMode = GeminiEndpointMode.normalize(endpointMode),
+            vertexProject = vertexProject.trim(),
+            vertexLocation = vertexLocation.trim().ifBlank { GeminiProviderSetting.DEFAULT_VERTEX_LOCATION },
         )
         is AnthropicProviderSetting -> source.copy(
             customHeaders = customHeaders.map { it.copy(name = it.name.trim()) },
@@ -162,7 +182,33 @@ internal fun ProviderConfigDraft.toProvider(source: ProviderSetting): ProviderSe
     anthropicVersion = anthropicVersion,
     customHeaders = headers.map { it.header },
     authMode = authMode,
+    vertexProject = vertexProject,
+    vertexLocation = vertexLocation,
 )
+
+internal fun ProviderConfigDraft.withGeminiEndpointMode(mode: String): ProviderConfigDraft {
+    val normalized = GeminiEndpointMode.normalize(mode)
+    val trimmedUrl = baseUrl.trim().trimEnd('/')
+    val knownDefaults = setOf(
+        "",
+        GeminiProviderSetting.DEFAULT_BASE_URL,
+        GeminiProviderSetting.DEFAULT_VERTEX_BASE_URL,
+    )
+    val nextBaseUrl = if (trimmedUrl in knownDefaults) {
+        if (normalized == GeminiEndpointMode.VERTEX_AI) {
+            GeminiProviderSetting.DEFAULT_VERTEX_BASE_URL
+        } else {
+            GeminiProviderSetting.DEFAULT_BASE_URL
+        }
+    } else {
+        baseUrl
+    }
+    return copy(
+        endpointMode = normalized,
+        baseUrl = nextBaseUrl,
+        vertexLocation = vertexLocation.ifBlank { GeminiProviderSetting.DEFAULT_VERTEX_LOCATION },
+    )
+}
 
 internal fun providerAccountAuthMode(provider: ProviderSetting): String? {
     if (provider is AnthropicProviderSetting || provider is GeminiProviderSetting) return null
@@ -203,6 +249,13 @@ internal fun validateProviderDraft(context: android.content.Context, draft: Prov
     val uri = runCatching { java.net.URI(draft.baseUrl.trim()) }.getOrNull()
     if (uri == null || uri.scheme !in setOf("http", "https") || uri.host.isNullOrBlank()) {
         return context.getString(R.string.page_base_url_must_be_a_valid_http_s_address_0e7d58)
+    }
+    if (draft.endpointMode == GeminiEndpointMode.VERTEX_AI) {
+        try {
+            ProviderUrls.validateVertexChatEndpoint(draft.baseUrl, draft.vertexProject, draft.vertexLocation)
+        } catch (failure: IllegalArgumentException) {
+            return failure.message ?: context.getString(R.string.provider_i18n_vertex_config_invalid)
+        }
     }
     return CustomHeaderFilter.validationError(draft.headers.map { it.header })
 }

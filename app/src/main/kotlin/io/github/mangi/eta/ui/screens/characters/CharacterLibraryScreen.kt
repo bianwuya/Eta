@@ -10,13 +10,13 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.FileUpload
 import androidx.compose.material.icons.rounded.SearchOff
 import androidx.compose.material.icons.rounded.SportsBar
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import com.itos.coui.icons.CouiIcons
@@ -24,12 +24,14 @@ import com.itos.coui.layout.Footer
 import com.itos.coui.layout.Group
 import com.itos.coui.text.CouiTextKind
 import com.itos.coui.text.Text as CouiText
+import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.roleplay.CharacterProfile
 import io.github.mangi.eta.data.model.AppearanceUiStyle
 import io.github.mangi.eta.ui.app.CharacterLibraryStore
 import io.github.mangi.eta.ui.app.LocalUiStyle
 import io.github.mangi.eta.ui.components.ListEmptyState
 import io.github.mangi.eta.ui.components.MiuixScaffoldPage
+import io.github.mangi.eta.ui.components.MiuixTopBarActionButton
 import io.github.mangi.eta.ui.components.coui.CouiButton
 import io.github.mangi.eta.ui.components.coui.CouiButtonRole
 import io.github.mangi.eta.ui.components.coui.CouiLazyScaffoldPage
@@ -39,14 +41,15 @@ import io.github.mangi.eta.ui.components.coui.CouiTopAppBarIconButton
 import io.github.mangi.eta.ui.navigation.AppRoute
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Card
-import top.yukonga.miuix.kmp.basic.Icon
-import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.InfiniteProgressIndicator
 import top.yukonga.miuix.kmp.basic.InputField
 import top.yukonga.miuix.kmp.basic.SearchBar
 import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
+import top.yukonga.miuix.kmp.icon.MiuixIcons
+import top.yukonga.miuix.kmp.icon.glass.Add
+import top.yukonga.miuix.kmp.icon.glass.Import
 import top.yukonga.miuix.kmp.preference.ArrowPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
@@ -73,21 +76,34 @@ internal fun CharacterLibraryScreen(
     val tiles: List<CharacterProfile?> = store.filteredCharacters + if (showAddTile) listOf(null) else emptyList()
     val rows = tiles.chunked(2)
 
+    val libraryTitle = stringResource(R.string.character_library_title)
+    val importCardDesc = stringResource(R.string.character_action_import_card)
+    val createCharacterText = stringResource(R.string.character_action_create)
+    val searchHint = stringResource(R.string.character_library_search_hint)
+    val emptyTitle = stringResource(R.string.character_library_empty_title)
+    val emptySummary = stringResource(R.string.character_library_empty_summary)
+    val restoreDefaultText = stringResource(R.string.character_action_restore_default)
+    val noResultsTitle = stringResource(R.string.character_library_no_results_title)
+    val noResultsSummary = stringResource(R.string.character_library_no_results_summary)
+    val mineSectionTitle = stringResource(R.string.character_library_section_mine)
+    val personaTitle = stringResource(R.string.character_persona_title)
+    val personaSummary = stringResource(R.string.character_persona_entry_summary)
+
     when (LocalUiStyle.current) {
         AppearanceUiStyle.COUI -> {
             CouiLazyScaffoldPage(
-                title = "角色",
+                title = libraryTitle,
                 onBack = onBack,
                 actions = {
                     CouiTopAppBarIconButton(
                         icon = Icons.Rounded.FileUpload,
-                        contentDescription = "导入角色卡",
+                        contentDescription = importCardDesc,
                         enabled = !store.busy,
                         onClick = importCard,
                     )
                     CouiTopAppBarIconButton(
                         icon = CouiIcons.Outlined.Add,
-                        contentDescription = "创建角色",
+                        contentDescription = createCharacterText,
                         enabled = !store.busy,
                         onClick = createCharacter,
                     )
@@ -97,7 +113,7 @@ internal fun CharacterLibraryScreen(
                     CouiSearchBarBox(
                         query = store.query,
                         onQueryChange = { store.query = it },
-                        placeholder = "搜索名称或标签",
+                        placeholder = searchHint,
                     )
                 }
                 when {
@@ -114,18 +130,18 @@ internal fun CharacterLibraryScreen(
                     store.characters.isEmpty() -> {
                         item(key = "empty-library") {
                             ListEmptyState(
-                                title = "还没有角色",
-                                summary = "创建一个角色，或导入 PNG、JSON 角色卡开始对话",
+                                title = emptyTitle,
+                                summary = emptySummary,
                                 icon = Icons.Rounded.SportsBar,
                                 action = {
                                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                                         CouiButton(
-                                            text = "恢复默认角色",
+                                            text = restoreDefaultText,
                                             onClick = { store.restoreDefaultCharacter() },
                                             enabled = !store.busy,
                                         )
                                         CouiButton(
-                                            text = "创建角色",
+                                            text = createCharacterText,
                                             onClick = createCharacter,
                                             role = CouiButtonRole.Primary,
                                         )
@@ -137,8 +153,8 @@ internal fun CharacterLibraryScreen(
                     store.filteredCharacters.isEmpty() -> {
                         item(key = "empty-search") {
                             ListEmptyState(
-                                title = "没有找到匹配的角色",
-                                summary = "换个关键词试试，搜索会匹配名称与标签",
+                                title = noResultsTitle,
+                                summary = noResultsSummary,
                                 icon = Icons.Rounded.SearchOff,
                             )
                         }
@@ -173,10 +189,10 @@ internal fun CharacterLibraryScreen(
                     }
                 }
                 item(key = "persona") {
-                    Group(title = "我的") {
+                    Group(title = mineSectionTitle) {
                         CouiPreference(
-                            title = "我的人设",
-                            summary = "角色对你的称呼与你在故事中的身份",
+                            title = personaTitle,
+                            summary = personaSummary,
                             onClick = { onNavigate(AppRoute.CharacterPersona) },
                         )
                     }
@@ -186,15 +202,21 @@ internal fun CharacterLibraryScreen(
 
         AppearanceUiStyle.MIUIX -> {
             MiuixScaffoldPage(
-                title = "角色",
+                title = libraryTitle,
                 onBack = onBack,
                 actions = {
-                    IconButton(onClick = importCard, enabled = !store.busy) {
-                        Icon(Icons.Rounded.FileUpload, contentDescription = "导入角色卡")
-                    }
-                    IconButton(onClick = createCharacter, enabled = !store.busy) {
-                        Icon(Icons.Rounded.Add, contentDescription = "创建角色")
-                    }
+                    MiuixTopBarActionButton(
+                        icon = MiuixIcons.Glass.Import,
+                        contentDescription = importCardDesc,
+                        enabled = !store.busy,
+                        onClick = importCard,
+                    )
+                    MiuixTopBarActionButton(
+                        icon = MiuixIcons.Glass.Add,
+                        contentDescription = createCharacterText,
+                        enabled = !store.busy,
+                        onClick = createCharacter,
+                    )
                 },
             ) {
                 item(key = "search") {
@@ -213,7 +235,7 @@ internal fun CharacterLibraryScreen(
                                 onSearch = { store.query = it },
                                 expanded = false,
                                 onExpandedChange = {},
-                                label = "搜索名称或标签",
+                                label = searchHint,
                             )
                         },
                         content = {},
@@ -233,18 +255,18 @@ internal fun CharacterLibraryScreen(
                     store.characters.isEmpty() -> {
                         item(key = "empty-library") {
                             ListEmptyState(
-                                title = "还没有角色",
-                                summary = "创建一个角色，或导入 PNG、JSON 角色卡开始对话",
+                                title = emptyTitle,
+                                summary = emptySummary,
                                 icon = Icons.Rounded.SportsBar,
                                 action = {
                                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                                         TextButton(
-                                            text = "恢复默认角色",
+                                            text = restoreDefaultText,
                                             onClick = { store.restoreDefaultCharacter() },
                                             enabled = !store.busy,
                                         )
                                         TextButton(
-                                            text = "创建角色",
+                                            text = createCharacterText,
                                             onClick = createCharacter,
                                             colors = ButtonDefaults.textButtonColorsPrimary(),
                                         )
@@ -256,8 +278,8 @@ internal fun CharacterLibraryScreen(
                     store.filteredCharacters.isEmpty() -> {
                         item(key = "empty-search") {
                             ListEmptyState(
-                                title = "没有找到匹配的角色",
-                                summary = "换个关键词试试，搜索会匹配名称与标签",
+                                title = noResultsTitle,
+                                summary = noResultsSummary,
                                 icon = Icons.Rounded.SearchOff,
                             )
                         }
@@ -292,15 +314,15 @@ internal fun CharacterLibraryScreen(
                     }
                 }
                 item(key = "persona") {
-                    SmallTitle("我的")
+                    SmallTitle(mineSectionTitle)
                     Card(
                         modifier = Modifier
                             .padding(horizontal = 12.dp)
                             .padding(bottom = 12.dp),
                     ) {
                         ArrowPreference(
-                            title = "我的人设",
-                            summary = "角色对你的称呼与你在故事中的身份",
+                            title = personaTitle,
+                            summary = personaSummary,
                             onClick = { onNavigate(AppRoute.CharacterPersona) },
                         )
                     }

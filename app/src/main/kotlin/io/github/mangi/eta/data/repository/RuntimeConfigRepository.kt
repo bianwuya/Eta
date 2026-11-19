@@ -4,6 +4,7 @@ import android.content.SharedPreferences
 import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.config.Prefs
 import io.github.mangi.eta.data.datastore.SettingsDataStore
+import io.github.mangi.eta.data.model.GeminiEndpointMode
 import io.github.mangi.eta.data.model.GeminiProviderSetting
 import io.github.mangi.eta.data.model.AnthropicProviderSetting
 import io.github.mangi.eta.data.model.AssistantOverlaySettings
@@ -39,6 +40,10 @@ internal object RuntimeConfigRepository {
     fun selectedProviderIdFlow() = SettingsDataStore.selectedProviderIdFlow()
 
     fun selectedModelIdFlow() = SettingsDataStore.selectedModelIdFlow()
+
+    fun cachedSelectedProviderId(): String? = SettingsDataStore.cachedSettingsOrNull()?.selectedProviderId
+
+    fun cachedSelectedModelId(): String? = SettingsDataStore.cachedSettingsOrNull()?.selectedModelId
 
     fun subagentSettingsFlow() = SettingsDataStore.subagentSettingsFlow()
 
@@ -444,6 +449,13 @@ internal object RuntimeConfigRepository {
             anthropicVersion = (provider as? AnthropicProviderSetting)?.anthropicVersion
                 ?: AnthropicProviderSetting.DEFAULT_ANTHROPIC_VERSION,
             openAiEndpointMode = endpointMode,
+            geminiEndpointMode = (provider as? GeminiProviderSetting)?.endpointMode
+                ?.let(GeminiEndpointMode::normalize)
+                ?: GeminiEndpointMode.AI_STUDIO,
+            vertexProject = (provider as? GeminiProviderSetting)?.vertexProject?.trim().orEmpty(),
+            vertexLocation = (provider as? GeminiProviderSetting)?.vertexLocation?.trim()
+                ?.ifBlank { GeminiProviderSetting.DEFAULT_VERTEX_LOCATION }
+                ?: GeminiProviderSetting.DEFAULT_VERTEX_LOCATION,
             hostedWebSearchEnabled = provider.hostedWebSearchEnabled,
             thinkingEnabled = reasoningCapabilities != null,
             reasoningEffort = reasoningCapabilities?.let { ReasoningEffort.DEFAULT }
@@ -456,6 +468,7 @@ internal object RuntimeConfigRepository {
 
     fun reasoningCapabilities(provider: ProviderSetting, model: Model): ModelReasoningCapabilities? {
         if (provider is GeminiProviderSetting) {
+            if (provider.isVertexAi) return GeminiModelCapabilities.resolveVertexReasoning(model)
             return GeminiModelCapabilities.resolveReasoning(model)
         }
         val sourceType = ProviderSourceRegistry.resolve(provider)

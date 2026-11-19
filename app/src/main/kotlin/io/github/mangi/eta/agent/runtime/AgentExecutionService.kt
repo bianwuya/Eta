@@ -8,10 +8,6 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
-import android.graphics.Bitmap
-import android.graphics.Canvas
-import android.graphics.Color
-import android.graphics.drawable.Icon
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
@@ -27,7 +23,6 @@ import io.github.mangi.eta.local.runtime.ExecutionKeepAlive
 import io.github.mangi.eta.ui.MainActivity
 import io.github.mangi.eta.agent.terminal.TerminalDaemonRecovery
 import java.util.concurrent.atomic.AtomicLong
-import kotlin.math.roundToInt
 
 /** Holds execution leases; only explicitly opted-in terminal services may restart. */
 internal class AgentExecutionService : Service() {
@@ -38,7 +33,6 @@ internal class AgentExecutionService : Service() {
     private val owner = ownerSequence.incrementAndGet()
     private var foregroundActive = false
     @Volatile private var startRejected = false
-    private var cachedLargeIcon: Icon? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -94,7 +88,6 @@ internal class AgentExecutionService : Service() {
 
     override fun onDestroy() {
         if (instance === this) instance = null
-        cachedLargeIcon = null
         // 销毁时同样收回本服务拥有的任务。回收在独立有界工作线程上完成，不阻塞 Main。
         stopQueue.close(leases.drainOwner(owner))
         keepAlive.release()
@@ -122,12 +115,31 @@ internal class AgentExecutionService : Service() {
     private fun notification(): Notification {
         val run = RuntimeNotificationSelection.select(activeRunSnapshots)
         val status = runStatus
+        val conversationIdSnapshot = currentConversationId
+        val archivedSourceSnapshot = currentArchivedSource
+        val archivedKeySnapshot = currentArchivedKey
+        val startedAtSnapshot = currentStartedAtEpochMs
+
         val openIntent = Intent(this, MainActivity::class.java)
-        if (run != null) {
-            openIntent.action = MainActivity.ACTION_OPEN_RUN
-            openIntent.data = Uri.Builder().scheme("eta-task").authority("open").appendPath(run.runId).build()
-            openIntent.putExtra(MainActivity.EXTRA_RUN_ID, run.runId)
-        }
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            .apply {
+                when {
+                    run != null -> {
+                        action = MainActivity.ACTION_OPEN_RUN
+                        data = Uri.Builder().scheme("eta-task").authority("open").appendPath(run.runId).build()
+                        putExtra(MainActivity.EXTRA_RUN_ID, run.runId)
+                    }
+                    conversationIdSnapshot.isNotBlank() -> {
+                        action = MainActivity.ACTION_OPEN_CONVERSATION_ID
+                        putExtra(MainActivity.EXTRA_CONVERSATION_ID, conversationIdSnapshot)
+                    }
+                    archivedSourceSnapshot.isNotBlank() && archivedKeySnapshot.isNotBlank() -> {
+                        action = MainActivity.ACTION_OPEN_ARCHIVED_CONVERSATION
+                        putExtra(MainActivity.EXTRA_HANDOFF_SOURCE, archivedSourceSnapshot)
+                        putExtra(MainActivity.EXTRA_CONVERSATION_KEY, archivedKeySnapshot)
+                    }
+                }
+            }
         val open = PendingIntent.getActivity(
             this, 0, openIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
@@ -139,13 +151,11 @@ internal class AgentExecutionService : Service() {
             .setContentText(getString(R.string.execution_title))
             .setOngoing(true).build()
         val contentText = executionText(this, status, taskCount, run)
+        val headline = executionHeadline(this, status, taskCount)
         val builder = Notification.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_notification)
             .setColor(BRAND_COLOR)
-            .setContentTitle(when {
-                run != null -> notificationRunTitle(run)
-                else -> getString(R.string.execution_title)
-            })
+            .setContentTitle(run?.let(::notificationRunTitle) ?: headline)
             .setContentText(contentText)
             .setContentIntent(open)
             .setVisibility(Notification.VISIBILITY_PRIVATE)
@@ -153,44 +163,46 @@ internal class AgentExecutionService : Service() {
             .setOngoing(true)
             .setOnlyAlertOnce(true)
         val stopToken = run?.let { leases.token("run:${it.runId}") }
-        if (run != null && stopToken != null) {
-            val stopIntent = Intent(this, AgentExecutionService::class.java).setAction(ACTION_STOP_RUN)
-                .setData(Uri.Builder().scheme("eta-task").authority("stop").appendPath(run.runId).appendPath(stopToken).build())
-                .putExtra(EXTRA_RUN_ID, run.runId).putExtra(EXTRA_LEASE_TOKEN, stopToken)
-            val stop = PendingIntent.getService(this, 1, stopIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-            builder.addAction(Notification.Action.Builder(null, getString(R.string.task_stop), stop).build())
-        }
-        // 只有 Agent run 在跑时才申请提升为 Live Update；终端会话、Linux 启动等长驻任务不属于"正在进行、需要持续关注"的活动。
-        if (status != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA) {
-            // 不使用无进度的 ProgressStyle，避免 Live Update 卡片渲染出空进度白条；改用 BigTextStyle 并附上桌面同款图标作为视觉锚点。
+        if (status != null) {
+            builder.addAction(Notification.Action.Builder(null, getString(R.string.execution_action_open), open).build())
+            if (run != null && stopToken != null) {
+                val stopIntent = Intent(this, AgentExecutionService::class.java).setAction(ACTION_STOP_RUN)
+                    .setData(Uri.Builder().scheme("eta-task").authority("stop").appendPath(run.runId).appendPath(stopToken).build())
+                    .putExtra(EXTRA_RUN_ID, run.runId).putExtra(EXTRA_LEASE_TOKEN, stopToken)
+                val runStop = PendingIntent.getService(this, 1, stopIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+                builder.addAction(Notification.Action.Builder(null, getString(R.string.task_stop), runStop).build())
+            } else {
+                builder.addAction(Notification.Action.Builder(null, getString(R.string.execution_action_stop), stop).build())
+            }
+        } else {
             builder
-                .setStyle(Notification.BigTextStyle().bigText(contentText))
+                .setContentText(resources.getQuantityString(R.plurals.execution_summary, taskCount, taskCount))
+                .addAction(Notification.Action.Builder(null, getString(R.string.execution_stop), stop).build())
+        }
+
+        // GUI 运行或虚拟屏微缩镜显示期间退回普通前台通知，避免顶部同时出现两个胶囊冲突。
+        if (status != null && !suppressLiveUpdate && Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA) {
+            builder
+                .setStyle(Notification.BigTextStyle().bigText(""))
                 .setShortCriticalText(when {
                     run?.phase == AgentRuntimeWire.RunPhase.Committing -> phaseText(this, run)
                     status == AgentOverlayStatus.Stopping -> status.shortText()
                     run != null -> phaseText(this, run)
                     else -> status.shortText()
                 })
-            launcherLargeIcon()?.let(builder::setLargeIcon)
+            if (startedAtSnapshot > 0L) {
+                builder
+                    .setWhen(startedAtSnapshot)
+                    .setShowWhen(true)
+                    .setUsesChronometer(true)
+            }
             // 请求方法从 API 36.1 才公开；标准 extra 也可供支持该协议的 API 36 系统读取。
             builder.extras.putBoolean("android.requestPromotedOngoing", true)
+        } else if (status != null) {
+            builder.setContentText(resources.getQuantityString(R.plurals.execution_summary, taskCount, taskCount))
         }
         return builder.build()
-    }
-
-    private fun launcherLargeIcon(): Icon? {
-        cachedLargeIcon?.let { return it }
-        val foreground = getDrawable(R.drawable.ic_launcher_foreground) ?: return null
-        val sizePx = (resources.displayMetrics.density * LARGE_ICON_DP).roundToInt().coerceIn(96, 192)
-        val bitmap = Bitmap.createBitmap(sizePx, sizePx, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(bitmap)
-        canvas.drawColor(Color.WHITE)
-        // AdaptiveIcon 前景画布为 108dp，中间 72dp 对应桌面视口；外扩 1/4 边距使大图标与桌面构图一致。
-        val inset = sizePx / 4
-        foreground.setBounds(-inset, -inset, sizePx + inset, sizePx + inset)
-        foreground.draw(canvas)
-        return Icon.createWithBitmap(bitmap).also { cachedLargeIcon = it }
     }
 
     private fun notificationRunTitle(run: AgentRuntimeWire.ActiveRunSnapshot): String {
@@ -205,7 +217,7 @@ internal class AgentExecutionService : Service() {
         return "$label · $id"
     }
 
-    /** 状态栏胶囊约 7 个字符可完整显示；更长时只取动作，工具名留在展开态。 */
+    /** 状态栏胶囊约 7 个字符可完整显示；更长时只取动作，具体目标留在应用内。 */
     private fun AgentOverlayStatus.shortText(): String = when (this) {
         is AgentOverlayStatus.RunningTool, is AgentOverlayStatus.HostedToolRunning -> getString(R.string.execution_chip_running)
         AgentOverlayStatus.Paused -> getString(R.string.overlay_paused)
@@ -222,7 +234,6 @@ internal class AgentExecutionService : Service() {
         private const val EXTRA_LEASE_TOKEN = "lease_token"
         private const val ACTION_STOP = "io.github.mangi.eta.action.STOP_USER_EXECUTION"
         private const val BRAND_COLOR = 0xFF4285F4.toInt()
-        private const val LARGE_ICON_DP = 48f
         private val leases = ExecutionLeaseRegistry()
         private val ownerSequence = AtomicLong()
         private val mainHandler = Handler(Looper.getMainLooper())
@@ -230,32 +241,52 @@ internal class AgentExecutionService : Service() {
         private var runStatus: AgentOverlayStatus? = null
         private var activeRunCount = 0
         private var activeRunSnapshots: List<AgentRuntimeWire.ActiveRunSnapshot> = emptyList()
-        private var publishedStatusText: String? = null
         private var lastNotificationAt = 0L
         private val delayedNotification = Runnable {
             instance?.takeIf { it.foregroundActive }?.refreshNotification()
             lastNotificationAt = SystemClock.elapsedRealtime()
         }
+        private var currentConversationId: String = ""
+        private var currentArchivedSource: String = ""
+        private var currentArchivedKey: String = ""
+        private var currentStartedAtEpochMs: Long = 0L
+        private var suppressLiveUpdate: Boolean = false
+        private var publishedSignature: String? = null
 
         /**
          * Agent run 的当前状态，供通知与状态栏胶囊展示；null 表示没有 Agent run 在跑。
-         * 只在显示文字变化时刷新通知，避免流式事件把通知更新频率推到系统限流。
+         * 只在离散展示字段变化时刷新通知，避免流式事件把通知更新频率推到系统限流。
          */
-        fun updateRunStatus(context: Context, status: AgentOverlayStatus?, activeRunCount: Int,
-            snapshots: List<AgentRuntimeWire.ActiveRunSnapshot> = emptyList()) {
+        fun updateRunStatus(
+            context: Context,
+            status: AgentOverlayStatus?,
+            activeRunCount: Int,
+            snapshots: List<AgentRuntimeWire.ActiveRunSnapshot> = emptyList(),
+            conversationId: String = "",
+            archivedSource: String = "",
+            archivedKey: String = "",
+            startedAtEpochMs: Long = 0L,
+            suppressLiveUpdate: Boolean = false,
+        ) {
             mainHandler.post {
                 val previousCount = this.activeRunCount
                 runStatus = status
                 this.activeRunCount = activeRunCount
                 val previousRuns = this.activeRunSnapshots
                 this.activeRunSnapshots = snapshots
+                currentConversationId = conversationId
+                currentArchivedSource = archivedSource
+                currentArchivedKey = archivedKey
+                currentStartedAtEpochMs = startedAtEpochMs
+                this.suppressLiveUpdate = suppressLiveUpdate
                 val count = if (activeRunCount > 0) activeRunCount else leases.count()
                 val selected = RuntimeNotificationSelection.select(snapshots)
                 val previousSelected = RuntimeNotificationSelection.select(previousRuns)
-                val text = executionText(context, status, count, selected) +
+                val headline = executionHeadline(context, status, count)
+                val signature = "$headline|$conversationId|$archivedSource|$archivedKey|$count|${status != null}|$startedAtEpochMs|$suppressLiveUpdate|" +
                     snapshots.joinToString { "${it.runId}:${it.handoffSource}:${it.guiStatus}:${it.phase}:${it.interactionAt}" }
-                if (text == publishedStatusText) return@post
-                publishedStatusText = text
+                if (signature == publishedSignature) return@post
+                publishedSignature = signature
                 val critical = previousCount != activeRunCount ||
                     previousSelected?.runId != selected?.runId || previousSelected?.phase != selected?.phase ||
                     status == AgentOverlayStatus.Stopping ||
@@ -294,6 +325,16 @@ internal class AgentExecutionService : Service() {
                 taskCount <= 1 -> statusText
                 else -> "$summary · $statusText"
             }
+        }
+
+        private fun executionHeadline(
+            context: Context,
+            status: AgentOverlayStatus?,
+            taskCount: Int,
+        ): String {
+            if (status == null) return context.getString(R.string.execution_title)
+            val statusLabel = status.localizedText(context.resources)
+            return if (taskCount > 1) "$statusLabel · $taskCount" else statusLabel
         }
 
         /** 必须从有效的用户入口取得引用，再创建会话或子进程；失败时调用方不启动任务。 */

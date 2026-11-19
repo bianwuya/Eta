@@ -1,6 +1,7 @@
 package io.github.mangi.eta.data.repository
 
 import android.content.Context
+import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.auth.EncryptedProviderCredentialStorage
 import io.github.mangi.eta.agent.auth.LiveProviderOAuthClient
 import io.github.mangi.eta.agent.auth.ProviderAccountSummary
@@ -10,6 +11,7 @@ import io.github.mangi.eta.agent.auth.ProviderCredentialSessions
 import io.github.mangi.eta.agent.auth.ProviderLoginPrompt
 import io.github.mangi.eta.agent.runtime.AgentRunController
 import io.github.mangi.eta.data.model.ProviderAuthModes
+import io.github.mangi.eta.core.AppStrings
 
 /** 只有 Codex 连接需要账号池；Grok 等其余认证方式保持单账号原语义。 */
 internal fun usesCodexAccountPool(authMode: String): Boolean = authMode == ProviderAuthModes.OPENAI_CHATGPT
@@ -118,8 +120,14 @@ internal object ProviderCredentialRepository {
     fun forget(providerId: String) = codex().forgetPool(providerId)
 
     private fun sessions(): ProviderCredentialSessions = sessions
-        ?: throw ProviderAuthException("oauth_not_initialized", "登录服务尚未就绪，请重新打开 Eta")
+        ?: throw ProviderAuthException(
+            "oauth_not_initialized",
+            AppStrings.get(R.string.repo_err_auth_service_not_ready, "登录服务尚未就绪，请重新打开 Eta"),
+        )
 
     private fun codex(): CodexAccountRepository = codexAccounts
-        ?: throw ProviderAuthException("oauth_not_initialized", "登录服务尚未就绪，请重新打开 Eta")
+        ?: throw ProviderAuthException(
+            "oauth_not_initialized",
+            AppStrings.get(R.string.repo_err_auth_service_not_ready, "登录服务尚未就绪，请重新打开 Eta"),
+        )
 }

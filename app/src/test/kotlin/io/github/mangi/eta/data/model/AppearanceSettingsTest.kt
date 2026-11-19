@@ -14,6 +14,7 @@ class AppearanceSettingsTest {
         assertEquals(AppearanceThemeMode.SYSTEM, settings.themeMode)
         assertFalse(settings.monetEnabled)
         assertTrue(settings.blurEnabled)
+        assertTrue(settings.progressiveBlurEnabled)
         assertTrue(settings.swipeDismissEnabled)
         assertTrue(settings.predictiveBackEnabled)
         assertEquals(DEFAULT_INTERFACE_SCALE, settings.interfaceScale)
@@ -27,6 +28,7 @@ class AppearanceSettingsTest {
         assertEquals(AppearanceUiStyle.MIUIX, AppearanceUiStyle.fromPersistedValue("miuix"))
         assertEquals(AppearanceThemeMode.SYSTEM, AppearanceThemeMode.fromPersistedValue("unknown"))
         assertEquals(AppearancePaletteStyle.TONAL_SPOT, AppearancePaletteStyle.fromPersistedValue(null))
+        assertEquals(AppearancePaletteStyle.CMF, AppearancePaletteStyle.fromPersistedValue("cmf"))
         assertEquals(AppearanceAccentColor.SYSTEM, AppearanceAccentColor.fromPersistedValue(""))
         assertEquals(
             AppearanceTopBarBlurStyle.GAUSSIAN,

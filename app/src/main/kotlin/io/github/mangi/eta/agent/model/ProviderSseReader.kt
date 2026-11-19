@@ -9,6 +9,7 @@ import java.io.InputStreamReader
 internal fun readProviderSse(
     stream: InputStream,
     runController: AgentRunController,
+    dispatchPartialFrameAtEof: Boolean = true,
     onEvent: (event: String, data: String) -> Boolean,
 ) {
     var sawData = false
@@ -39,7 +40,7 @@ internal fun readProviderSse(
             if (line == null) {
                 ModelDebugTrace.sse("sse_eof")
                 try {
-                    dispatch()
+                    if (dispatchPartialFrameAtEof) dispatch()
                 } catch (_: org.json.JSONException) {
                     // 仅 EOF 尾帧的解析失败视为截断；完整帧中的坏 JSON 仍原样报错。
                     throw AgentModelFailure.incompleteStream("模型接口 SSE 尾帧不完整，连接已结束。")

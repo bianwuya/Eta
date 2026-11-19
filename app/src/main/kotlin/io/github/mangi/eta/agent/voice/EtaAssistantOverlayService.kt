@@ -662,6 +662,7 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                     config = config.copy(supportsSearchSuggestions = true),
                     images = runImages,
                     history = submittedHistory,
+                    modelSessionId = conversationKey,
                     handoff = AgentRuntimeWire.EntryHandoff(
                         id = "$submittedConversationKey:$runId",
                         source = AgentRuntimeWire.ETA_VOICE_HANDOFF_SOURCE,
@@ -802,7 +803,12 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
         }
         val notice = when {
             result.ok && result.content.isBlank() -> SystemNoticeCode.EmptyResult
-            !result.ok && result.error == LEGACY_STOPPED_ERROR -> SystemNoticeCode.Stopped
+            !result.ok && (
+                result.error == LEGACY_STOPPED_ERROR ||
+                    result.error == SYNTHETIC_STOPPED ||
+                    result.error == "Stopped" ||
+                    result.error == getString(R.string.runtime_err_stopped)
+                ) -> SystemNoticeCode.Stopped
             !result.ok -> SystemNoticeCode.RuntimeFailed
             else -> null
         }

@@ -1,6 +1,7 @@
-﻿package io.github.mangi.eta.agent.runtime
+package io.github.mangi.eta.agent.runtime
 
 import android.content.Context
+import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.accessibility.AgentAccessibilityKeeper
 import io.github.mangi.eta.agent.browser.BrowserSessionRegistry
 import io.github.mangi.eta.agent.model.AgentConversationCodec
@@ -12,11 +13,16 @@ import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.agent.model.AgentModelExecutionException
 import io.github.mangi.eta.agent.model.AgentModelFailure
 import io.github.mangi.eta.agent.model.AgentHttpClient
+import io.github.mangi.eta.agent.imagegen.ImageGenToolCatalog
+import io.github.mangi.eta.agent.imagegen.ImageGenToolExecutor
 import io.github.mangi.eta.agent.memory.AgentMemoryContext
 import io.github.mangi.eta.agent.memory.AgentMemoryContextBuilder
 import io.github.mangi.eta.agent.memory.ConversationMemoryPins
 import io.github.mangi.eta.agent.roleplay.CharacterMemoryTools
 import io.github.mangi.eta.agent.roleplay.RoleplayRunContext
+import io.github.mangi.eta.agent.scheduler.ScheduledTaskRunContext
+import io.github.mangi.eta.agent.scheduler.ScheduledTaskToolCatalog
+import io.github.mangi.eta.agent.scheduler.ScheduledTaskToolExecutor
 import io.github.mangi.eta.agent.subagent.AgentSubagentToolCatalog
 import io.github.mangi.eta.agent.subagent.SubagentExecutor
 import io.github.mangi.eta.agent.subagent.SubagentControlRegistry
@@ -35,8 +41,10 @@ import io.github.mangi.eta.agent.tool.ToolExecutionDecision
 import io.github.mangi.eta.agent.voice.EtaAssistantOverlayService
 import io.github.mangi.eta.config.Prefs
 import io.github.mangi.eta.core.AndroidAgentLogger
+import io.github.mangi.eta.core.AppStrings
 import io.github.mangi.eta.core.safeLogType
 import io.github.mangi.eta.data.repository.AgentMemoryRepository
+import io.github.mangi.eta.data.repository.ImageGenSettingsRepository
 import io.github.mangi.eta.data.repository.RuntimeConfigRepository
 import io.github.mangi.eta.local.conversationcommunication.ConversationMessagingPolicy
 import io.github.mangi.eta.local.conversationcommunication.ConversationMessagingToolCatalog
@@ -121,6 +129,10 @@ internal class AgentRuntimeRunExecutor(
             val uiPayload = request.handoff
                 ?.takeIf { it.source == AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE }
                 ?.let { AgentUiHandoffPayload.from(it.payload) }
+            val scheduledRunContext = request.handoff
+                ?.takeIf { it.source == AgentRuntimeWire.SCHEDULED_TASK_HANDOFF_SOURCE }
+                ?.let { AgentExternalArchivePayload.from(it.payload)?.adapterPayload }
+                ?.let(ScheduledTaskRunContext::fromAdapterPayload)
             val conversationId = uiPayload?.conversationId
                 ?.takeIf { it.isNotBlank() }
             // 由跨会话消息启动的 run 不再获得通信工具，避免会话间自动互唤。
@@ -132,12 +144,21 @@ internal class AgentRuntimeRunExecutor(
                 runBlocking { RoleplayRunContext.resolve(appContext, id, contextWindow, memoryEnabled) }
             }
             if (request.operation == AgentRuntimeWire.OP_REWRITE_REPLY) {
-                require(roleplayContext != null) { "只有角色会话可以改写角色回复" }
+                require(roleplayContext != null) {
+                    AppStrings.get(R.string.runtime_err_rewrite_roleplay_only, "只有角色会话可以改写角色回复")
+                }
                 val target = request.rewriteTargetMessageId?.takeIf { it.isNotBlank() && it.length <= 256 }
-                    ?: throw IllegalArgumentException("缺少有效的角色回复目标")
+                    ?: throw IllegalArgumentException(
+                        AppStrings.get(R.string.runtime_err_rewrite_target_missing, "缺少有效的角色回复目标")
+                    )
                 require(runBlocking {
                     EtaDatabase.get(appContext).conversationDao().hasAssistantMessage(conversationId, target)
-                }) { "角色回复目标不存在或不属于当前会话" }
+                }) {
+                    AppStrings.get(
+                        R.string.runtime_err_rewrite_target_not_found,
+                        "角色回复目标不存在或不属于当前会话",
+                    )
+                }
             }
             val characterMemoryTools = roleplayContext?.let { roleplay ->
                 CharacterMemoryTools(appContext, roleplay.characterId) {
@@ -166,12 +187,16 @@ internal class AgentRuntimeRunExecutor(
                 io.github.mangi.eta.agent.device.RootAccess.awaitOrRetryIfPreviouslyGranted(appContext)
             }
             val pendingSkillConflict = PendingSkillConflictCapabilityParser.parse(request.history)
-            val mcpSnapshot = runBlocking {
-                runCatching { McpRunSnapshot.load() }.getOrElse { throwable ->
-                    AndroidAgentLogger.warnThrottled("agent_mcp_snapshot_failed") {
-                        "MCP tool snapshot unavailable: type=${throwable.safeLogType()}"
+            val mcpSnapshot = if (scheduledRunContext?.capabilities?.mcpTools == false) {
+                McpRunSnapshot.EMPTY
+            } else {
+                runBlocking {
+                    runCatching { McpRunSnapshot.load() }.getOrElse { throwable ->
+                        AndroidAgentLogger.warnThrottled("agent_mcp_snapshot_failed") {
+                            "MCP tool snapshot unavailable: type=${throwable.safeLogType()}"
+                        }
+                        McpRunSnapshot.EMPTY
                     }
-                    McpRunSnapshot.EMPTY
                 }
             }
             val mcpTools = JSONArray().also(mcpSnapshot::appendModelTools)
@@ -335,6 +360,26 @@ internal class AgentRuntimeRunExecutor(
                     )
                 },
             )
+            val scheduledToolExecutor = ScheduledTaskToolExecutor(
+                context = appContext,
+                activeRunContext = scheduledRunContext,
+            )
+            val imageGenEnabled = runBlocking {
+                runCatching { ImageGenSettingsRepository.settings().enabled }.getOrDefault(false)
+            } && Prefs.isToolEnabled(ImageGenToolCatalog.TOOL_NAME) &&
+                request.operation == AgentRuntimeWire.OP_CHAT
+            val isVoiceOverlay = request.handoff?.source == AgentRuntimeWire.ETA_VOICE_HANDOFF_SOURCE
+            val imageGenToolExecutor = ImageGenToolExecutor(
+                context = appContext,
+                conversationId = conversationId,
+                sessionKey = conversationId ?: request.effectiveModelSessionId,
+                currentTurnUserImages = {
+                    // 助手浮层自动采集的屏幕截图不属于用户授权附件，避免误传给第三方生图服务。
+                    if (isVoiceOverlay) emptyList()
+                    else request.images.filterNot { it.preserveOriginal }
+                },
+                runController = runController,
+            )
             val runTools = buildRunTools(
                 mcpTools = mcpTools,
                 subagentAllowed = subagentAllowed(),
@@ -344,7 +389,27 @@ internal class AgentRuntimeRunExecutor(
                     priority = runBlocking { io.github.mangi.eta.data.datastore.SettingsDataStore.subagentSettings() }.profilePriority,
                 ),
                 includeConversationMessaging = conversationTools != null,
+                includeScheduledManageTool = scheduledRunContext == null &&
+                    supportsHistoryTool(request.operation),
+                includeScheduledSelfRunTools = scheduledRunContext != null,
+                includeImageGenTool = imageGenEnabled,
             )
+            val scheduledToolFilter: ((JSONArray) -> JSONArray)? =
+                if (scheduledRunContext != null && !scheduledRunContext.capabilities.guiTools) {
+                    { sourceTools ->
+                        JSONArray().also { filtered ->
+                            for (index in 0 until sourceTools.length()) {
+                                val tool = sourceTools.getJSONObject(index)
+                                val name = tool.optJSONObject("function")?.optString("name").orEmpty()
+                                if (!AgentToolRequirements.requiresGuiControl(name)) {
+                                    filtered.put(tool)
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    null
+                }
             val runToolExecutor = AgentModelClient.ToolExecutor { call ->
                 if (crossConversationOrigin && ConversationMessagingPolicy.isOriginBlockedTool(call.name)) {
                     AgentModelClient.ToolResult(
@@ -353,6 +418,33 @@ internal class AgentRuntimeRunExecutor(
                             .put("code", "CONVERSATION_ORIGIN_BLOCKED")
                             .put("message", "本运行由其他会话的消息启动，禁止据此执行提权、安装或安全设置操作；" +
                                 "需要时请让用户在当前会话直接授权")
+                            .toString(),
+                    )
+                } else if (call.name in ImageGenToolCatalog.names) {
+                    if (!Prefs.isToolEnabled(call.name)) {
+                        AgentModelClient.ToolResult(
+                            JSONObject()
+                                .put("ok", false)
+                                .put("code", "TOOL_DISABLED")
+                                .put("message", "工具 ${call.name} 已在工具列表中关闭，本次未执行")
+                                .toString(),
+                        )
+                    } else {
+                        imageGenToolExecutor.execute(call)
+                    }
+                } else if (call.name in ScheduledTaskToolCatalog.manageNames) {
+                    scheduledToolExecutor.executeManage(call)
+                } else if (call.name in ScheduledTaskToolCatalog.selfRunNames) {
+                    scheduledToolExecutor.executeSelfRun(call)
+                } else if (scheduledRunContext != null &&
+                    !scheduledRunContext.capabilities.guiTools &&
+                    AgentToolRequirements.requiresGuiControl(call.name)
+                ) {
+                    AgentModelClient.ToolResult(
+                        JSONObject()
+                            .put("ok", false)
+                            .put("code", "GUI_DISABLED_IN_SCHEDULED_TASK")
+                            .put("message", "当前定时任务未开启应用界面（GUI）操作权限，本次未执行")
                             .toString(),
                     )
                 } else if (call.name == AgentSubagentToolCatalog.CONTROL_TOOL_NAME) {
@@ -421,6 +513,8 @@ internal class AgentRuntimeRunExecutor(
                 capabilitiesProvider = { AgentToolCapabilities.capture(appContext) },
                 prompt = request.prompt,
                 assistantScreenContext = request.assistantScreenContext,
+                extraSystemContext = scheduledRunContext?.buildSystemGuidance().orEmpty(),
+                toolFilter = scheduledToolFilter,
                 toolExecutor = runToolExecutor,
                 images = request.images,
                 history = request.history,
@@ -463,7 +557,7 @@ internal class AgentRuntimeRunExecutor(
                 throwable is java.util.concurrent.CancellationException ||
                 modelFailure?.cause is AgentRunCancelledException || modelFailure?.cause is java.util.concurrent.CancellationException
             val message = if (cancelled) {
-                "已停止"
+                AppStrings.get(R.string.runtime_err_stopped, "已停止")
             } else {
                 throwable.message ?: throwable.javaClass.simpleName
             }
@@ -519,7 +613,7 @@ internal class AgentRuntimeRunExecutor(
 
         if (cancelled && session.isTerminal) {
             runCatching {
-                persistArtifacts(snapshotRequest(request), result, archivedEvents.orEmpty())
+                persistArtifacts(snapshotRequest(request), result, snapshotArchivedEvents(archivedEvents))
             }.onFailure { throwable ->
                 AndroidAgentLogger.error(
                     "Agent runtime cancelled result persistence failed: " +
@@ -549,7 +643,7 @@ internal class AgentRuntimeRunExecutor(
                         "Agent runtime checkpoint seal failed: type=${throwable.safeLogType()}"
                     )
                 }
-            runCatching { persistArtifacts(snapshotRequest(request), resolved, archivedEvents.orEmpty().let { events ->
+            runCatching { persistArtifacts(completedRequest, resolved, snapshotArchivedEvents(archivedEvents).let { events ->
                 events + session.acceptedSupplementEvents().filter { supplement ->
                     events.none { it is AgentEvent.UserSupplementReceived && it.queueMessageId == supplement.queueMessageId }
                 }
@@ -578,7 +672,14 @@ internal class AgentRuntimeRunExecutor(
         checkpointRecorder: AgentRunCheckpointRecorder?,
     ) {
         if (!session.emit(event) { checkpointRecorder?.accept(event) }) return
-        if (event !is AgentEvent.GuiControlChanged) archivedEvents?.add(event)
+        // 多 Subagent 并发会跨线程回调 acceptEvent；只缓存可落盘事件，避免瞬态进度堆积内存。
+        if (archivedEvents != null) {
+            event.recoveryProjection()?.let { durable ->
+                synchronized(archivedEvents) {
+                    archivedEvents.add(durable)
+                }
+            }
+        }
         if (event is AgentEvent.ModelRetryScheduled) {
             AndroidAgentLogger.warn("Agent runtime event: ${event.toLogLine()}")
         } else if (event !is AgentEvent.AssistantBlockDelta) {
@@ -590,6 +691,11 @@ internal class AgentRuntimeRunExecutor(
                     "Agent runtime event projection failed: type=${throwable.safeLogType()}"
                 }
             }
+    }
+
+    private fun snapshotArchivedEvents(archivedEvents: MutableList<AgentEvent>?): List<AgentEvent> {
+        if (archivedEvents == null) return emptyList()
+        return synchronized(archivedEvents) { archivedEvents.toList() }
     }
 
     companion object {
@@ -604,6 +710,9 @@ internal class AgentRuntimeRunExecutor(
             isToolEnabled: (String) -> Boolean = Prefs::isToolEnabled,
             subagentProfiles: List<io.github.mangi.eta.agent.subagent.SubagentProfile> = emptyList(),
             includeConversationMessaging: Boolean = false,
+            includeScheduledManageTool: Boolean = false,
+            includeScheduledSelfRunTools: Boolean = false,
+            includeImageGenTool: Boolean = false,
         ): JSONArray = JSONArray(mcpTools.toString()).also { tools ->
             if (subagentAllowed) {
                 if (subagentProfiles.isEmpty()) {
@@ -614,6 +723,9 @@ internal class AgentRuntimeRunExecutor(
             }
             if (includeHistoryTool) tools.put(AgentConversationToolCatalog.schema())
             if (includeConversationMessaging) ConversationMessagingToolCatalog.appendSchemas(tools)
+            if (includeScheduledManageTool) ScheduledTaskToolCatalog.appendManageTool(tools)
+            if (includeScheduledSelfRunTools) ScheduledTaskToolCatalog.appendSelfRunTools(tools)
+            if (includeImageGenTool) ImageGenToolCatalog.appendTo(tools)
             if (includeCharacterMemoryTools) {
                 val temp = JSONArray().also(CharacterMemoryTools::appendSchemas)
                 for (index in 0 until temp.length()) {

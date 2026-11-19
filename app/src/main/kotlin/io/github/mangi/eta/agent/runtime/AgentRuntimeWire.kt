@@ -41,6 +41,7 @@ internal object AgentRuntimeWire {
 
     const val AGENT_UI_HANDOFF_SOURCE = "agent_ui"
     const val ETA_VOICE_HANDOFF_SOURCE = "eta_voice"
+    const val SCHEDULED_TASK_HANDOFF_SOURCE = "scheduled_task"
 
     /** 由跨会话消息启动的 run：禁止再次发送跨会话消息，避免自动互唤链。 */
     const val RUN_ORIGIN_CONVERSATION_MESSAGE = "conversation_message"
@@ -135,6 +136,9 @@ internal object AgentRuntimeWire {
     private const val KEY_SYSTEM_PROMPT = "system_prompt"
     private const val KEY_ANTHROPIC_VERSION = "anthropic_version"
     private const val KEY_OPENAI_ENDPOINT_MODE = "openai_endpoint_mode"
+    private const val KEY_GEMINI_ENDPOINT_MODE = "gemini_endpoint_mode"
+    private const val KEY_VERTEX_PROJECT = "vertex_project"
+    private const val KEY_VERTEX_LOCATION = "vertex_location"
     private const val KEY_SUPPORTS_SEARCH_SUGGESTIONS = "supports_search_suggestions"
     private const val KEY_HOSTED_WEB_SEARCH_ENABLED = "hosted_web_search_enabled"
     private const val KEY_TERMINAL_TOOLS = "terminal_tools"
@@ -394,6 +398,9 @@ internal object AgentRuntimeWire {
         AgentWireText.put(this, KEY_SYSTEM_PROMPT, request.config.systemPrompt, payloadDirectory)
         putString(KEY_ANTHROPIC_VERSION, request.config.anthropicVersion)
         putString(KEY_OPENAI_ENDPOINT_MODE, request.config.openAiEndpointMode)
+        putString(KEY_GEMINI_ENDPOINT_MODE, request.config.geminiEndpointMode)
+        putString(KEY_VERTEX_PROJECT, request.config.vertexProject)
+        putString(KEY_VERTEX_LOCATION, request.config.vertexLocation)
         putBoolean(KEY_HOSTED_WEB_SEARCH_ENABLED, request.config.hostedWebSearchEnabled)
         putBoolean(KEY_SUPPORTS_SEARCH_SUGGESTIONS, request.config.supportsSearchSuggestions)
         putBoolean(KEY_TERMINAL_TOOLS, request.config.terminalTools)
@@ -539,6 +546,12 @@ internal object AgentRuntimeWire {
                     .ifBlank { io.github.mangi.eta.data.model.AnthropicProviderSetting.DEFAULT_ANTHROPIC_VERSION },
                 openAiEndpointMode = bundle.getString(KEY_OPENAI_ENDPOINT_MODE).orEmpty()
                     .ifBlank { io.github.mangi.eta.data.model.OpenAiEndpointMode.CHAT_COMPLETIONS },
+                geminiEndpointMode = io.github.mangi.eta.data.model.GeminiEndpointMode.normalize(
+                    bundle.getString(KEY_GEMINI_ENDPOINT_MODE),
+                ),
+                vertexProject = bundle.getString(KEY_VERTEX_PROJECT).orEmpty().trim(),
+                vertexLocation = bundle.getString(KEY_VERTEX_LOCATION).orEmpty().trim()
+                    .ifBlank { io.github.mangi.eta.data.model.GeminiProviderSetting.DEFAULT_VERTEX_LOCATION },
                 hostedWebSearchEnabled = bundle.getBoolean(KEY_HOSTED_WEB_SEARCH_ENABLED, false),
                 supportsSearchSuggestions = bundle.getBoolean(KEY_SUPPORTS_SEARCH_SUGGESTIONS, false),
                 terminalTools = bundle.getBoolean(KEY_TERMINAL_TOOLS),
@@ -906,7 +919,14 @@ internal object AgentRuntimeWire {
                 putString("tool_call_id", event.toolCallId)
                 putString("name", event.name)
                 putString("args_preview", event.argsPreview)
-                event.command?.let { putString("command", it) }
+                event.command?.let { raw ->
+                    val safeCommand = if (event.name == AgentSubagentToolCatalog.TOOL_NAME) {
+                        SubagentActivitySnapshot.sanitizeForWire(raw, MAX_DRAIN_CONTENT_CHARS) ?: raw
+                    } else {
+                        raw
+                    }
+                    putString("command", safeCommand)
+                }
             }
 
             is AgentEvent.ToolFinished -> {
@@ -918,12 +938,14 @@ internal object AgentRuntimeWire {
                 putInt("image_count", event.imageCount)
                 putInt("image_bytes", event.imageBytes)
                 event.success?.let { putBoolean("success", it) }
-                event.command?.let { command ->
-                    val snapshot = if (event.name == AgentSubagentToolCatalog.TOOL_NAME) {
-                        SubagentActivitySnapshot.decode(command)
-                    } else null
-                    putString("command", snapshot?.encodeBounded(MAX_DRAIN_CONTENT_CHARS)
-                        ?: command.boundedText(MAX_DRAIN_CONTENT_CHARS))
+                event.command?.let { raw ->
+                    val safeCommand = if (event.name == AgentSubagentToolCatalog.TOOL_NAME) {
+                        SubagentActivitySnapshot.sanitizeForWire(raw, MAX_DRAIN_CONTENT_CHARS)
+                            ?: raw.boundedText(MAX_DRAIN_CONTENT_CHARS)
+                    } else {
+                        raw.boundedText(MAX_DRAIN_CONTENT_CHARS)
+                    }
+                    putString("command", safeCommand)
                 }
             }
 
@@ -933,9 +955,11 @@ internal object AgentRuntimeWire {
                 putString("tool_call_id", event.toolCallId)
                 putString("subagent_id", event.subagentId)
                 putString("subagent_type", event.subagentType)
-                putString("snapshot_json", SubagentActivitySnapshot.decode(event.snapshotJson)
-                    ?.encodeBounded(MAX_DRAIN_CONTENT_CHARS)
-                    ?: event.snapshotJson.boundedText(MAX_DRAIN_CONTENT_CHARS))
+                val safeSnapshot = SubagentActivitySnapshot.sanitizeForWire(
+                    event.snapshotJson,
+                    MAX_DRAIN_CONTENT_CHARS,
+                ) ?: event.snapshotJson.boundedText(MAX_DRAIN_CONTENT_CHARS)
+                putString("snapshot_json", safeSnapshot)
             }
 
             is AgentEvent.HostedToolStarted -> {

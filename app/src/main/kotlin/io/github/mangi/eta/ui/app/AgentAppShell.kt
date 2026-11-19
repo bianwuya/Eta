@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.displayCutout
@@ -24,10 +25,12 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ShortText
 import androidx.compose.material.icons.automirrored.rounded.VolumeOff
 import androidx.compose.material.icons.automirrored.rounded.VolumeUp
-import androidx.compose.material.icons.outlined.MoreHoriz
 import androidx.compose.material.icons.rounded.Language
+import androidx.compose.material.icons.rounded.MapsUgc
 import androidx.compose.material.icons.rounded.Terminal
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -36,12 +39,17 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clipToBounds
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.constrainHeight
+import androidx.compose.ui.unit.constrainWidth
 import androidx.compose.ui.unit.dp
 import com.itos.coui.icons.CouiIcons
 import com.itos.coui.layout.CouiPageDefaults
@@ -61,37 +69,54 @@ import io.github.mangi.eta.data.model.TtsProvider
 import io.github.mangi.eta.data.repository.SpeechSettingsRepository
 import io.github.mangi.eta.ui.components.AdaptiveTopAppBar
 import io.github.mangi.eta.ui.components.AgentTopBarChatHeader
-import io.github.mangi.eta.ui.components.ChatActionIcons
 import io.github.mangi.eta.ui.components.ChatImagePreviewHost
 import io.github.mangi.eta.ui.components.ConversationSidePaneScaffold
+import io.github.mangi.eta.ui.components.EtaTopLayer
 import io.github.mangi.eta.ui.components.MiuixBackButton
 import io.github.mangi.eta.ui.components.RoleplayChatUi
-import io.github.mangi.eta.ui.components.TopBarBackdrop
-import io.github.mangi.eta.ui.components.captureForTopBar
+import io.github.mangi.eta.ui.components.captureGlassBackdrop
 import io.github.mangi.eta.ui.components.coui.CouiBackButton
 import io.github.mangi.eta.ui.components.coui.CouiTopAppBarIconButton
 import io.github.mangi.eta.ui.components.rememberTopBarBackdrop
 import io.github.mangi.eta.ui.components.topBarContainerColor
 import io.github.mangi.eta.ui.model.ActiveTaskUi
+import io.github.mangi.eta.ui.components.currentGlassOverlayBackdrop
+import io.github.mangi.eta.ui.components.rememberGlassBackdrop
+import io.github.mangi.eta.ui.layout.rememberIsWideScreen
 import io.github.mangi.eta.ui.model.AgentModelPickerUiState
 import io.github.mangi.eta.ui.model.ConversationPaneUiState
 import io.github.mangi.eta.ui.model.ConversationSummaryUi
 import io.github.mangi.eta.ui.navigation.AppRoute
 import kotlinx.coroutines.launch
-import top.yukonga.miuix.kmp.basic.DropdownImpl
-import top.yukonga.miuix.kmp.basic.DropdownItem
 import top.yukonga.miuix.kmp.basic.Icon
-import top.yukonga.miuix.kmp.basic.IconButton
-import top.yukonga.miuix.kmp.basic.ListPopupColumn
 import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
-import top.yukonga.miuix.kmp.basic.PopupPositionProvider
 import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.ScrollBehavior
-import top.yukonga.miuix.kmp.basic.SmallTopAppBar
-import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.basic.TopAppBarDefaults
+import top.yukonga.miuix.kmp.blur.Backdrop
+import top.yukonga.miuix.kmp.blur.BlendColorEntry
+import top.yukonga.miuix.kmp.blur.BlurDefaults
+import top.yukonga.miuix.kmp.blur.ProgressiveBlur
+import top.yukonga.miuix.kmp.blur.layerBackdrop
+import top.yukonga.miuix.kmp.blur.progressiveTextureBlur
+import top.yukonga.miuix.kmp.blur.rememberLayerBackdrop
+import top.yukonga.miuix.kmp.glass.GlassIconButton
+import top.yukonga.miuix.kmp.glass.GlassPopupItem
+import top.yukonga.miuix.kmp.glass.GlassTopAppBarDefaults
+import top.yukonga.miuix.kmp.glass.GlassTransformPopup
+import top.yukonga.miuix.kmp.glass.glassPopupAnchor
+import top.yukonga.miuix.kmp.glass.glassPopupAnchorContent
+import top.yukonga.miuix.kmp.glass.rememberGlassPopupAnchor
+import top.yukonga.miuix.kmp.icon.MiuixIcons
+import top.yukonga.miuix.kmp.icon.glass.Computer
+import top.yukonga.miuix.kmp.icon.glass.GlobalVpn
+import top.yukonga.miuix.kmp.icon.glass.More
+import top.yukonga.miuix.kmp.icon.glass.NewMessage
+import top.yukonga.miuix.kmp.icon.glass.Sidebar
+import top.yukonga.miuix.kmp.icon.glass.VolumeOff
+import top.yukonga.miuix.kmp.icon.glass.VolumeUp
+import top.yukonga.miuix.kmp.material.isRuntimeShaderSupported
 import top.yukonga.miuix.kmp.theme.MiuixTheme
-import top.yukonga.miuix.kmp.window.WindowListPopup
+import kotlin.math.roundToInt
 
 /**
  * Agent App 统一壳层。
@@ -122,6 +147,7 @@ internal fun AgentAppShell(
     onConversationDelete: (ConversationSummaryUi) -> Unit,
     onOpenTools: () -> Unit,
     onOpenSkills: () -> Unit,
+    onOpenScheduledTasks: () -> Unit = {},
     onOpenCharacters: () -> Unit,
     onOpenPermissions: () -> Unit,
     onOpenSettings: () -> Unit,
@@ -220,8 +246,7 @@ internal fun AgentAppShell(
             AppearanceUiStyle.MIUIX -> {
                 // 首页顶栏高度固定，不参与折叠；未绑定顶栏的滚动行为会吞掉聊天列表的单向滑动。
                 val scrollBehavior = if (currentRoute is AppRoute.Home) null else MiuixScrollBehavior()
-                val backdrop = rememberTopBarBackdrop()
-                val topBarColor = topBarContainerColor(backdrop)
+                val pageBackdrop = rememberGlassBackdrop()
                 Scaffold(
                     modifier = Modifier.fillMaxSize(),
                     contentWindowInsets = WindowInsets.safeDrawing.only(
@@ -229,37 +254,38 @@ internal fun AgentAppShell(
                     ),
                     topBar = {
                         if (currentRoute !is AppRoute.Settings) {
-                            TopBarBackdrop(backdrop) {
-                                AgentTopBar(
-                                    route = currentRoute,
-                                    scrollBehavior = scrollBehavior,
-                                    color = topBarColor,
-                                    onBack = onBack,
-                                    onOpenConversationPane = onOpenConversationPane,
-                                    onNewConversation = onNewConversation,
-                                    onOpenTerminal = onOpenTerminal,
-                                    onOpenBrowser = onOpenBrowser,
-                                    homeTitle = homeTitle,
-                                    homeCharacter = homeCharacter,
-                                    homeModelPickerState = homeModelPickerState,
-                                    isHomeStreaming = isHomeStreaming,
-                                    onHomeModelSelected = onHomeModelSelected,
-                                    onOpenCharacter = onOpenCharacter,
-                                )
-                            }
+                            AgentTopBar(
+                                route = currentRoute,
+                                isCurrentRoute = isCurrentRoute,
+                                scrollBehavior = scrollBehavior,
+                                backdrop = pageBackdrop,
+                                onBack = onBack,
+                                onOpenConversationPane = onOpenConversationPane,
+                                onNewConversation = onNewConversation,
+                                onOpenTerminal = onOpenTerminal,
+                                onOpenBrowser = onOpenBrowser,
+                                homeTitle = homeTitle,
+                                homeCharacter = homeCharacter,
+                                homeModelPickerState = homeModelPickerState,
+                                isHomeStreaming = isHomeStreaming,
+                                onHomeModelSelected = onHomeModelSelected,
+                                onOpenCharacter = onOpenCharacter,
+                            )
                         }
                     },
                 ) { padding ->
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .captureForTopBar(backdrop)
-                            .then(
-                                if (scrollBehavior != null) Modifier.nestedScroll(scrollBehavior.nestedScrollConnection)
-                                else Modifier,
-                            ),
-                    ) {
-                        content(padding)
+                    CompositionLocalProvider(LocalGlassPageBackdrop provides pageBackdrop) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .captureGlassBackdrop(pageBackdrop)
+                                .then(
+                                    if (scrollBehavior != null) Modifier.nestedScroll(scrollBehavior.nestedScrollConnection)
+                                    else Modifier,
+                                ),
+                        ) {
+                            content(padding)
+                        }
                     }
                 }
             }
@@ -286,6 +312,7 @@ internal fun AgentAppShell(
                 onOpenModelProviders = onOpenModelProviders,
                 onOpenTools = onOpenTools,
                 onOpenSkills = onOpenSkills,
+                onOpenScheduledTasks = onOpenScheduledTasks,
                 onOpenCharacters = onOpenCharacters,
                 onOpenPermissions = onOpenPermissions,
                 activeModelLabel = homeModelPickerState?.selectedModel?.displayName,
@@ -329,7 +356,7 @@ private fun CouiTopBarOverflowMenu(
         autoReadEnabled,
     ) {
         buildList {
-            add(CouiMenuItem(value = 0, text = newConversationText, icon = ChatActionIcons.NewChat))
+            add(CouiMenuItem(value = 0, text = newConversationText, icon = Icons.Rounded.MapsUgc))
             add(CouiMenuItem(value = 1, text = openTerminalText, icon = Icons.Rounded.Terminal))
             add(CouiMenuItem(value = 2, text = openBrowserText, icon = Icons.Rounded.Language))
             if (hasSpeechPlayback) {
@@ -380,8 +407,9 @@ private fun CouiTopBarOverflowMenu(
 @Composable
 private fun AgentTopBar(
     route: AppRoute?,
+    isCurrentRoute: Boolean,
     scrollBehavior: ScrollBehavior?,
-    color: Color,
+    backdrop: Backdrop?,
     onBack: () -> Unit,
     onOpenConversationPane: () -> Unit,
     onNewConversation: () -> Unit,
@@ -397,7 +425,8 @@ private fun AgentTopBar(
     val isHome = route is AppRoute.Home
     if (isHome && homeModelPickerState != null) {
         HomeMiuixTopBar(
-            color = color,
+            backdrop = backdrop,
+            isCurrentRoute = isCurrentRoute,
             onOpenConversationPane = onOpenConversationPane,
             onNewConversation = onNewConversation,
             onOpenTerminal = onOpenTerminal,
@@ -415,184 +444,220 @@ private fun AgentTopBar(
         return
     }
 
-    val navigationIcon: @Composable () -> Unit = {
-        MiuixBackButton(onClick = onBack)
-    }
-    val actions: @Composable RowScope.() -> Unit = {}
-
-    if (route is AppRoute.Terminal) {
-        SmallTopAppBar(
-            title = titleForRoute(route),
-            color = color,
-            scrollBehavior = scrollBehavior,
-            navigationIcon = navigationIcon,
-            actions = actions,
-        )
-    } else {
-        AdaptiveTopAppBar(
-            title = titleForRoute(route),
-            color = color,
-            scrollBehavior = scrollBehavior,
-            navigationIcon = navigationIcon,
-            actions = actions,
-        )
-    }
+    AdaptiveTopAppBar(
+        title = titleForRoute(route),
+        backdrop = backdrop,
+        expandable = route !is AppRoute.Terminal && !rememberIsWideScreen(),
+        scrollBehavior = scrollBehavior,
+        navigationIcon = { MiuixBackButton(onClick = onBack) },
+        actions = {},
+    )
 }
 
 @Composable
 private fun HomeMiuixTopBar(
-    color: Color,
+    backdrop: Backdrop?,
+    isCurrentRoute: Boolean,
     onOpenConversationPane: () -> Unit,
     onNewConversation: () -> Unit,
     onOpenTerminal: () -> Unit,
     onOpenBrowser: () -> Unit,
     centerContent: @Composable () -> Unit,
 ) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(color)
-            .windowInsetsPadding(WindowInsets.displayCutout.only(WindowInsetsSides.Horizontal))
-            .windowInsetsPadding(WindowInsets.navigationBars.only(WindowInsetsSides.Horizontal))
-            .windowInsetsPadding(WindowInsets.systemBars.only(WindowInsetsSides.Top))
-            .height(56.dp)
-            .clipToBounds()
-            .pointerInput(Unit) {
-                detectTapGestures { }
-            }
-            .padding(
-                start = TopAppBarDefaults.NavigationIconPadding,
-                end = TopAppBarDefaults.ActionIconPadding,
-            ),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        IconButton(onClick = onOpenConversationPane) {
-            Icon(
-                imageVector = Icons.AutoMirrored.Outlined.ShortText,
-                modifier = Modifier.size(24.dp),
-                contentDescription = stringResource(R.string.action_conversation_history),
+    val surfaceColor = MiuixTheme.colorScheme.surface
+    val progressiveBlurEnabled = LocalAppearanceSettings.current.progressiveBlurEnabled
+    val progressiveSource = if (progressiveBlurEnabled) {
+        backdrop?.takeIf { isRuntimeShaderSupported() }
+    } else {
+        null
+    }
+    val progressive = progressiveSource != null
+    val bandBrush = remember(surfaceColor) { GlassTopAppBarDefaults.bandBrush(surfaceColor) }
+    var backgroundCoordinates by remember { mutableStateOf<LayoutCoordinates?>(null) }
+    val progressiveBackdrop = if (progressiveSource != null) {
+        rememberLayerBackdrop {
+            val coordinates = backgroundCoordinates?.takeIf { it.isAttached }
+            with(progressiveSource) { drawBackdrop(this@rememberLayerBackdrop, coordinates) }
+            drawContent()
+        }
+    } else {
+        null
+    }
+    val buttonBackdrop = progressiveBackdrop ?: backdrop
+    val blurColors = BlurDefaults.blurColors(
+        blendColors = remember(surfaceColor) { listOf(BlendColorEntry(surfaceColor.copy(alpha = 0.3f))) },
+    )
+
+    Layout(
+        content = {
+            Box(
+                modifier = if (progressiveSource != null) {
+                    Modifier
+                        .onGloballyPositioned { backgroundCoordinates = it }
+                        .let { if (progressiveBackdrop != null) it.layerBackdrop(progressiveBackdrop) else it }
+                        .progressiveTextureBlur(
+                            backdrop = progressiveSource,
+                            shape = RectangleShape,
+                            gradient = ProgressiveBlur.Top.copy(curve = 0.5f),
+                            blurRadius = GlassTopAppBarDefaults.ProgressiveBlurRadius.value,
+                            colors = blurColors,
+                        )
+                } else {
+                    Modifier.background(bandBrush)
+                },
             )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .windowInsetsPadding(WindowInsets.displayCutout.only(WindowInsetsSides.Horizontal))
+                    .windowInsetsPadding(WindowInsets.navigationBars.only(WindowInsetsSides.Horizontal))
+                    .windowInsetsPadding(WindowInsets.systemBars.only(WindowInsetsSides.Top))
+                    .height(60.dp)
+                    .pointerInput(Unit) {
+                        detectTapGestures { }
+                    }
+                    .padding(horizontal = GlassTopAppBarDefaults.HorizontalPadding),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                GlassIconButton(
+                    onClick = onOpenConversationPane,
+                    backdrop = buttonBackdrop,
+                ) {
+                    Icon(
+                        imageVector = MiuixIcons.Glass.Sidebar,
+                        modifier = Modifier.size(28.dp),
+                        tint = MiuixTheme.colorScheme.onSurface,
+                        contentDescription = stringResource(R.string.action_conversation_history),
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(horizontal = 8.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    centerContent()
+                }
+                TopBarOverflowMenu(
+                    backdrop = buttonBackdrop,
+                    isCurrentRoute = isCurrentRoute,
+                    onNewConversation = onNewConversation,
+                    onOpenTerminal = onOpenTerminal,
+                    onOpenBrowser = onOpenBrowser,
+                )
+            }
+        },
+    ) { measurables, constraints ->
+        val foreground = measurables[1].measure(constraints.copy(minWidth = 0, minHeight = 0))
+        val width = constraints.constrainWidth(foreground.width)
+        val height = constraints.constrainHeight(foreground.height)
+        val bandHeight = if (progressive) {
+            ((height + 20.dp.toPx()) * 1.15f).roundToInt()
+        } else {
+            height + GlassTopAppBarDefaults.BandOverhang.roundToPx()
         }
-        Box(
-            modifier = Modifier.weight(1f),
-            contentAlignment = Alignment.Center,
-        ) {
-            centerContent()
+        val background = measurables[0].measure(Constraints.fixed(width, bandHeight))
+        layout(width, height) {
+            background.placeRelative(0, 0)
+            foreground.placeRelative(0, 0)
         }
-        TopBarOverflowMenu(
-            onNewConversation = onNewConversation,
-            onOpenTerminal = onOpenTerminal,
-            onOpenBrowser = onOpenBrowser,
-        )
     }
 }
 
-private val TopBarMenuIconSize = 20.dp
-
 @Composable
 private fun TopBarOverflowMenu(
+    backdrop: Backdrop?,
+    isCurrentRoute: Boolean,
     onNewConversation: () -> Unit,
     onOpenTerminal: () -> Unit,
     onOpenBrowser: () -> Unit,
 ) {
     var showMenu by remember { mutableStateOf(false) }
+    LaunchedEffect(isCurrentRoute) {
+        if (!isCurrentRoute) showMenu = false
+    }
+    val moreAnchor = rememberGlassPopupAnchor()
     val scope = rememberCoroutineScope()
     val speechSettings by remember { SpeechSettingsRepository.settingsFlow() }.collectAsState(initial = null)
     val hasSpeechPlayback = speechSettings?.let { it.tts != TtsProvider.NONE } == true
     val autoReadEnabled = speechSettings?.chatAutoSpeak == true
-    Box {
-        IconButton(onClick = { showMenu = true }) {
-            Icon(
-                imageVector = Icons.Outlined.MoreHoriz,
-                modifier = Modifier.size(24.dp),
-                contentDescription = stringResource(R.string.action_more),
-            )
-        }
-        WindowListPopup(
-            show = showMenu,
-            alignment = PopupPositionProvider.Align.End,
-            onDismissRequest = { showMenu = false },
-        ) {
-            val newConversationText = stringResource(R.string.action_new_conversation)
-            val openTerminalText = stringResource(R.string.action_open_terminal)
-            val openBrowserText = stringResource(R.string.action_open_browser)
-            val autoReadText = stringResource(
-                if (autoReadEnabled) R.string.speech_disable_auto_read else R.string.speech_enable_auto_read,
-            )
-            val menuItems = remember(
-                newConversationText,
-                openTerminalText,
-                openBrowserText,
-                autoReadText,
-                hasSpeechPlayback,
-                autoReadEnabled,
-            ) {
-                listOf(
-                    DropdownItem(
-                        text = newConversationText,
-                        icon = { modifier ->
-                            Icon(
-                                imageVector = ChatActionIcons.NewChat,
-                                contentDescription = null,
-                                modifier = modifier.size(TopBarMenuIconSize),
-                            )
-                        },
-                    ),
-                    DropdownItem(
-                        text = openTerminalText,
-                        icon = { modifier ->
-                            Icon(
-                                imageVector = Icons.Rounded.Terminal,
-                                contentDescription = null,
-                                modifier = modifier.size(TopBarMenuIconSize),
-                            )
-                        },
-                    ),
-                    DropdownItem(
-                        text = openBrowserText,
-                        icon = { modifier ->
-                            Icon(
-                                imageVector = Icons.Rounded.Language,
-                                contentDescription = null,
-                                modifier = modifier.size(TopBarMenuIconSize),
-                            )
-                        },
-                    ),
-                ) + if (hasSpeechPlayback) {
-                    listOf(
-                        DropdownItem(
-                            text = autoReadText,
-                            icon = { modifier ->
-                                Icon(
-                                    imageVector = if (autoReadEnabled) Icons.AutoMirrored.Rounded.VolumeUp
-                                    else Icons.AutoMirrored.Rounded.VolumeOff,
-                                    contentDescription = null,
-                                    modifier = modifier.size(TopBarMenuIconSize),
-                                )
-                            },
-                        ),
+    val newConversationText = stringResource(R.string.action_new_conversation)
+    val openTerminalText = stringResource(R.string.action_open_terminal)
+    val openBrowserText = stringResource(R.string.action_open_browser)
+    val autoReadText = stringResource(
+        if (autoReadEnabled) R.string.speech_disable_auto_read else R.string.speech_enable_auto_read,
+    )
+    val overlayBackdrop = currentGlassOverlayBackdrop() ?: backdrop
+
+    GlassIconButton(
+        onClick = { showMenu = true },
+        backdrop = backdrop,
+        modifier = Modifier.glassPopupAnchor(
+            anchor = moreAnchor,
+            cornerRadius = GlassTopAppBarDefaults.ButtonSize / 2,
+            floating = true,
+        ),
+    ) {
+        Icon(
+            imageVector = MiuixIcons.Glass.More,
+            modifier = Modifier
+                .size(28.dp)
+                .glassPopupAnchorContent(moreAnchor),
+            tint = MiuixTheme.colorScheme.onSurface,
+            contentDescription = stringResource(R.string.action_more),
+        )
+    }
+
+    if (isCurrentRoute) {
+        EtaTopLayer {
+            GlassTransformPopup(
+                show = showMenu,
+                onDismissRequest = { showMenu = false },
+                anchor = moreAnchor,
+                backdrop = overlayBackdrop,
+                anchorContent = {
+                    Icon(
+                        imageVector = MiuixIcons.Glass.More,
+                        contentDescription = null,
+                        modifier = Modifier.size(28.dp),
+                        tint = MiuixTheme.colorScheme.onSurface,
                     )
-                } else emptyList()
-            }
-            ListPopupColumn {
-                menuItems.forEachIndexed { index, item ->
-                    DropdownImpl(
-                        item = item,
-                        optionSize = menuItems.size,
-                        isSelected = false,
-                        index = index,
-                        onSelectedIndexChange = {
+                },
+            ) {
+                GlassPopupItem(
+                    text = newConversationText,
+                    icon = MiuixIcons.Glass.NewMessage,
+                    onClick = {
+                        showMenu = false
+                        onNewConversation()
+                    },
+                )
+                GlassPopupItem(
+                    text = openTerminalText,
+                    icon = MiuixIcons.Glass.Computer,
+                    onClick = {
+                        showMenu = false
+                        onOpenTerminal()
+                    },
+                )
+                GlassPopupItem(
+                    text = openBrowserText,
+                    icon = MiuixIcons.Glass.GlobalVpn,
+                    onClick = {
+                        showMenu = false
+                        onOpenBrowser()
+                    },
+                )
+                if (hasSpeechPlayback) {
+                    GlassPopupItem(
+                        text = autoReadText,
+                        icon = if (autoReadEnabled) MiuixIcons.Glass.VolumeUp else MiuixIcons.Glass.VolumeOff,
+                        onClick = {
                             showMenu = false
-                            if (hasSpeechPlayback && index == menuItems.lastIndex) {
-                                speechSettings?.let { current ->
-                                    scope.launch {
-                                        SpeechSettingsRepository.save(current.copy(chatAutoSpeak = !current.chatAutoSpeak))
-                                    }
+                            speechSettings?.let { current ->
+                                scope.launch {
+                                    SpeechSettingsRepository.save(current.copy(chatAutoSpeak = !current.chatAutoSpeak))
                                 }
-                            } else when (index) {
-                                0 -> onNewConversation()
-                                1 -> onOpenTerminal()
-                                2 -> onOpenBrowser()
                             }
                         },
                     )
@@ -609,19 +674,25 @@ private fun titleForRoute(route: AppRoute?): String = when (route) {
     is AppRoute.Terminal -> stringResource(R.string.route_terminal)
     is AppRoute.Tools -> stringResource(R.string.route_tools)
     is AppRoute.WebToolsSettings -> stringResource(R.string.web_tools_settings_title)
+    is AppRoute.ImageGenSettings -> stringResource(R.string.image_gen_settings_title)
+    is AppRoute.ImageGenGallery -> stringResource(R.string.image_gen_gallery_title)
     is AppRoute.Skills -> stringResource(R.string.route_skills)
-    is AppRoute.Subagents -> "Subagent"
+    is AppRoute.ScheduledTasks -> stringResource(R.string.route_scheduled_tasks)
+    is AppRoute.ScheduledTaskDetail -> stringResource(R.string.route_scheduled_task_detail)
+    is AppRoute.ScheduledTaskEditor -> stringResource(
+        if (route.taskId.isNullOrBlank()) R.string.route_scheduled_task_new else R.string.route_scheduled_task_edit,
+    )
+    is AppRoute.Subagents -> stringResource(R.string.ui_misc_route_subagents)
     is AppRoute.CompactionSettings -> "上下文压缩"
-    is AppRoute.ImageGenSettings -> "生图配置"
     is AppRoute.SubagentStats -> "子代理请求统计"
     is AppRoute.SubagentConversationStats -> "会话请求明细"
     is AppRoute.ConversationTitleSettings -> stringResource(R.string.conversation_title_settings_title)
     is AppRoute.AssistantOverlaySettings -> stringResource(R.string.assistant_overlay_settings_title)
-    is AppRoute.Characters -> "角色"
-    is AppRoute.CharacterDetail -> "角色详情"
-    is AppRoute.CharacterEditor -> "编辑角色"
-    is AppRoute.CharacterPersona -> "我的人设"
-    is AppRoute.CharacterMemory -> "剧情记忆"
+    is AppRoute.Characters -> stringResource(R.string.conversation_dock_characters)
+    is AppRoute.CharacterDetail -> stringResource(R.string.ui_misc_route_character_detail)
+    is AppRoute.CharacterEditor -> stringResource(R.string.ui_misc_route_character_editor)
+    is AppRoute.CharacterPersona -> stringResource(R.string.ui_misc_route_character_persona)
+    is AppRoute.CharacterMemory -> stringResource(R.string.ui_misc_route_character_memory)
     is AppRoute.Permissions -> stringResource(R.string.route_permissions)
     is AppRoute.SystemEnhance -> stringResource(R.string.route_system_enhancements)
     is AppRoute.Settings -> stringResource(R.string.route_settings)
@@ -637,8 +708,8 @@ private fun titleForRoute(route: AppRoute?): String = when (route) {
     is AppRoute.SharedFolders -> stringResource(R.string.route_shared_folders)
     is AppRoute.LinuxFiles -> stringResource(R.string.route_linux_files)
     is AppRoute.ModelProviders -> stringResource(R.string.route_model_providers)
-    is AppRoute.CommunityCatalog -> "从 models.dev 添加"
-    is AppRoute.CommunityCatalogProvider -> "选择模型"
+    is AppRoute.CommunityCatalog -> stringResource(R.string.catalog_i18n_title)
+    is AppRoute.CommunityCatalogProvider -> stringResource(R.string.catalog_i18n_select_models)
     is AppRoute.McpServers -> stringResource(R.string.route_mcp_servers)
     is AppRoute.McpServerDetail -> stringResource(R.string.route_mcp_server_detail)
     is AppRoute.ModelProviderDetail -> stringResource(R.string.route_provider_details)

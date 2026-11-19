@@ -22,7 +22,7 @@ import io.github.mangi.eta.data.repository.LanguageSettingsRepository
 import io.github.mangi.eta.ui.app.LocalUiStyle
 import io.github.mangi.eta.ui.components.coui.CouiDropdownPreference
 import io.github.mangi.eta.ui.components.coui.CouiSettingsIcon
-import top.yukonga.miuix.kmp.preference.OverlayDropdownPreference
+import top.yukonga.miuix.kmp.glass.GlassDropdownPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 @Composable
@@ -49,9 +49,17 @@ internal fun LanguagePreference(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    val locales = repository.supportedLocales
-    val labels = listOf(stringResource(R.string.settings_language_system)) +
-        locales.map { it.getDisplayName(it) }
+    val locales = remember(repository) {
+        repository.supportedLocales.sortedBy { it.getDisplayName(it).lowercase(it) }
+    }
+    val systemLabel = stringResource(R.string.settings_language_system)
+    val labels = remember(locales, systemLabel) {
+        listOf(systemLabel) + locales.map { locale ->
+            locale.getDisplayName(locale).replaceFirstChar {
+                if (it.isLowerCase()) it.titlecase(locale) else it.toString()
+            }
+        }
+    }
     val selectedIndex = selectedLocale?.let { selected ->
         locales.indexOfFirst { LocaleList.matchesLanguageAndScript(it, selected) } + 1
     } ?: 0
@@ -77,10 +85,11 @@ internal fun LanguagePreference(
             )
         }
         AppearanceUiStyle.MIUIX -> {
-            OverlayDropdownPreference(
+            GlassDropdownPreference(
                 title = stringResource(R.string.settings_language),
                 items = labels,
                 selectedIndex = selectedIndex,
+                backdrop = currentGlassOverlayBackdrop(),
                 startAction = startAction,
                 onSelectedIndexChange = onSelect,
             )

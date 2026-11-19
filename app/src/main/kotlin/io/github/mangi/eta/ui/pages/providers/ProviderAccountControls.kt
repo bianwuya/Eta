@@ -104,28 +104,41 @@ internal fun ProviderAccountControls(
     }
 
     val title = current?.name?.takeIf { it.isNotBlank() } ?: account?.email?.let(::maskedAccountEmail)
-        ?: account?.displayName ?: "$brand 账号"
+        ?: account?.displayName ?: stringResource(R.string.provider_i18n_account_title, brand)
     val summary = browserError ?: state.message ?: when (state.phase) {
-        ProviderLoginPhase.Loading -> "正在读取登录状态…"
-        ProviderLoginPhase.Saving -> "正在保存配置…"
-        ProviderLoginPhase.Disconnecting -> "正在退出登录…"
-        ProviderLoginPhase.Authorizing -> if (prompt == null) "正在准备授权…" else "请在浏览器中完成授权"
-        ProviderLoginPhase.SyncingModels -> "登录成功，正在拉取最新模型…"
+        ProviderLoginPhase.Loading -> stringResource(R.string.provider_i18n_login_loading)
+        ProviderLoginPhase.Saving -> stringResource(R.string.provider_i18n_login_saving)
+        ProviderLoginPhase.Disconnecting -> stringResource(R.string.provider_i18n_login_disconnecting)
+        ProviderLoginPhase.Authorizing -> stringResource(
+            if (prompt == null) R.string.provider_i18n_login_preparing else R.string.provider_i18n_login_browser_prompt,
+        )
+        ProviderLoginPhase.SyncingModels -> stringResource(R.string.provider_i18n_login_syncing_models)
         ProviderLoginPhase.Idle -> when {
             current?.credentialError != null -> "本机无法读取该账号凭据，可重新登录或从本机移除"
             account?.needsRefresh == true -> "凭据已到刷新时间，下次请求会刷新；有效性尚待服务端确认"
             account == null && multiAccount -> "当前未选择账号，请选择或登录一个账号"
-            account == null -> if (authMode == ProviderAuthModes.OPENAI_CHATGPT) {
-                "使用 ChatGPT 账号登录 Codex"
-            } else {
-                "登录后使用 Grok 订阅额度"
-            }
-            account.needsReauthentication -> "请重新登录"
-            !account.planEnabled -> "账号尚未授予模型调用权限"
-            authMode == ProviderAuthModes.OPENAI_CHATGPT -> "已登录 Codex"
-            else -> "已登录 Grok"
+            account == null -> stringResource(
+                if (authMode == ProviderAuthModes.OPENAI_CHATGPT) {
+                    R.string.provider_i18n_login_chatgpt_hint
+                } else {
+                    R.string.provider_i18n_login_grok_hint
+                },
+            )
+            account.needsReauthentication -> stringResource(R.string.provider_i18n_login_reauth)
+            !account.planEnabled -> stringResource(R.string.provider_i18n_login_plan_disabled)
+            authMode == ProviderAuthModes.OPENAI_CHATGPT -> stringResource(R.string.provider_i18n_logged_in_codex)
+            else -> stringResource(R.string.provider_i18n_logged_in_grok)
         }
     }
+    val openBrowserText = stringResource(R.string.provider_i18n_open_browser)
+    val cancelText = stringResource(R.string.action_cancel)
+    val loginActionText = if (loggedIn) {
+        stringResource(R.string.provider_i18n_reauthorize)
+    } else {
+        stringResource(R.string.provider_i18n_sign_in_with, brand)
+    }
+    val manageUsageText = stringResource(R.string.provider_i18n_manage_usage)
+    val signOutText = stringResource(R.string.provider_i18n_sign_out)
 
     when (LocalUiStyle.current) {
         AppearanceUiStyle.COUI -> {
@@ -160,7 +173,7 @@ internal fun ProviderAccountControls(
                     ) {
                         if (prompt != null) {
                             CouiButton(
-                                text = "打开浏览器",
+                                text = openBrowserText,
                                 onClick = onOpenBrowser,
                                 role = CouiButtonRole.Primary,
                                 modifier = Modifier.width(IntrinsicSize.Max),
@@ -174,7 +187,7 @@ internal fun ProviderAccountControls(
                             )
                         ) {
                             CouiButton(
-                                text = "取消",
+                                text = cancelText,
                                 onClick = onCancel,
                                 modifier = Modifier.width(IntrinsicSize.Max),
                             )
@@ -206,7 +219,7 @@ internal fun ProviderAccountControls(
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         if (needsLogin) {
                             CouiButton(
-                                text = if (loggedIn) "重新授权" else "使用 $brand 登录",
+                                text = loginActionText,
                                 enabled = enabled,
                                 onClick = onLogin,
                                 role = CouiButtonRole.Primary,
@@ -215,7 +228,7 @@ internal fun ProviderAccountControls(
                         }
                         if (loggedIn) {
                             CouiButton(
-                                text = "退出登录",
+                                text = signOutText,
                                 enabled = enabled,
                                 onClick = onDisconnect,
                                 role = CouiButtonRole.Destructive,
@@ -255,7 +268,7 @@ internal fun ProviderAccountControls(
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         if (prompt != null) {
-                            TextButton(text = "打开浏览器", onClick = onOpenBrowser, modifier = Modifier.width(IntrinsicSize.Max))
+                            TextButton(text = openBrowserText, onClick = onOpenBrowser, modifier = Modifier.width(IntrinsicSize.Max))
                         }
                         if (state.phase in setOf(
                                 ProviderLoginPhase.Saving,
@@ -264,7 +277,7 @@ internal fun ProviderAccountControls(
                                 ProviderLoginPhase.Disconnecting,
                             )
                         ) {
-                            TextButton(text = "取消", onClick = onCancel, modifier = Modifier.width(IntrinsicSize.Max))
+                            TextButton(text = cancelText, onClick = onCancel, modifier = Modifier.width(IntrinsicSize.Max))
                         }
                     }
                     if (multiAccount) {
@@ -287,14 +300,14 @@ internal fun ProviderAccountControls(
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         if (needsLogin) {
                             TextButton(
-                                text = if (loggedIn) "重新授权" else "使用 $brand 登录",
+                                text = loginActionText,
                                 enabled = enabled,
                                 onClick = onLogin,
                                 modifier = Modifier.weight(1f),
                             )
                         }
                         if (loggedIn) {
-                            TextButton(text = "退出登录", enabled = enabled, onClick = onDisconnect, modifier = Modifier.weight(1f))
+                            TextButton(text = signOutText, enabled = enabled, onClick = onDisconnect, modifier = Modifier.weight(1f))
                         }
                     }
                 }
@@ -677,7 +690,7 @@ internal fun openProviderAccountLink(context: Context, url: String): String? = t
     context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
     null
 } catch (_: ActivityNotFoundException) {
-    "未找到可用浏览器"
+    context.getString(R.string.provider_i18n_no_browser)
 } catch (_: SecurityException) {
-    "无法打开浏览器，请检查系统设置"
+    context.getString(R.string.provider_i18n_cannot_open_browser)
 }

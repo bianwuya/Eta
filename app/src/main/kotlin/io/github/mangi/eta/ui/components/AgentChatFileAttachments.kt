@@ -16,10 +16,14 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.captionBar
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -34,6 +38,7 @@ import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -43,7 +48,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
@@ -64,29 +73,118 @@ import io.github.mangi.eta.data.model.AppearanceUiStyle
 import io.github.mangi.eta.ui.app.LocalUiStyle
 import io.github.mangi.eta.ui.components.coui.CouiInputDialog
 import io.github.mangi.eta.ui.model.PendingFileReferenceUi
-import top.yukonga.miuix.kmp.basic.DropdownImpl
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
-import top.yukonga.miuix.kmp.basic.ListPopupColumn
 import top.yukonga.miuix.kmp.basic.PopupPositionProvider
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextField
+import top.yukonga.miuix.kmp.blur.Backdrop
+import top.yukonga.miuix.kmp.glass.GlassDialog
+import top.yukonga.miuix.kmp.glass.GlassPopupDefaults
+import top.yukonga.miuix.kmp.glass.GlassPopupItem
+import top.yukonga.miuix.kmp.glass.GlassPopupSizing
+import top.yukonga.miuix.kmp.glass.GlassTransformPopup
+import top.yukonga.miuix.kmp.glass.glassPopupAnchor
+import top.yukonga.miuix.kmp.glass.glassPopupAnchorContent
+import top.yukonga.miuix.kmp.glass.rememberGlassPopupAnchor
+import top.yukonga.miuix.kmp.icon.MiuixIcons
+import top.yukonga.miuix.kmp.icon.glass.Add
+import top.yukonga.miuix.kmp.icon.glass.Edit
+import top.yukonga.miuix.kmp.icon.glass.File
+import top.yukonga.miuix.kmp.icon.glass.FolderOutline
+import top.yukonga.miuix.kmp.icon.glass.ImageOutline
 import top.yukonga.miuix.kmp.squircle.squircleBorder
 import top.yukonga.miuix.kmp.squircle.squircleSurface
-import top.yukonga.miuix.kmp.theme.LocalDismissState
 import top.yukonga.miuix.kmp.theme.MiuixTheme
-import top.yukonga.miuix.kmp.layout.DialogDefaults
-import top.yukonga.miuix.kmp.window.WindowDialog
-import top.yukonga.miuix.kmp.window.WindowListPopup
 
 internal val ChatInputPopupMargin = 8.dp
 internal val ChatInputActionSize = 40.dp
 internal val ChatInputActionIconSize = 24.dp
 
+internal data class InputBarPopupLayout(
+    val gap: Dp,
+    val maxHeight: Dp,
+)
+
+/**
+ * 底部输入区弹窗需悬浮在整块输入容器上方，避免回退向上展开时压住按钮与输入栏本身。
+ *
+ * `GlassTransformPopup` 内部按无 `ime` 的窗口底边判断是否向下展开；当软键盘抬高输入栏时，
+ * 下方看似空余极大而触发向下对齐，导致菜单压回输入框并被键盘裁切。这里按相同的窗口底边
+ * 提前判定实际对齐方向，并在向下对齐分支反推 `gap`，让菜单底边始终停在输入栏上方 [ChatInputPopupMargin]。
+ */
+internal fun calculateInputBarPopupLayout(
+    inputContainerTopPx: Float,
+    anchorTopPx: Float,
+    anchorBottomPx: Float,
+    measuredHeightPx: Float,
+    statusBarTopPx: Float,
+    windowBottomPx: Float,
+    safeMarginPx: Float,
+    marginPx: Float,
+    density: Float,
+    defaultMaxHeightDp: Dp = GlassPopupDefaults.MaxHeight,
+): InputBarPopupLayout {
+    val maxHeightDp = if (inputContainerTopPx > statusBarTopPx) {
+        ((inputContainerTopPx - statusBarTopPx - marginPx - safeMarginPx) / density).dp
+    } else {
+        defaultMaxHeightDp
+    }.coerceIn(96.dp, defaultMaxHeightDp)
+
+    if (inputContainerTopPx <= 0f || anchorBottomPx <= 0f) {
+        return InputBarPopupLayout(gap = 0.dp, maxHeight = maxHeightDp)
+    }
+
+    val targetBottomPx = inputContainerTopPx - marginPx
+    val baseGapPx = (targetBottomPx - anchorBottomPx).coerceAtMost(0f)
+    val gapPx = if (measuredHeightPx > 0f && anchorTopPx > 0f) {
+        val minTopPx = statusBarTopPx + safeMarginPx
+        val shiftedTop = anchorTopPx + baseGapPx
+        val below = windowBottomPx - safeMarginPx - shiftedTop
+        val above = targetBottomPx - minTopPx
+        val willAlignTop = measuredHeightPx <= below || below >= above
+        if (willAlignTop) {
+            ((targetBottomPx - measuredHeightPx) - anchorTopPx).coerceAtMost(0f)
+        } else {
+            baseGapPx
+        }
+    } else {
+        baseGapPx
+    }
+    return InputBarPopupLayout(gap = (gapPx / density).dp, maxHeight = maxHeightDp)
+}
+
+@Composable
+internal fun rememberInputBarPopupLayout(
+    inputContainerTopPx: Float,
+    anchorTopPx: Float,
+    anchorBottomPx: Float,
+    measuredHeightPx: Float,
+): InputBarPopupLayout {
+    val density = LocalDensity.current
+    val statusBarTopPx = WindowInsets.statusBars.getTop(density).toFloat()
+    val navBarBottomPx = WindowInsets.navigationBars.getBottom(density).toFloat()
+    val captionBarBottomPx = WindowInsets.captionBar.getBottom(density).toFloat()
+    val windowBottomPx = LocalWindowInfo.current.containerSize.height - navBarBottomPx - captionBarBottomPx
+    return with(density) {
+        calculateInputBarPopupLayout(
+            inputContainerTopPx = inputContainerTopPx,
+            anchorTopPx = anchorTopPx,
+            anchorBottomPx = anchorBottomPx,
+            measuredHeightPx = measuredHeightPx,
+            statusBarTopPx = statusBarTopPx,
+            windowBottomPx = windowBottomPx,
+            safeMarginPx = GlassPopupDefaults.SafeMargin.toPx(),
+            marginPx = ChatInputPopupMargin.toPx(),
+            density = this.density,
+        )
+    }
+}
+
 @Composable
 internal fun AgentAttachmentPickerButton(
-    popupAnchorTopPx: Int,
-    popupMaxHeight: Dp,
+    glassBackdrop: Backdrop?,
+    inputContainerTopPx: Float,
     onAttachImage: (String) -> Unit,
     onAttachFiles: (List<String>) -> Unit,
     onAttachFolder: (String) -> Unit,
@@ -97,6 +195,10 @@ internal fun AgentAttachmentPickerButton(
     var showPopup by remember { mutableStateOf(false) }
     var showPathDialog by remember { mutableStateOf(false) }
     var pathInput by remember { mutableStateOf("") }
+    var buttonTopPx by remember { mutableFloatStateOf(0f) }
+    var buttonBottomPx by remember { mutableFloatStateOf(0f) }
+    var measuredPopupHeightPx by remember { mutableFloatStateOf(0f) }
+    val popupAnchor = rememberGlassPopupAnchor()
     val photoPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickMultipleVisualMedia(),
     ) { uris ->
@@ -142,21 +244,44 @@ internal fun AgentAttachmentPickerButton(
         }
     }
 
+    val uiStyle = LocalUiStyle.current
+    val isCoui = uiStyle == AppearanceUiStyle.COUI
+    val popupLayout = rememberInputBarPopupLayout(
+        inputContainerTopPx = inputContainerTopPx,
+        anchorTopPx = buttonTopPx,
+        anchorBottomPx = buttonBottomPx,
+        measuredHeightPx = measuredPopupHeightPx,
+    )
     Box(modifier = modifier) {
         IconButton(
-            onClick = { anchor.open { showPopup = true } },
+            onClick = { if (isCoui) anchor.open { showPopup = true } else showPopup = true },
             minWidth = ChatInputActionSize,
             minHeight = ChatInputActionSize,
-            modifier = Modifier.couiMenuAnchor(anchor),
+            modifier = if (isCoui) {
+                Modifier.couiMenuAnchor(anchor)
+            } else {
+                Modifier
+                    .glassPopupAnchor(
+                        anchor = popupAnchor,
+                        cornerRadius = 17.dp,
+                    )
+                    .onGloballyPositioned {
+                        val bounds = it.boundsInWindow()
+                        buttonTopPx = bounds.top
+                        buttonBottomPx = bounds.bottom
+                    }
+            },
         ) {
             Icon(
-                imageVector = Icons.Rounded.Add,
+                imageVector = if (isCoui) Icons.Rounded.Add else MiuixIcons.Glass.Add,
                 contentDescription = stringResource(R.string.ui_add_attachment_dba9e8),
-                modifier = Modifier.size(ChatInputActionIconSize),
+                modifier = Modifier
+                    .size(ChatInputActionIconSize)
+                    .then(if (isCoui) Modifier else Modifier.glassPopupAnchorContent(popupAnchor)),
                 tint = MiuixTheme.colorScheme.onSurface,
             )
         }
-        when (LocalUiStyle.current) {
+        when (uiStyle) {
             AppearanceUiStyle.COUI -> {
                 val menuItems = remember(options) {
                     options.mapIndexed { index, label -> CouiMenuItem(value = index, text = label) }
@@ -173,25 +298,39 @@ internal fun AgentAttachmentPickerButton(
                 )
             }
             AppearanceUiStyle.MIUIX -> {
-                WindowListPopup(
-                    show = showPopup && popupAnchorTopPx > 0,
-                    popupPositionProvider = remember(popupAnchorTopPx) {
-                        InputPopupPositionProvider(popupAnchorTopPx)
-                    },
-                    alignment = PopupPositionProvider.Align.TopStart,
-                    onDismissRequest = { showPopup = false },
-                    maxHeight = popupMaxHeight,
-                ) {
-                    val dismiss = LocalDismissState.current
-                    ListPopupColumn {
+                val overlayBackdrop = currentGlassOverlayBackdrop() ?: glassBackdrop
+                val optionIcons = remember {
+                    listOf(
+                        MiuixIcons.Glass.ImageOutline,
+                        MiuixIcons.Glass.File,
+                        MiuixIcons.Glass.FolderOutline,
+                        MiuixIcons.Glass.Edit,
+                    )
+                }
+                EtaTopLayer {
+                    GlassTransformPopup(
+                        show = showPopup,
+                        onDismissRequest = { showPopup = false },
+                        anchor = popupAnchor,
+                        backdrop = overlayBackdrop,
+                        gap = popupLayout.gap,
+                        sizing = GlassPopupSizing(maxHeight = popupLayout.maxHeight),
+                        onMeasured = { measuredPopupHeightPx = it.height },
+                        anchorContent = {
+                            Icon(
+                                imageVector = MiuixIcons.Glass.Add,
+                                contentDescription = null,
+                                modifier = Modifier.size(23.dp),
+                                tint = MiuixTheme.colorScheme.onSurface.copy(alpha = 0.72f),
+                            )
+                        },
+                    ) {
                         options.forEachIndexed { index, option ->
-                            DropdownImpl(
+                            GlassPopupItem(
                                 text = option,
-                                optionSize = options.size,
-                                isSelected = false,
-                                index = index,
-                                onSelectedIndexChange = {
-                                    dismiss?.invoke()
+                                icon = optionIcons[index],
+                                onClick = {
+                                    showPopup = false
                                     onSelectOption(index)
                                 },
                             )
@@ -202,7 +341,7 @@ internal fun AgentAttachmentPickerButton(
         }
     }
 
-    when (LocalUiStyle.current) {
+    when (uiStyle) {
         AppearanceUiStyle.COUI -> {
             CouiInputDialog(
                 visible = showPathDialog,
@@ -222,9 +361,9 @@ internal fun AgentAttachmentPickerButton(
             )
         }
         AppearanceUiStyle.MIUIX -> {
-            WindowDialog(
+            GlassDialog(
                 show = showPathDialog,
-                cornerRadius = DialogDefaults.CornerRadius,
+                backdrop = currentGlassOverlayBackdrop() ?: glassBackdrop,
                 title = stringResource(R.string.ui_input_file_path_36d474),
                 summary = stringResource(R.string.ui_supports_files_and_folders_under_internal_storage_or_520786),
                 onDismissRequest = { showPathDialog = false },
@@ -234,6 +373,7 @@ internal fun AgentAttachmentPickerButton(
                         value = pathInput,
                         onValueChange = { pathInput = it },
                         label = stringResource(R.string.ui_absolute_path_9ac6fc),
+                        colors = glassOverlayTextFieldColors(),
                         useLabelAsPlaceholder = true,
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),

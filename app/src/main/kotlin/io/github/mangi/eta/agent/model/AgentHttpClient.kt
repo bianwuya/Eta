@@ -44,6 +44,10 @@ internal object AgentHttpClient {
         else -> modelClient
     }
 
+    fun vertexClient(client: OkHttpClient): OkHttpClient = client.newBuilder()
+        .followRedirects(false)
+        .build()
+
     val client: OkHttpClient by lazy {
         OkHttpClient.Builder()
             .connectTimeout(CONNECT_TIMEOUT_MS, TimeUnit.MILLISECONDS)

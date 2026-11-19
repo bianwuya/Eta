@@ -72,8 +72,14 @@ class G6ProductionAcceptanceTest(private val style: AppearanceUiStyle) {
         }
         ProductionUiHarness(style, dark = true) {
             Box(Modifier.height(620.dp)) {
-                SubagentInspectorContent(SubagentActivitySnapshot(subagentId = "child-a", model = "model-low", currentAction = "等待模型响应"),
-                    running = true, failed = false, onOpenDetails = {})
+                SubagentInspectorContent(
+                    messageId = "child-a",
+                    snapshot = SubagentActivitySnapshot(subagentId = "child-a", model = "model-low", currentAction = "等待模型响应"),
+                    running = true,
+                    cancelled = false,
+                    failed = false,
+                    onOpenDetails = {},
+                )
             }
         }.use { ui ->
             ui.await("inspector gets only original child's records") {

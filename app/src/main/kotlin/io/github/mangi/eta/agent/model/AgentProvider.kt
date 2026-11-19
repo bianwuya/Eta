@@ -37,6 +37,7 @@ internal enum class EndpointKind {
     RESPONSES,
     ANTHROPIC_MESSAGES,
     GEMINI_INTERACTIONS,
+    VERTEX_GENERATE_CONTENT,
 }
 
 internal enum class ProviderRequestPurpose {
@@ -55,6 +56,7 @@ internal data class ProviderRequest(
     val credentialBinding: ProviderCredentialBinding? = null,
     /** Reactive transport fallback for this request only; never persisted as a provider setting. */
     val forceHttp1: Boolean = false,
+    val toolResultImages: Map<String, List<AgentModelClient.ModelImage>> = emptyMap(),
 ) {
     /**
      * 本次模型请求开始时固定的认证绑定：同一次请求的重试与 401 刷新都沿用它，

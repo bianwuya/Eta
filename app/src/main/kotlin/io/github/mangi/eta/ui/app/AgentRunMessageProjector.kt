@@ -4,6 +4,8 @@ import android.os.SystemClock
 import io.github.mangi.eta.agent.runtime.AgentEvent
 import io.github.mangi.eta.agent.runtime.AgentTokenUsage
 import io.github.mangi.eta.agent.runtime.SearchSuggestionsBudget
+import io.github.mangi.eta.agent.subagent.AgentSubagentToolCatalog
+import io.github.mangi.eta.agent.subagent.SubagentActivitySnapshot
 import io.github.mangi.eta.ui.model.AgentChatMessageUi
 import io.github.mangi.eta.ui.model.AgentMessageUi
 import io.github.mangi.eta.ui.model.SystemNoticeCode
@@ -574,6 +576,11 @@ internal class AgentRunMessageProjector(
         val targetId = toolActivityMessageId(runId, event.round, event.toolCallId)
         val targetIndex = messages.indexOfLast { it is ToolActivityMessageUi && it.id == targetId }
         if (targetIndex < 0) return messages
+        val target = messages[targetIndex] as? ToolActivityMessageUi ?: return messages
+        // 忽略终态后迟到进度、重复进度与损坏快照，避免把正常详情覆盖回退态。
+        if (target.status != ToolActivityStatusUi.Running) return messages
+        if (target.command == event.snapshotJson) return messages
+        if (SubagentActivitySnapshot.decode(event.snapshotJson) == null) return messages
         return messages.mapIndexed { index, message ->
             if (index == targetIndex && message is ToolActivityMessageUi) {
                 val previous = io.github.mangi.eta.agent.subagent.SubagentActivitySnapshot.decode(message.command)

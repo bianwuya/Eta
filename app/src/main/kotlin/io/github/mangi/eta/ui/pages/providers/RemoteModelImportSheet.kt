@@ -47,13 +47,15 @@ import io.github.mangi.eta.ui.components.coui.CouiButtonRole
 import io.github.mangi.eta.ui.components.coui.CouiSearchBarBox
 import io.github.mangi.eta.ui.components.coui.couiPrimaryDialogAction
 import io.github.mangi.eta.ui.components.coui.rememberCouiDialogMaterial
+import io.github.mangi.eta.ui.components.currentGlassOverlayBackdrop
+import io.github.mangi.eta.ui.components.glassOverlayFieldBackgroundColor
 import io.github.mangi.eta.ui.model.ModelSearchQuery
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Checkbox
 import top.yukonga.miuix.kmp.basic.InputField
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
-import top.yukonga.miuix.kmp.overlay.OverlayBottomSheet
+import top.yukonga.miuix.kmp.glass.GlassBottomSheet
 import top.yukonga.miuix.kmp.squircle.squircleSurface
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
@@ -114,10 +116,12 @@ internal fun RemoteModelImportSheet(
             }
         }
         AppearanceUiStyle.MIUIX -> {
-            OverlayBottomSheet(
+            GlassBottomSheet(
                 show = pending != null,
+                backdrop = currentGlassOverlayBackdrop(),
                 title = stringResource(R.string.remote_model_import_title),
                 onDismissRequest = onDismissRequest,
+                onDismissFinished = { if (pending == null) shown = null },
                 insideMargin = DpSize(0.dp, 0.dp),
             ) {
                 shown?.let { current ->
@@ -216,6 +220,7 @@ private fun RemoteModelImportContent(
                 expanded = false,
                 onExpandedChange = {},
                 label = stringResource(R.string.ui_search_model_df5586),
+                color = glassOverlayFieldBackgroundColor(),
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp)

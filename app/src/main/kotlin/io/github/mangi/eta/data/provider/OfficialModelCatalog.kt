@@ -1,15 +1,17 @@
 package io.github.mangi.eta.data.provider
 
+import io.github.mangi.eta.agent.model.ProviderUrls
 import io.github.mangi.eta.data.model.Model
 import io.github.mangi.eta.data.model.ModelSource
 import io.github.mangi.eta.data.model.CustomProviderSetting
+import io.github.mangi.eta.data.model.GeminiProviderSetting
 import io.github.mangi.eta.data.model.OpenAiCompatibleProviderSetting
 import io.github.mangi.eta.data.model.OpenAiEndpointMode
 import io.github.mangi.eta.data.model.ProviderSetting
 import io.github.mangi.eta.data.model.ProviderSourceTypes
 
 internal object OfficialModelCatalog {
-    internal const val CURRENT_REVISION = 5
+    internal const val CURRENT_REVISION = 6
 
     // 旧安装只补入本次新增的模型，避免恢复用户主动删除的旧预设。
     private val additionsByRevision = mapOf(
@@ -26,6 +28,7 @@ internal object OfficialModelCatalog {
         2 to mapOf(ProviderSourceTypes.OPENAI to setOf("gpt-6.1-sol")),
         4 to mapOf(ProviderSourceTypes.GEMINI to setOf("gemini-3.8-flash", "gemini-4-argon", "gemini-3.5-flash-lite")),
         5 to mapOf(ProviderSourceTypes.GEMINI to setOf("gemini-4-carbon")),
+        6 to mapOf(ProviderSourceTypes.GEMINI to setOf("gemini-4-neon", "gemini-4-hydrogen")),
     )
 
     private val modelsByCatalogId: Map<String, List<Model>> = mapOf(
@@ -65,6 +68,28 @@ internal object OfficialModelCatalog {
             ),
         ).map { it.copy(contextWindowOverride = it.contextWindow) },
         ProviderSourceTypes.GEMINI to listOf(
+            officialModel(
+                id = "builtin-gemini-4-neon",
+                modelId = "gemini-4-neon",
+                displayName = "Gemini 4 Neon",
+                ownedBy = "google",
+                inputModalities = listOf(Model.TEXT_MODALITY, Model.IMAGE_MODALITY),
+                toolCall = true,
+                reasoning = true,
+                structuredOutput = true,
+                contextWindow = 1_048_576,
+            ),
+            officialModel(
+                id = "builtin-gemini-4-hydrogen",
+                modelId = "gemini-4-hydrogen",
+                displayName = "Gemini 4 Hydrogen",
+                ownedBy = "google",
+                inputModalities = listOf(Model.TEXT_MODALITY, Model.IMAGE_MODALITY),
+                toolCall = true,
+                reasoning = true,
+                structuredOutput = true,
+                contextWindow = 1_048_576,
+            ),
             officialModel(
                 id = "builtin-gemini-4-carbon",
                 modelId = "gemini-4-carbon",
@@ -391,6 +416,19 @@ internal object OfficialModelCatalog {
 
     fun modelsForProvider(provider: ProviderSetting): List<Model> =
         modelsForCatalogId(catalogIdFor(provider))
+            .let { models ->
+                if (provider is GeminiProviderSetting && provider.isVertexAi) {
+                    val location = ProviderUrls.vertexConfiguredLocation(provider.baseUrl, provider.vertexLocation)
+                    val official = ProviderUrls.isOfficialVertexBaseUrl(provider.baseUrl)
+                    models.filter { model ->
+                        GeminiModelCapabilities.isGemini4(model.modelId) && when {
+                            !official || location in setOf("global", "us", "eu") -> true
+                            location in setOf("europe-west2", "asia-southeast1") -> model.modelId == "gemini-4-argon"
+                            else -> false
+                        }
+                    }
+                } else models
+            }
             .map { it.withCatalogReasoningCapabilities(catalogIdFor(provider)) }
             .withStableSortOrder()
 

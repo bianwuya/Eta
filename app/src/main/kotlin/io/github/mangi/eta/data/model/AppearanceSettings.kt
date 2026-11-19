@@ -15,6 +15,7 @@ data class AppearanceSettings(
     val accentColor: AppearanceAccentColor = AppearanceAccentColor.SYSTEM,
     val pureBlackEnabled: Boolean = false,
     val blurEnabled: Boolean = true,
+    val progressiveBlurEnabled: Boolean = true,
     val topBarBlurStyle: AppearanceTopBarBlurStyle = AppearanceTopBarBlurStyle.GAUSSIAN,
     val swipeDismissEnabled: Boolean = true,
     val predictiveBackEnabled: Boolean = true,
@@ -61,7 +62,8 @@ enum class AppearancePaletteStyle(val persistedValue: String) {
     FRUIT_SALAD("fruit_salad"),
     MONOCHROME("monochrome"),
     FIDELITY("fidelity"),
-    CONTENT("content");
+    CONTENT("content"),
+    CMF("cmf");
 
     companion object {
         fun fromPersistedValue(value: String?): AppearancePaletteStyle =

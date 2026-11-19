@@ -27,6 +27,7 @@ internal class RuntimeRunRegistry(private val capacity: Int = MAX_ACTIVE_RUNS) {
         @Volatile private var interactionAt = createdAt
         @Volatile private var presentation = PresentationMetadata("", "")
         val conversationId: String = AgentConversationIdentity.fromHandoff(initialRequest.handoff, initialRequest.runId)
+        val startedAtEpochMs: Long = System.currentTimeMillis()
         @Volatile var request: AgentRuntimeWire.RunRequest = initialRequest
             private set
         @Volatile var preparing: Boolean = true

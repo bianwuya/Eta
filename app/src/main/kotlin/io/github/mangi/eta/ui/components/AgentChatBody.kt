@@ -30,9 +30,11 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
-import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.ui.platform.LocalScrollCaptureInProgress
 import io.github.mangi.eta.local.longshot.colorOsLongshotTarget
@@ -92,6 +94,7 @@ import com.itos.coui.text.Text as CouiText
 import com.itos.coui.theme.CouiTheme
 import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.browser.BrowserSessionSnapshot
+import io.github.mangi.eta.agent.imagegen.ImageGenToolCatalog
 import io.github.mangi.eta.data.model.AppearanceUiStyle
 import io.github.mangi.eta.data.model.ReasoningEffort
 import io.github.mangi.eta.data.repository.ConversationBranchBoundary
@@ -99,6 +102,7 @@ import io.github.mangi.eta.ui.model.branchMessageOutline
 import io.github.mangi.eta.ui.app.AgentConversationRevisionReducer
 import io.github.mangi.eta.ui.app.LocalBlurEnabled
 import io.github.mangi.eta.ui.app.LocalUiStyle
+import io.github.mangi.eta.ui.layout.rememberFloatingBottomBarInsets
 import io.github.mangi.eta.ui.markdown.StreamingMarkdownStateCache
 import io.github.mangi.eta.ui.model.ConversationHistoryLoadState
 import io.github.mangi.eta.ui.model.AgentChatMessageUi
@@ -129,16 +133,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
-import top.yukonga.miuix.kmp.basic.IconButtonDefaults
 import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.blur.BlendColorEntry
-import top.yukonga.miuix.kmp.blur.BlurDefaults
-import top.yukonga.miuix.kmp.blur.LayerBackdrop
-import top.yukonga.miuix.kmp.blur.isRuntimeShaderSupported
-import top.yukonga.miuix.kmp.blur.layerBackdrop
-import top.yukonga.miuix.kmp.blur.rememberLayerBackdrop
-import top.yukonga.miuix.kmp.blur.textureBlur
+import top.yukonga.miuix.kmp.blur.Backdrop
+import top.yukonga.miuix.kmp.glass.GlassIconButton
+import top.yukonga.miuix.kmp.glass.glassPress
 import top.yukonga.miuix.kmp.squircle.squircleBorder
 import top.yukonga.miuix.kmp.squircle.squircleSurface
 import top.yukonga.miuix.kmp.theme.MiuixTheme
@@ -412,32 +411,22 @@ private fun AgentChatScaffold(
     restoredRequestMode: String = "normal",
     onRecallQueuedMessageWithMode: ((String, String, String) -> Unit)? = null,
 ) {
-    val surfaceColor = MiuixTheme.colorScheme.surface
+    val isCoui = LocalUiStyle.current == AppearanceUiStyle.COUI
+    val chatBackdrop = if (isCoui) null else rememberGlassBackdrop()
     val planConversationId = conversationId.takeIf { LocalRoleplayChat.current == null }
     val captureInProgress = LocalScrollCaptureInProgress.current
-    val frostEnabled = hasMessages && LocalBlurEnabled.current && isRuntimeShaderSupported()
-    val messageBackdrop = rememberLayerBackdrop {
-        // Backdrop 必须包含不透明底色，否则文字边缘模糊到透明区域时会出现黑边。
-        drawRect(surfaceColor)
-        drawContent()
-    }
-
     val overlayDensity = LocalDensity.current
     var bottomBarHeightPx by remember(conversationId) { mutableIntStateOf(0) }
     // Questions overlay the conversation; only the original input bar determines its bottom inset.
-    // This is a same-window, wrap-content sibling: no scrim, popup window or outside touch handler.
     BoxWithConstraints(modifier.fillMaxSize()) {
         val barHeight = with(overlayDensity) { bottomBarHeightPx.toDp() }
-        // The measured bar includes a decorative fade/frost strip above its actual content.
-        // Anchor to the content edge so that strip does not become an extra panel/input gap.
-        // IME, navigation insets, attachments and queue rows remain part of the measured bar.
         val panelBottomInset = questionPanelBottomInset(
-            barHeight, if (frostEnabled) ChatBottomFrostHeight else 16.dp,
+            barHeight, if (!isCoui) ChatBottomFrostHeight else 16.dp,
         )
         val availableHeight = (maxHeight - panelBottomInset).coerceAtLeast(0.dp)
         Scaffold(
             modifier = Modifier.fillMaxSize(),
-            containerColor = Color.Transparent ,
+            containerColor = Color.Transparent,
             contentWindowInsets = WindowInsets(
                 left = 0.dp,
                 top = 0.dp,
@@ -450,7 +439,6 @@ private fun AgentChatScaffold(
                     .graphicsLayer { alpha = if (captureInProgress) 0f else 1f }) {
                     AgentChatBottomBar(
                         conversationId = conversationId,
-                        messageBackdrop = messageBackdrop.takeIf { frostEnabled },
                         input = input,
                         modelPickerState = modelPickerState,
                         isCompacting = isCompacting,
@@ -466,6 +454,7 @@ private fun AgentChatScaffold(
                         focusInputOnSync = focusInputOnSync,
                         restoredRequestMode = restoredRequestMode,
                         messageEdit = messageEdit,
+                        glassBackdrop = chatBackdrop,
                         onSubmit = onSubmit,
                         onInterruptAndSubmit = onInterruptAndSubmit,
                         onSubmitWithMode = onSubmitWithMode,
@@ -491,44 +480,49 @@ private fun AgentChatScaffold(
             },
         ) { innerPadding ->
             val bottomPadding = innerPadding.calculateBottomPadding()
-            if (!hasMessages) {
-                EmptyChatState(
-                    showSuggestions = showEmptySuggestions,
-                    onSuggestionClick = onSuggestionClick,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(top = topInset, bottom = bottomPadding),
-                )
-            } else {
-                AgentConversationMessages(
-                    conversationId = planConversationId,
-                    visibleMessages = visibleMessages,
-                    scrollState = scrollState,
-                    isStreaming = isStreaming,
-                    bottomInset = bottomPadding,
-                    keepBottomAnchored = keepBottomAnchored,
-                    onBottomAnchorChanged = onBottomAnchorChanged,
-                    onSuggestionClick = onSuggestionClick,
-                    onRunTraceClick = onRunTraceClick,
-                    onOpenBrowser = onOpenBrowser,
-                    onEditMessage = onEditMessage,
-                    onDeleteMessage = onDeleteMessage,
-                    onRegenerateMessage = onRegenerateMessage,
-                    onBranchMessage = onBranchMessage,
-                    onSelectReplyCandidate = onSelectReplyCandidate,
-                    messageActionsEnabled = !isStreaming && !isCompacting && !isBranching && messageEdit == null,
-                    editTargetMessageId = messageEdit?.targetMessageId,
-                    currentBrowserMessageId = currentBrowserMessageId,
-                    hasEarlierMessages = hasEarlierMessages,
-                    messageStartIndex = messageStartIndex,
-                    topInset = topInset,
-                    historyLoadState = historyLoadState,
-                    onLoadEarlierMessages = onLoadEarlierMessages,
-                    onHistoryViewportChanged = onHistoryViewportChanged,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .then(if (frostEnabled) Modifier.layerBackdrop(messageBackdrop) else Modifier),
-                )
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .captureGlassBackdrop(chatBackdrop),
+            ) {
+                if (!hasMessages) {
+                    EmptyChatState(
+                        showSuggestions = showEmptySuggestions,
+                        onSuggestionClick = onSuggestionClick,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(top = topInset, bottom = bottomPadding),
+                    )
+                } else {
+                    AgentConversationMessages(
+                        conversationId = planConversationId,
+                        visibleMessages = visibleMessages,
+                        scrollState = scrollState,
+                        isStreaming = isStreaming,
+                        bottomInset = bottomPadding,
+                        keepBottomAnchored = keepBottomAnchored,
+                        onBottomAnchorChanged = onBottomAnchorChanged,
+                        onSuggestionClick = onSuggestionClick,
+                        onRunTraceClick = onRunTraceClick,
+                        onOpenBrowser = onOpenBrowser,
+                        onEditMessage = onEditMessage,
+                        onDeleteMessage = onDeleteMessage,
+                        onRegenerateMessage = onRegenerateMessage,
+                        onBranchMessage = onBranchMessage,
+                        onSelectReplyCandidate = onSelectReplyCandidate,
+                        onEditGeneratedImage = onAttachImage,
+                        messageActionsEnabled = !isStreaming && !isCompacting && !isBranching && messageEdit == null,
+                        editTargetMessageId = messageEdit?.targetMessageId,
+                        currentBrowserMessageId = currentBrowserMessageId,
+                        hasEarlierMessages = hasEarlierMessages,
+                        messageStartIndex = messageStartIndex,
+                        topInset = topInset,
+                        historyLoadState = historyLoadState,
+                        onLoadEarlierMessages = onLoadEarlierMessages,
+                        onHistoryViewportChanged = onHistoryViewportChanged,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
             }
         }
         if (!captureInProgress && bottomBarHeightPx > 0 && availableHeight > 0.dp) {
@@ -562,6 +556,7 @@ internal fun AgentConversationMessages(
     onRegenerateMessage: (String) -> Unit = {},
     onBranchMessage: (String) -> Unit = {},
     onSelectReplyCandidate: (String, Int) -> Unit = { _, _ -> },
+    onEditGeneratedImage: ((String) -> Unit)? = null,
     messageActionsEnabled: Boolean = false,
     editTargetMessageId: String? = null,
     currentBrowserMessageId: String? = null,
@@ -848,6 +843,8 @@ internal fun AgentConversationMessages(
 
     // 滚动层保持整屏，输入器作为后绘制浮层；输入器高度进入列表的
     // afterContentPadding，确保跟到底部时最后一行停在输入器上方。
+    val isCoui = LocalUiStyle.current == AppearanceUiStyle.COUI
+    val messagesBackdrop = if (isCoui || assistantOverlay) null else rememberGlassBackdrop()
     CompositionLocalProvider(LocalOnChatItemExpand provides onExpandItem) {
         Box(modifier = modifier.clipToBounds()) {
             LazyColumn(
@@ -856,6 +853,7 @@ internal fun AgentConversationMessages(
                 modifier = Modifier
                     .fillMaxSize()
                     .colorOsLongshotTarget(scrollState, bottomInset = bottomInset)
+                    .captureGlassBackdrop(messagesBackdrop)
                     .scrollEndHaptic()
                     .nestedScroll(historyPaging.scrollConnection)
                     .overScrollVertical(),
@@ -914,6 +912,7 @@ internal fun AgentConversationMessages(
                                 onDeleteMessage = onDeleteMessage,
                                 onRegenerateMessage = onRegenerateMessage,
                                 onSelectReplyCandidate = onSelectReplyCandidate,
+                                onEditGeneratedImage = if (!assistantOverlay) onEditGeneratedImage else null,
                                 modifier = itemModifier,
                             )
                         }
@@ -949,11 +948,17 @@ internal fun AgentConversationMessages(
                 enter = fadeIn(tween(160)) + scaleIn(tween(180), initialScale = 0.82f),
                 exit = fadeOut(tween(100)) + scaleOut(tween(120), targetScale = 0.86f),
             ) {
-                val isCoui = LocalUiStyle.current == AppearanceUiStyle.COUI
-                val couiDark = CouiTheme.isDark
-                IconButton(
-                    modifier = if (isCoui) {
-                        Modifier
+                val scrollToBottom: () -> Unit = {
+                    suppressAutoReanchor = false
+                    onBottomAnchorChanged(true)
+                    coroutineScope.launch {
+                        scrollState.animateScrollToItem(bottomItemIndex)
+                    }
+                }
+                if (isCoui) {
+                    val couiDark = CouiTheme.isDark
+                    IconButton(
+                        modifier = Modifier
                             .dropShadow(
                                 shape = CircleShape,
                                 shadow = Shadow(
@@ -966,40 +971,32 @@ internal fun AgentConversationMessages(
                                 width = 0.5.dp,
                                 color = if (couiDark) Color(0x22FFFFFF) else Color(0x12000000),
                                 shape = CircleShape,
-                            )
-                    } else {
-                        Modifier
-                            .dropShadow(
-                                shape = CircleShape,
-                                shadow = Shadow(radius = 8.dp, color = Color.Black, alpha = 0.08f),
-                            )
-                            .squircleBorder(
-                                width = 0.5.dp,
-                                color = MiuixTheme.colorScheme.outline.copy(alpha = 0.55f),
-                                cornerRadius = IconButtonDefaults.CornerRadius,
-                            )
-                    },
-                    onClick = {
-                        suppressAutoReanchor = false
-                        onBottomAnchorChanged(true)
-                        coroutineScope.launch {
-                            scrollState.animateScrollToItem(bottomItemIndex)
-                        }
-                    },
-                    backgroundColor = if (isCoui) {
-                        if (couiDark) Color(0xFF282A2E) else Color.White
-                    } else {
-                        MiuixTheme.colorScheme.surfaceContainerHigh
-                    },
-                    minWidth = 40.dp,
-                    minHeight = 40.dp,
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.ArrowDownward,
-                        contentDescription = stringResource(R.string.ui_back_to_bottom_32282e),
-                        modifier = Modifier.size(18.dp),
-                        tint = MiuixTheme.colorScheme.onSurface,
-                    )
+                            ),
+                        onClick = scrollToBottom,
+                        backgroundColor = if (couiDark) Color(0xFF24262B) else Color.White,
+                        minWidth = 36.dp,
+                        minHeight = 36.dp,
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.ArrowDownward,
+                            contentDescription = stringResource(R.string.ui_back_to_bottom_32282e),
+                            modifier = Modifier.size(16.dp),
+                            tint = MiuixTheme.colorScheme.onSurface.copy(alpha = 0.78f),
+                        )
+                    }
+                } else {
+                    GlassIconButton(
+                        onClick = scrollToBottom,
+                        backdrop = messagesBackdrop,
+                        size = 40.dp,
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.ArrowDownward,
+                            contentDescription = stringResource(R.string.ui_back_to_bottom_32282e),
+                            modifier = Modifier.size(18.dp),
+                            tint = MiuixTheme.colorScheme.onSurface.copy(alpha = 0.85f),
+                        )
+                    }
                 }
             }
         }
@@ -1111,7 +1108,9 @@ private fun AgentTimelineEntry.contentType(): Any = when (this) {
 }
 
 private fun AgentChatMessageUi.isWorkProcessMessage(): Boolean =
-    this is ThinkingMessageUi || this is ToolActivityMessageUi || this is ToolSummaryMessageUi
+    this is ThinkingMessageUi ||
+        this is ToolSummaryMessageUi ||
+        (this is ToolActivityMessageUi && toolName != ImageGenToolCatalog.TOOL_NAME)
 
 /**
  * 一轮对话（两条用户消息之间）里最后一条 Agent 正文视为最终结果，其余为中间步骤。
@@ -1142,7 +1141,6 @@ internal fun resolveFinalResultMessageIds(
 
 @Composable
 private fun AgentChatBottomBar(
-    messageBackdrop: LayerBackdrop?,
     input: String,
     modelPickerState: AgentModelPickerUiState,
     isCompacting: Boolean,
@@ -1158,6 +1156,7 @@ private fun AgentChatBottomBar(
     inputSyncVersion: Int,
     focusInputOnSync: Boolean,
     messageEdit: MessageEditUiState?,
+    glassBackdrop: Backdrop?,
     onSubmit: (String) -> Unit,
     onInterruptAndSubmit: (String) -> Unit,
     onSteerQueuedMessage: (String) -> Unit,
@@ -1180,63 +1179,34 @@ private fun AgentChatBottomBar(
     restoredRequestMode: String = "normal",
     onRecallQueuedMessageWithMode: ((String, String, String) -> Unit)? = null,
 ) {
-    Column(
+    val surface = MiuixTheme.colorScheme.surface
+    val bottomBarInsets = rememberFloatingBottomBarInsets(
+        baseInsets = WindowInsets.navigationBars,
+        fixedBottomPadding = 10.dp,
+    )
+    Box(
         modifier = Modifier
             .fillMaxWidth()
             .imePadding(),
     ) {
-        if (messageBackdrop != null) {
-            val blurColors = BlurDefaults.blurColors(
-                blendColors = listOf(
-                    BlendColorEntry(MiuixTheme.colorScheme.surface.copy(alpha = 0.72f))
+        // 底部以连续垂直渐隐承接悬浮输入胶囊，避免一整块不透明实心矩形把消息流生硬截断。
+        Box(
+            modifier = Modifier
+                .matchParentSize()
+                .background(
+                    Brush.verticalGradient(
+                        0.0f to Color.Transparent,
+                        0.26f to surface.copy(alpha = 0.86f),
+                        0.55f to surface.copy(alpha = 0.98f),
+                        1.0f to surface,
+                    ),
                 ),
-            )
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(ChatBottomFrostHeight)
-                    // DstIn 让真实磨砂在顶部透明、靠近输入框时逐渐变实，消除硬裁切线。
-                    .graphicsLayer {
-                        compositingStrategy = CompositingStrategy.Offscreen
-                    }
-                    .drawWithContent {
-                        drawContent()
-                        drawRect(
-                            brush = Brush.verticalGradient(
-                                colors = listOf(Color.Transparent, Color.Black),
-                            ),
-                            blendMode = BlendMode.DstIn,
-                        )
-                    }
-                    .textureBlur(
-                        backdrop = messageBackdrop,
-                        shape = RectangleShape,
-                        blurRadius = 20f,
-                        colors = blurColors,
-                    ),
-            )
-        } else {
-            // 空白主页沿用原来的轻微渐隐，不改变主页视觉。
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(16.dp)
-                    .background(
-                        Brush.verticalGradient(
-                            colors = listOf(
-                                Color.Transparent,
-                                MiuixTheme.colorScheme.surface,
-                            ),
-                        )
-                    ),
-            )
-        }
+        )
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(MiuixTheme.colorScheme.surface)
-                .navigationBarsPadding()
-                .padding(start = 16.dp, end = 16.dp, bottom = 12.dp),
+                .windowInsetsPadding(bottomBarInsets)
+                .padding(top = 14.dp, start = 14.dp, end = 14.dp, bottom = 10.dp),
         ) {
             AgentChatInputBar(
                 conversationId = conversationId,
@@ -1275,6 +1245,7 @@ private fun AgentChatBottomBar(
                 onAttachFilePath = onAttachFilePath,
                 onRemoveFileReference = onRemoveFileReference,
                 onCancelMessageEdit = onCancelMessageEdit,
+                glassBackdrop = glassBackdrop,
                 modifier = Modifier.fillMaxWidth(),
             )
         }
@@ -1359,22 +1330,33 @@ private fun EmptyChatState(
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             if (character != null) {
+                val isDark = MiuixTheme.colorScheme.surface.luminance() < 0.5f
                 CharacterAvatar(
                     name = character.characterName,
                     avatarPath = character.avatarPath,
-                    size = 88.dp,
+                    size = 68.dp,
                     shape = CircleShape,
+                    borderWidth = 0.5.dp,
+                    borderColor = if (isDark) {
+                        Color.White.copy(alpha = 0.14f)
+                    } else {
+                        Color.Black.copy(alpha = 0.08f)
+                    },
                 )
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(14.dp))
                 Text(
                     text = character.characterName,
-                    style = MiuixTheme.textStyles.title2,
+                    style = MiuixTheme.textStyles.title2.copy(
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        letterSpacing = (-0.2).sp,
+                    ),
                     color = MiuixTheme.colorScheme.onSurface,
                 )
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(6.dp))
                 Text(
                     text = stringResource(R.string.chat_character_story_start),
-                    style = MiuixTheme.textStyles.body2,
+                    style = MiuixTheme.textStyles.footnote1,
                     color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                 )
             } else {
@@ -1383,9 +1365,8 @@ private fun EmptyChatState(
                     style = MiuixTheme.textStyles.headline1,
                     color = MiuixTheme.colorScheme.onSurface,
                 )
+                Spacer(modifier = Modifier.height(26.dp))
             }
-
-            Spacer(modifier = Modifier.height(32.dp))
 
             AnimatedVisibility(
                 visible = showSuggestions && !isCharacterConversation,
@@ -1432,28 +1413,59 @@ private fun SuggestionCard(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Column(
-        modifier = modifier
-            .squircleSurface(color = MiuixTheme.colorScheme.surface, cornerRadius = 16.dp)
-            .squircleBorder(
-                width = 0.5.dp,
-                color = MiuixTheme.colorScheme.outline.copy(alpha = 0.5f),
-                cornerRadius = 16.dp,
+    val isCoui = LocalUiStyle.current == AppearanceUiStyle.COUI
+    val isDark = MiuixTheme.colorScheme.surface.luminance() < 0.5f
+    val ink = MiuixTheme.colorScheme.onSurface.copy(alpha = 1f)
+    val fill = ink.copy(alpha = if (isDark) 0.055f else 0.028f)
+    val border = ink.copy(alpha = if (isDark) 0.10f else 0.065f)
+    val interactionSource = remember { MutableInteractionSource() }
+    val shapeModifier = if (isCoui) {
+        val shape = CouiShape(15.dp, 2.2f)
+        Modifier
+            .couiButtonFeedback(isDark, interactionSource, enabled = true)
+            .clip(shape)
+            .background(fill, shape)
+            .border(0.5.dp, border, shape)
+            .clickable(interactionSource = interactionSource, indication = null, onClick = onClick)
+    } else {
+        Modifier
+            .glassPress(interactionSource)
+            .squircleSurface(color = fill, cornerRadius = 15.dp)
+            .squircleBorder(width = 0.5.dp, color = border, cornerRadius = 15.dp)
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null,
+                onClick = onClick,
             )
-            .clickable(onClick = onClick)
-            .padding(horizontal = 14.dp, vertical = 14.dp),
+    }
+    Row(
+        modifier = modifier
+            .then(shapeModifier)
+            .padding(horizontal = 12.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(
-            imageVector = item.icon,
-            contentDescription = null,
-            modifier = Modifier.size(18.dp),
-            tint = MiuixTheme.colorScheme.primary,
-        )
-        Spacer(modifier = Modifier.height(10.dp))
+        Box(
+            modifier = Modifier
+                .size(28.dp)
+                .clip(CircleShape)
+                .background(MiuixTheme.colorScheme.primary.copy(alpha = if (isDark) 0.16f else 0.10f)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = item.icon,
+                contentDescription = null,
+                modifier = Modifier.size(15.dp),
+                tint = MiuixTheme.colorScheme.primary,
+            )
+        }
+        Spacer(modifier = Modifier.width(10.dp))
         Text(
             text = item.title,
-            style = MiuixTheme.textStyles.body2,
-            color = MiuixTheme.colorScheme.onSurface,
+            style = MiuixTheme.textStyles.body2.copy(
+                fontSize = 13.5.sp,
+                fontWeight = FontWeight.Medium,
+            ),
+            color = MiuixTheme.colorScheme.onSurface.copy(alpha = 0.88f),
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )

@@ -19,6 +19,7 @@ import io.github.mangi.eta.data.model.AppearanceTopBarBlurStyle
 import io.github.mangi.eta.data.model.AppearanceUiStyle
 import io.github.mangi.eta.data.model.AssistantOverlaySettings
 import io.github.mangi.eta.data.model.ConversationTitleSettings
+import io.github.mangi.eta.data.model.ImageGenSettings
 import io.github.mangi.eta.data.model.SpeechSettings
 import io.github.mangi.eta.data.model.SubagentSettings
 import io.github.mangi.eta.data.model.WebToolsSettings
@@ -33,6 +34,7 @@ import kotlinx.coroutines.flow.map
 internal object SettingsDataStore {
     private val SPEECH_SETTINGS = stringPreferencesKey("speech_settings_v1")
     private val WEB_TOOLS_SETTINGS = stringPreferencesKey("web_tools_settings_v1")
+    private val IMAGE_GEN_SETTINGS = stringPreferencesKey("image_gen_settings_v1")
     private val SUBAGENT_SETTINGS = stringPreferencesKey("subagent_settings_v1")
     private val COMPACTION_SETTINGS = stringPreferencesKey("compaction_settings_v1")
     private val CONVERSATION_TITLE_SETTINGS = stringPreferencesKey("conversation_title_settings_v1")
@@ -76,6 +78,26 @@ internal object SettingsDataStore {
     suspend fun setWebToolsSettings(settings: WebToolsSettings) {
         ensureInitialized()
         dataStore.edit { it[WEB_TOOLS_SETTINGS] = speechJson.encodeToString(settings) }
+    }
+
+    fun imageGenSettingsFlow(): Flow<ImageGenSettings> {
+        ensureInitialized()
+        return dataStore.data
+            .catch { cause ->
+                if (cause is IOException) emit(emptyPreferences()) else throw cause
+            }
+            .map { prefs ->
+                prefs[IMAGE_GEN_SETTINGS]?.let { raw ->
+                    runCatching { speechJson.decodeFromString<ImageGenSettings>(raw) }.getOrNull()
+                } ?: ImageGenSettings()
+            }
+    }
+
+    suspend fun imageGenSettings(): ImageGenSettings = imageGenSettingsFlow().first()
+
+    suspend fun setImageGenSettings(settings: ImageGenSettings) {
+        ensureInitialized()
+        dataStore.edit { it[IMAGE_GEN_SETTINGS] = speechJson.encodeToString(settings) }
     }
 
     fun subagentSettingsFlow(): Flow<SubagentSettings> {
@@ -191,6 +213,8 @@ internal object SettingsDataStore {
     private val APPEARANCE_ACCENT_COLOR = stringPreferencesKey("appearance_accent_color")
     private val APPEARANCE_PURE_BLACK_ENABLED = booleanPreferencesKey("appearance_pure_black_enabled")
     private val APPEARANCE_BLUR_ENABLED = booleanPreferencesKey("appearance_blur_enabled")
+    private val APPEARANCE_PROGRESSIVE_BLUR_ENABLED =
+        booleanPreferencesKey("appearance_progressive_blur_enabled")
     private val APPEARANCE_TOP_BAR_BLUR_STYLE = stringPreferencesKey("appearance_top_bar_blur_style")
     private val APPEARANCE_SWIPE_DISMISS_ENABLED =
         booleanPreferencesKey("appearance_swipe_dismiss_enabled")
@@ -204,11 +228,16 @@ internal object SettingsDataStore {
     @Volatile
     private lateinit var dataStore: DataStore<Preferences>
 
+    @Volatile
+    private var cachedSettings: Settings? = null
+
     fun init(context: Context) {
         if (!::dataStore.isInitialized) {
             dataStore = context.applicationContext.dataStore
         }
     }
+
+    fun cachedSettingsOrNull(): Settings? = cachedSettings
 
     fun settingsFlow(): Flow<Settings> {
         ensureInitialized()
@@ -220,7 +249,7 @@ internal object SettingsDataStore {
                     throw cause
                 }
             }
-            .map { preferences -> preferences.toSettings() }
+            .map { preferences -> preferences.toSettings().also { cachedSettings = it } }
     }
 
     suspend fun settings(): Settings = settingsFlow().first()
@@ -398,6 +427,7 @@ internal object SettingsDataStore {
             accentColor = AppearanceAccentColor.fromPersistedValue(this[APPEARANCE_ACCENT_COLOR]),
             pureBlackEnabled = this[APPEARANCE_PURE_BLACK_ENABLED] ?: false,
             blurEnabled = this[APPEARANCE_BLUR_ENABLED] ?: true,
+            progressiveBlurEnabled = this[APPEARANCE_PROGRESSIVE_BLUR_ENABLED] ?: true,
             topBarBlurStyle = AppearanceTopBarBlurStyle.fromPersistedValue(
                 this[APPEARANCE_TOP_BAR_BLUR_STYLE],
             ),
@@ -418,6 +448,7 @@ internal object SettingsDataStore {
         this[APPEARANCE_ACCENT_COLOR] = settings.accentColor.persistedValue
         this[APPEARANCE_PURE_BLACK_ENABLED] = settings.pureBlackEnabled
         this[APPEARANCE_BLUR_ENABLED] = settings.blurEnabled
+        this[APPEARANCE_PROGRESSIVE_BLUR_ENABLED] = settings.progressiveBlurEnabled
         this[APPEARANCE_TOP_BAR_BLUR_STYLE] = settings.topBarBlurStyle.persistedValue
         this[APPEARANCE_SWIPE_DISMISS_ENABLED] = settings.swipeDismissEnabled
         this[APPEARANCE_PREDICTIVE_BACK_ENABLED] = settings.predictiveBackEnabled

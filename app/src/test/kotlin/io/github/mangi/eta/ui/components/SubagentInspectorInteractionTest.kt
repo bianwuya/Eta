@@ -71,7 +71,15 @@ class SubagentInspectorInteractionTest(private val uiStyle: AppearanceUiStyle) {
         val stepsState = LazyListState()
         fixture.setContent {
             Box(Modifier.height(500.dp)) {
-                SubagentInspectorContent(snapshot.value, running = true, failed = false, onOpenDetails = {}, stepsState = stepsState)
+                SubagentInspectorContent(
+                    messageId = "child-scroll",
+                    snapshot = snapshot.value,
+                    running = true,
+                    cancelled = false,
+                    failed = false,
+                    onOpenDetails = {},
+                    stepsState = stepsState,
+                )
             }
         }
         fixture.advance(10)
@@ -121,9 +129,14 @@ class SubagentInspectorInteractionTest(private val uiStyle: AppearanceUiStyle) {
         var opened = 0
         fixture.setContent {
             val current = snapshot.value
-            SubagentInspectorContent(current, running = current.status == SubagentActivitySnapshot.STATUS_RUNNING,
-                failed = current.status in setOf(SubagentActivitySnapshot.STATUS_FAILED, SubagentActivitySnapshot.STATUS_CANCELLED),
-                onOpenDetails = { opened++ })
+            SubagentInspectorContent(
+                messageId = "child-entry",
+                snapshot = current,
+                running = current.status == SubagentActivitySnapshot.STATUS_RUNNING,
+                cancelled = current.status == SubagentActivitySnapshot.STATUS_CANCELLED,
+                failed = current.status == SubagentActivitySnapshot.STATUS_FAILED,
+                onOpenDetails = { opened++ },
+            )
         }
         for (status in listOf(SubagentActivitySnapshot.STATUS_RUNNING, SubagentActivitySnapshot.STATUS_FAILED,
             SubagentActivitySnapshot.STATUS_CANCELLED)) {

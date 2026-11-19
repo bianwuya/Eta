@@ -12,6 +12,7 @@ import io.github.mangi.eta.agent.terminal.TerminalRuntime
 import io.github.mangi.eta.agent.terminal.TerminalDaemonRecovery
 import io.github.mangi.eta.config.Prefs
 import io.github.mangi.eta.core.AndroidAgentLogger
+import io.github.mangi.eta.core.AppStrings
 import io.github.mangi.eta.core.safeLogType
 import io.github.mangi.eta.data.datastore.SettingsDataStore
 import io.github.mangi.eta.data.repository.AgentMemoryRepository
@@ -19,6 +20,7 @@ import io.github.mangi.eta.data.repository.AppearanceSettingsRepository
 import io.github.mangi.eta.data.repository.McpServerRepository
 import io.github.mangi.eta.data.repository.LinuxEnvironmentSettingsRepository
 import io.github.mangi.eta.data.repository.ProviderRepository
+import io.github.mangi.eta.data.repository.ScheduledTaskRepository
 import io.github.mangi.eta.ui.app.PredictiveBackController
 import io.github.libxposed.service.XposedService
 import io.github.libxposed.service.XposedServiceHelper
@@ -47,6 +49,7 @@ class EtaApp : Application(), XposedServiceHelper.OnServiceListener {
 
     override fun onCreate() {
         super.onCreate()
+        AppStrings.init(this)
         Prefs.initLocal(this)
         if (!AppProcessPolicy.shouldInitializeFullRuntime(Application.getProcessName(), packageName)) {
             return
@@ -63,6 +66,20 @@ class EtaApp : Application(), XposedServiceHelper.OnServiceListener {
         AgentMemoryRepository.init(this)
         ProviderRepository.init(this)
         McpServerRepository.init(this)
+        ScheduledTaskRepository.init(this)
+        applicationScope.launch {
+            runCatching {
+                ScheduledTaskRepository.reconcileAfterRestartOrClockChange(
+                    recomputeAllSchedules = false,
+                    rescheduleAlarm = true,
+                    context = this@EtaApp,
+                )
+            }.onFailure { throwable ->
+                AndroidAgentLogger.warn(
+                    "Scheduled task reconcile failed: type=${throwable.safeLogType()}"
+                )
+            }
+        }
         XposedServiceHelper.registerListener(this)
         applicationScope.launch {
             try {

@@ -1,5 +1,6 @@
 package io.github.mangi.eta.agent.model
 
+import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.runtime.AgentEvent
 import io.github.mangi.eta.agent.runtime.AgentRunController
 import io.github.mangi.eta.agent.runtime.AgentTokenUsage
@@ -8,6 +9,12 @@ import io.github.mangi.eta.agent.subagent.AgentSubagentToolCatalog
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import io.github.mangi.eta.core.AppStrings
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.supervisorScope
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -64,6 +71,7 @@ internal class AgentLoop(
     private val pendingChildren = mutableListOf<PendingChild>()
     private var childWorkers: ExecutorService? = null
     private var pendingToolImageMessage: JSONObject? = null
+    private var pendingToolResultImages = emptyMap<String, List<AgentModelClient.ModelImage>>()
     private val turnMetrics = TurnMetricsAccumulator()
     private var precedingTools: JSONArray? = null
     private val context = AgentContextSession(
@@ -148,7 +156,7 @@ internal class AgentLoop(
             val completedRound = try {
                 modelRetry.complete(
                     initialRound = round,
-                    request = ProviderRequest(config, requestMessages, roundTools, sessionId, purpose),
+                    request = ProviderRequest(config, requestMessages, roundTools, sessionId, purpose, pendingToolResultImages),
                     provider = provider,
                     controller = runController,
                     onEvent = { event ->
@@ -164,7 +172,14 @@ internal class AgentLoop(
                         if (!purpose.allowsTools && (providerEvent is ProviderEvent.HostedToolStarted ||
                                 providerEvent is ProviderEvent.SearchSuggestions ||
                                 providerEvent is ProviderEvent.BlockStart && providerEvent.kind == AssistantBlockKind.TOOL_CALL)) {
-                            throw AgentModelFailure("REPLY_REWRITE_TOOL_CALL", false, "改写回复时模型请求了工具，已停止；原回复未改变。")
+                            throw AgentModelFailure(
+                                "REPLY_REWRITE_TOOL_CALL",
+                                false,
+                                AppStrings.get(
+                                    R.string.loop_err_reply_rewrite_tool_call,
+                                    "改写回复时模型请求了工具，已停止；原回复未改变。",
+                                ),
+                            )
                         }
                         if (providerEvent is ProviderEvent.RequestStarted) {
                             stepStartedAtMs = monotonicNowMs()
@@ -202,7 +217,7 @@ internal class AgentLoop(
                 }
             } finally {
                 // 同一回合的重试仍需原始观察；整个回合结束后才移除截图。
-                discardPendingToolImageMessage()
+                clearPendingToolImages()
             }
             unconsumedNewInput = false
             val completedAtMs = monotonicNowMs()
@@ -217,10 +232,24 @@ internal class AgentLoop(
             val assistantMessage = providerResponse.assistantMessage
             val toolCalls = AgentConversationCodec.parseToolCalls(assistantMessage)
             if (!purpose.allowsTools && toolCalls.isNotEmpty()) {
-                throw AgentModelFailure("REPLY_REWRITE_TOOL_CALL", false, "改写回复时模型请求了工具，已停止；原回复未改变。")
+                throw AgentModelFailure(
+                    "REPLY_REWRITE_TOOL_CALL",
+                    false,
+                    AppStrings.get(
+                        R.string.loop_err_reply_rewrite_tool_call,
+                        "改写回复时模型请求了工具，已停止；原回复未改变。",
+                    ),
+                )
             }
             if (purpose == ProviderRequestPurpose.REPLY_REWRITE && providerResponse.stopReason != AssistantStopReason.END_TURN) {
-                throw AgentModelFailure("REPLY_REWRITE_INCOMPLETE", false, "模型未返回完整的改写回复；原回复未改变。")
+                throw AgentModelFailure(
+                    "REPLY_REWRITE_INCOMPLETE",
+                    false,
+                    AppStrings.get(
+                        R.string.loop_err_reply_rewrite_incomplete,
+                        "模型未返回完整的改写回复；原回复未改变。",
+                    ),
+                )
             }
             val assistantReasoning = assistantMessage.optString("reasoning_content")
             if (
@@ -291,7 +320,21 @@ internal class AgentLoop(
             val content = assistantMessage.optString("content").trim()
             if (content.isBlank() || content == "null") {
                 val finishReason = assistantMessage.optString("finish_reason")
-                error("模型接口第 $round 轮返回为空${finishReason.takeIf { it.isNotBlank() }?.let { "：$it" }.orEmpty()}")
+                val message = if (finishReason.isNotBlank()) {
+                    AppStrings.get(
+                        R.string.loop_err_empty_response_reason,
+                        "模型接口第 %1\$d 轮返回为空：%2\$s",
+                        round,
+                        finishReason,
+                    )
+                } else {
+                    AppStrings.get(
+                        R.string.loop_err_empty_response,
+                        "模型接口第 %1\$d 轮返回为空",
+                        round,
+                    )
+                }
+                error(message)
             }
 
             publishTranscript()
@@ -323,10 +366,17 @@ internal class AgentLoop(
         throw AgentModelFailure(
             "MODEL_CONTENT_FILTER",
             false,
-            buildString {
-                append("模型服务商拦截了本次回复，未完成的内容已丢弃。")
-                explanation?.let { append("服务商说明：").append(it) }
-                append("请修改或删除触发拦截的请求后重试，或换用其他模型。")
+            if (explanation != null) {
+                AppStrings.get(
+                    R.string.loop_err_content_filter_detail,
+                    "模型服务商拦截了本次回复，未完成的内容已丢弃。服务商说明：%1\$s请修改或删除触发拦截的请求后重试，或换用其他模型。",
+                    explanation,
+                )
+            } else {
+                AppStrings.get(
+                    R.string.loop_err_content_filter,
+                    "模型服务商拦截了本次回复，未完成的内容已丢弃。请修改或删除触发拦截的请求后重试，或换用其他模型。",
+                )
             },
         )
     }
@@ -338,8 +388,22 @@ internal class AgentLoop(
         if (content.isNotBlank() && content != "null") return
         throw when (response.stopReason) {
             AssistantStopReason.OUTPUT_LIMIT ->
-                AgentModelFailure("MODEL_OUTPUT_LIMIT", false, "模型输出额度已耗尽但未生成正文，请检查输出上限或降低思考强度。")
-            else -> AgentModelFailure("MODEL_EMPTY_RESPONSE", false, "模型未返回正文或工具调用，请检查服务商状态。")
+                AgentModelFailure(
+                    "MODEL_OUTPUT_LIMIT",
+                    false,
+                    AppStrings.get(
+                        R.string.loop_err_output_limit,
+                        "模型输出额度已耗尽但未生成正文，请检查输出上限或降低思考强度。",
+                    ),
+                )
+            else -> AgentModelFailure(
+                "MODEL_EMPTY_RESPONSE",
+                false,
+                AppStrings.get(
+                    R.string.loop_err_empty_model_response,
+                    "模型未返回正文或工具调用，请检查服务商状态。",
+                ),
+            )
         }
     }
 
@@ -682,16 +746,15 @@ internal class AgentLoop(
         }
 
         // 工具截图是瞬时观察，不是会话资产。下一次思考消费后立即删除。
-        discardPendingToolImageMessage()
-        val images = imageOutcomes.flatMap { outcome -> outcome.result.images }
-        val toolNames = imageOutcomes
-            .map { outcome -> outcome.call.name }
-            .distinct()
-            .joinToString(", ")
-        pendingToolImageMessage = AgentConversationCodec.userMessage(
-            text = "Latest observation image(s) returned by tool(s): $toolNames.",
-            images = images,
-        ).put("_eta_observation", true).also(messages::put)
+        if (provider.capabilities.toolResultImages) {
+            pendingToolResultImages = imageOutcomes.associate { it.call.id to it.result.images }
+        } else {
+            val toolNames = imageOutcomes.map { it.call.name }.distinct().joinToString(", ")
+            pendingToolImageMessage = AgentConversationCodec.userMessage(
+                text = "Latest observation image(s) returned by tool(s): $toolNames.",
+                images = imageOutcomes.flatMap { it.result.images },
+            ).put("_eta_observation", true).also(messages::put)
+        }
 
         imageOutcomes.forEach { outcome ->
             onEvent(
@@ -705,7 +768,8 @@ internal class AgentLoop(
         }
     }
 
-    private fun discardPendingToolImageMessage() {
+    private fun clearPendingToolImages() {
+        pendingToolResultImages = emptyMap()
         val pending = pendingToolImageMessage ?: return
         pendingToolImageMessage = null
         for (index in messages.length() - 1 downTo 0) {

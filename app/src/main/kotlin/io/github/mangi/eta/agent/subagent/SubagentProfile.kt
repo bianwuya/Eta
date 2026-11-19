@@ -1,9 +1,12 @@
 package io.github.mangi.eta.agent.subagent
 
+import androidx.annotation.StringRes
+import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.context.PersonalSearchTools
 import io.github.mangi.eta.agent.model.AgentFileToolCatalog
 import io.github.mangi.eta.agent.model.AgentPhoneToolCatalog
 import io.github.mangi.eta.agent.model.AgentTerminalToolCatalog
+import io.github.mangi.eta.core.AppStrings
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -26,7 +29,11 @@ internal data class SubagentProfile(
     val explicitTools: Set<String>? = null,
     val disallowedTools: Set<String> = emptySet(),
     val filePath: String? = null,
+    @StringRes val summaryRes: Int? = null,
 ) {
+    fun localizedSummary(): String =
+        summaryRes?.let { AppStrings.get(it, summary) } ?: summary
+
     fun buildSystemPrompt(): String =
         "$SUBAGENT_ROLE_PREFIX\n\n$roleInstruction"
 
@@ -46,9 +53,16 @@ internal data class SubagentProfile(
         }
         val customAllowlist = explicitTools
         if (customAllowlist != null) {
-            if ("*" in customAllowlist) return true
-            return toolName in customAllowlist ||
-                ("personal_data" in customAllowlist && (toolName in PersonalSearchTools.names || toolName in AgentPhoneToolCatalog.reads))
+            if (toolName in customAllowlist) return true
+            if ("personal_data" in customAllowlist &&
+                (toolName in PersonalSearchTools.names || toolName in AgentPhoneToolCatalog.reads)
+            ) {
+                return true
+            }
+            if ("*" in customAllowlist) {
+                return toolName !in DEFAULT_DEVICE_WRITE_TOOLS
+            }
+            return false
         }
         // Built-in roles may exchange passive INFO. An explicit allowlist or deny above still wins.
         if (toolName in READ_ONLY_TOOLS || toolName in PersonalSearchTools.names || toolName in AgentPhoneToolCatalog.reads) {
@@ -171,6 +185,21 @@ internal data class SubagentProfile(
             "skills_read_resource",
         )
 
+        /**
+         * 设备状态修改与动作类写工具。未显式点名授权时，通配 `*` 默认排除这些工具，
+         * 避免多个并发 Subagent 互相修改系统设置、音量或应用状态；仍允许在自定义 Profile
+         * 的 `tools` 列表里显式点名放行（`FORBIDDEN_TOOLS` 除外）。
+         */
+        val DEFAULT_DEVICE_WRITE_TOOLS: Set<String> = AgentPhoneToolCatalog.writes + setOf(
+            "set_setting",
+            "set_device_state",
+            "app_state_control",
+            "set_alarm",
+            "set_timer",
+            "set_volume",
+            "media_control",
+        )
+
         private val CODER_EXTRA_TOOLS =
             (AgentFileToolCatalog.names + AgentTerminalToolCatalog.names) - FORBIDDEN_TOOLS
 
@@ -183,6 +212,7 @@ internal data class SubagentProfile(
                 "严禁尝试修改任何文件或设备状态。在最终回复中直接给出结构化证据、关键路径/时间点与结论摘要。",
             allowWriteFilesAndTerminal = false,
             builtin = true,
+            summaryRes = R.string.subagent_i18n_explore_summary,
         )
 
         val CODER = SubagentProfile(
@@ -194,6 +224,7 @@ internal data class SubagentProfile(
                 "请清楚说明你执行了哪些命令或修改了哪些文件、关键输出与验证结果，以及任何未完成或需后续处理的事项。",
             allowWriteFilesAndTerminal = true,
             builtin = true,
+            summaryRes = R.string.subagent_i18n_coder_summary,
         )
 
         val PLAN = SubagentProfile(
@@ -205,6 +236,7 @@ internal data class SubagentProfile(
                 "请在最终回复中清晰列出：1. 已确认的上下文事实；2. 仍待核实的关键问题；3. 分步执行方案与风险权衡。",
             allowWriteFilesAndTerminal = false,
             builtin = true,
+            summaryRes = R.string.subagent_i18n_plan_summary,
         )
 
         val BUILTIN_PROFILES: List<SubagentProfile> = listOf(EXPLORE, CODER, PLAN)
@@ -233,15 +265,24 @@ internal data class SubagentProfile(
                 .orEmpty()
 
             if (matched != null) {
-                if (cleanRole.isEmpty() && cleanTools.isEmpty()) return matched
+                // 对已有预设（尤其是 explore / plan 等只读预设），附加的 tools 只能收紧原允许集，不能提权扩张。
+                val narrowedTools = cleanTools.filter { tool ->
+                    when (tool) {
+                        "*" -> false
+                        "personal_data" -> PersonalSearchTools.names.any(matched::isToolAllowed) ||
+                            AgentPhoneToolCatalog.reads.any(matched::isToolAllowed)
+                        else -> matched.isToolAllowed(tool)
+                    }
+                }
+                if (cleanRole.isEmpty() && narrowedTools.isEmpty()) return matched
                 return matched.copy(
                     roleInstruction = if (cleanRole.isNotEmpty()) {
                         "${matched.roleInstruction}\n\n补充角色要求：$cleanRole"
                     } else {
                         matched.roleInstruction
                     },
-                    explicitTools = if (cleanTools.isNotEmpty()) cleanTools.toSet() else matched.explicitTools,
-                    toolHighlights = if (cleanTools.isNotEmpty()) cleanTools.take(8) else matched.toolHighlights,
+                    explicitTools = if (narrowedTools.isNotEmpty()) narrowedTools.toSet() else matched.explicitTools,
+                    toolHighlights = if (narrowedTools.isNotEmpty()) narrowedTools.take(8) else matched.toolHighlights,
                 )
             }
 
@@ -264,6 +305,7 @@ internal data class SubagentProfile(
                 allowWriteFilesAndTerminal = true,
                 builtin = false,
                 explicitTools = if (cleanTools.isNotEmpty()) cleanTools.toSet() else setOf("*"),
+                summaryRes = if (cleanRole.isEmpty()) R.string.subagent_i18n_ephemeral_summary else null,
             )
         }
     }

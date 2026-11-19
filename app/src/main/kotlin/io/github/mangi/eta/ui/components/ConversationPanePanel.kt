@@ -33,11 +33,7 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Delete
-import androidx.compose.material.icons.outlined.Download
-import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.MoreHoriz
-import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
@@ -49,12 +45,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.dropShadow
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.shadow.Shadow
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
@@ -91,21 +90,28 @@ import io.github.mangi.eta.ui.model.ConversationPaneUiState
 import io.github.mangi.eta.ui.model.ConversationSummaryUi
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.CardDefaults
-import top.yukonga.miuix.kmp.basic.DropdownDefaults
-import top.yukonga.miuix.kmp.basic.DropdownImpl
-import top.yukonga.miuix.kmp.basic.DropdownItem
 import top.yukonga.miuix.kmp.basic.HorizontalDivider
 import top.yukonga.miuix.kmp.basic.Icon
-import top.yukonga.miuix.kmp.basic.ListPopupColumn
-import top.yukonga.miuix.kmp.basic.ListPopupDefaults
-import top.yukonga.miuix.kmp.basic.PopupPositionProvider
 import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.blur.Backdrop
+import top.yukonga.miuix.kmp.glass.GlassPopup
+import top.yukonga.miuix.kmp.glass.GlassPopupDefaults
+import top.yukonga.miuix.kmp.glass.GlassPopupItem
+import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.PushPin
+import top.yukonga.miuix.kmp.icon.MiuixIcons
+import top.yukonga.miuix.kmp.icon.glass.Delete
+import top.yukonga.miuix.kmp.icon.glass.Download
+import top.yukonga.miuix.kmp.icon.glass.Edit
+import top.yukonga.miuix.kmp.icon.glass.More
+import top.yukonga.miuix.kmp.icon.glass.Pin
+import top.yukonga.miuix.kmp.icon.glass.Search
 import top.yukonga.miuix.kmp.squircle.squircleSurface
-import top.yukonga.miuix.kmp.theme.LocalContentColor
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 import top.yukonga.miuix.kmp.utils.scrollEndHaptic
-import top.yukonga.miuix.kmp.window.WindowListPopup
 
 @Stable
 private class PaneBarInsets {
@@ -133,6 +139,7 @@ internal fun ConversationPanePanel(
     onOpenModelProviders: () -> Unit,
     onOpenTools: () -> Unit,
     onOpenSkills: () -> Unit,
+    onOpenScheduledTasks: () -> Unit = {},
     onOpenCharacters: () -> Unit,
     onOpenPermissions: () -> Unit,
     modifier: Modifier = Modifier,
@@ -144,11 +151,11 @@ internal fun ConversationPanePanel(
     val containerColor = conversationPaneContainerColor()
     val isCoui = LocalUiStyle.current == AppearanceUiStyle.COUI
     val couiBackdrop = if (isCoui) rememberCouiBackdrop() else null
-    val miuixBackdrop = if (!isCoui) rememberTopBarBackdrop() else null
+    val miuixBackdrop = if (!isCoui) rememberGlassBackdrop(containerColor) else null
     val barInsets = remember { PaneBarInsets() }
     val bodyCaptureModifier = when {
         isCoui && couiBackdrop != null -> Modifier.couiBackdrop(couiBackdrop)
-        !isCoui && miuixBackdrop != null -> Modifier.captureForTopBar(miuixBackdrop)
+        !isCoui && isRevealed && miuixBackdrop != null -> Modifier.captureGlassBackdrop(miuixBackdrop)
         else -> Modifier
     }
 
@@ -237,6 +244,7 @@ internal fun ConversationPanePanel(
                                         onOpenCharacters = onOpenCharacters,
                                         onOpenTools = onOpenTools,
                                         onOpenSkills = onOpenSkills,
+                                        onOpenScheduledTasks = onOpenScheduledTasks,
                                     )
                                 }
                             }
@@ -261,6 +269,7 @@ internal fun ConversationPanePanel(
                                         ConversationHistoryRow(
                                             conversation = conversation,
                                             selected = conversation.id == state.selectedConversationId,
+                                            miuixBackdrop = miuixBackdrop,
                                             onClick = { onConversationSelected(conversation.id) },
                                             onTogglePin = { onConversationTogglePin(conversation) },
                                             onRename = { onConversationRename(conversation) },
@@ -332,6 +341,7 @@ private fun PaneWorkbenchSection(
     onOpenCharacters: () -> Unit,
     onOpenTools: () -> Unit,
     onOpenSkills: () -> Unit,
+    onOpenScheduledTasks: () -> Unit = {},
 ) {
     val modelSummary = activeModelLabel?.takeIf { it.isNotBlank() }
         ?: stringResource(R.string.conversation_model_unconfigured)
@@ -356,6 +366,11 @@ private fun PaneWorkbenchSection(
             icon = ConversationPaneIcons.Skills,
             title = stringResource(R.string.route_skills),
             onClick = onOpenSkills,
+        ),
+        WorkbenchEntry(
+            icon = ConversationPaneIcons.Schedule,
+            title = stringResource(R.string.route_scheduled_tasks),
+            onClick = onOpenScheduledTasks,
         ),
     )
 
@@ -610,6 +625,7 @@ private fun ConversationSectionHeader(
 private fun ConversationHistoryRow(
     conversation: ConversationSummaryUi,
     selected: Boolean,
+    miuixBackdrop: Backdrop?,
     onClick: () -> Unit,
     onTogglePin: () -> Unit,
     onRename: () -> Unit,
@@ -617,6 +633,9 @@ private fun ConversationHistoryRow(
     onDelete: () -> Unit,
 ) {
     var showActionMenu by remember { mutableStateOf(false) }
+    var rowBounds by remember { mutableStateOf(Rect.Zero) }
+    var moreButtonBounds by remember { mutableStateOf(Rect.Zero) }
+    var popupAnchorBounds by remember { mutableStateOf(Rect.Zero) }
     val hapticFeedback = LocalHapticFeedback.current
     val anchor = rememberCouiMenuAnchor()
     val isCoui = LocalUiStyle.current == AppearanceUiStyle.COUI
@@ -628,7 +647,7 @@ private fun ConversationHistoryRow(
     val rowBackground = when {
         !selected -> Color.Transparent
         isCoui -> if (couiDark) Color(0xFF262932) else Color.White
-        else -> miuixColors.tertiaryContainer.copy(alpha = if (miuixDark) 0.72f else 0.88f)
+        else -> miuixColors.tertiaryContainer.copy(alpha = if (miuixDark) 0.72f else 0.90f)
     }
     val rowModifier = if (isCoui) {
         val source = remember { MutableInteractionSource() }
@@ -683,6 +702,11 @@ private fun ConversationHistoryRow(
     } else {
         miuixColors.primary
     }
+    val avatarBorderColor = if (if (isCoui) couiDark else miuixDark) {
+        Color.White.copy(alpha = 0.14f)
+    } else {
+        Color.Black.copy(alpha = 0.08f)
+    }
 
     Box(
         modifier = Modifier
@@ -693,12 +717,14 @@ private fun ConversationHistoryRow(
             modifier = Modifier
                 .fillMaxWidth()
                 .heightIn(min = ConversationPanelMetrics.RowMinHeight)
+                .onGloballyPositioned { rowBounds = it.boundsInWindow() }
                 .couiMenuAnchor(anchor)
                 .then(rowModifier)
                 .combinedClickable(
                     onClick = onClick,
                     onLongClick = {
                         hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+                        popupAnchorBounds = rowBounds
                         anchor.open { showActionMenu = true }
                     },
                 )
@@ -714,15 +740,12 @@ private fun ConversationHistoryRow(
                 CharacterAvatar(
                     name = conversation.characterName,
                     avatarPath = conversation.characterAvatarPath,
-                    size = 30.dp,
+                    size = ConversationPanelMetrics.CharacterAvatarSize,
                     shape = CircleShape,
-                    modifier = if (selected) {
-                        Modifier.border(1.5.dp, accentColor.copy(alpha = 0.75f), CircleShape)
-                    } else {
-                        Modifier
-                    },
+                    borderWidth = 0.5.dp,
+                    borderColor = avatarBorderColor,
                 )
-                Spacer(Modifier.width(11.dp))
+                Spacer(Modifier.width(ConversationPanelMetrics.CharacterAvatarGap))
             }
 
             Column(modifier = Modifier.weight(1f)) {
@@ -768,11 +791,11 @@ private fun ConversationHistoryRow(
                 )
             } else if (conversation.isPinned) {
                 Icon(
-                    imageVector = ConversationPaneIcons.Pin,
+                    imageVector = if (isCoui) ConversationPaneIcons.Pin else MiuixIcons.Glass.Pin,
                     contentDescription = null,
                     modifier = Modifier
                         .padding(start = 6.dp)
-                        .size(13.dp),
+                        .size(if (isCoui) 13.dp else 16.dp),
                     tint = summaryColor.copy(alpha = 0.72f),
                 )
             }
@@ -783,27 +806,29 @@ private fun ConversationHistoryRow(
                     modifier = Modifier
                         .padding(start = 4.dp)
                         .size(28.dp)
+                        .onGloballyPositioned { moreButtonBounds = it.boundsInWindow() }
                         .clip(CircleShape)
                         .clickable(
                             role = Role.Button,
                             onClickLabel = moreLabel,
                         ) {
+                            popupAnchorBounds = moreButtonBounds
                             anchor.open { showActionMenu = true }
                         },
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(
-                        imageVector = Icons.Outlined.MoreHoriz,
+                        imageVector = if (isCoui) Icons.Outlined.MoreHoriz else MiuixIcons.Glass.More,
                         contentDescription = moreLabel,
-                        modifier = Modifier.size(17.dp),
+                        modifier = Modifier.size(if (isCoui) 17.dp else 20.dp),
                         tint = summaryColor,
                     )
                 }
             }
         }
 
-        // 将选中指示条放在左内边距留白区，保证选中行与普通行标题严格处于同一条左对齐基线。
-        if (selected && conversation.characterName == null) {
+        // 将选中指示条放在左内边距留白区，普通与角色会话共用同一套选中反馈语言与左对齐节奏。
+        if (selected) {
             Box(
                 modifier = Modifier
                     .align(Alignment.CenterStart)
@@ -859,104 +884,50 @@ private fun ConversationHistoryRow(
                 )
             }
             AppearanceUiStyle.MIUIX -> {
-                WindowListPopup(
-                    show = showActionMenu,
-                    popupPositionProvider = ListPopupDefaults.ContextMenuPositionProvider,
-                    alignment = PopupPositionProvider.Align.BottomEnd,
-                    onDismissRequest = { showActionMenu = false },
-                ) {
-                    val pinItem = remember(pinText) {
-                        DropdownItem(
+                val overlayBackdrop = currentGlassOverlayBackdrop() ?: miuixBackdrop
+                EtaTopLayer {
+                    GlassPopup(
+                        show = showActionMenu,
+                        onDismissRequest = { showActionMenu = false },
+                        anchorBounds = popupAnchorBounds,
+                        backdrop = overlayBackdrop,
+                    ) {
+                        GlassPopupItem(
                             text = pinText,
-                            icon = { modifier ->
-                                Icon(
-                                    imageVector = Icons.Outlined.PushPin,
-                                    contentDescription = null,
-                                    modifier = modifier.size(ConversationPanelMetrics.ActionIconSize),
-                                )
-                            },
-                        )
-                    }
-                    val renameItem = remember(renameText) {
-                        DropdownItem(
-                            text = renameText,
-                            icon = { modifier ->
-                                Icon(
-                                    imageVector = Icons.Outlined.Edit,
-                                    contentDescription = null,
-                                    modifier = modifier.size(ConversationPanelMetrics.ActionIconSize),
-                                )
-                            },
-                        )
-                    }
-                    val exportItem = remember(exportText) {
-                        DropdownItem(
-                            text = exportText,
-                            icon = { modifier ->
-                                Icon(
-                                    imageVector = Icons.Outlined.Download,
-                                    contentDescription = null,
-                                    modifier = modifier.size(ConversationPanelMetrics.ActionIconSize),
-                                )
-                            },
-                        )
-                    }
-                    val deleteItem = remember(deleteText) {
-                        DropdownItem(
-                            text = deleteText,
-                            icon = { modifier ->
-                                Icon(
-                                    imageVector = Icons.Outlined.Delete,
-                                    contentDescription = null,
-                                    modifier = modifier.size(ConversationPanelMetrics.ActionIconSize),
-                                    tint = MiuixTheme.colorScheme.error,
-                                )
-                            },
-                        )
-                    }
-                    val deleteColors = DropdownDefaults.dropdownColors(
-                        contentColor = MiuixTheme.colorScheme.error,
-                        selectedContentColor = MiuixTheme.colorScheme.error,
-                        selectedIndicatorColor = MiuixTheme.colorScheme.error,
-                    )
-                    ListPopupColumn {
-                        DropdownImpl(
-                            item = pinItem,
-                            optionSize = 4,
-                            isSelected = false,
-                            index = 0,
-                            onSelectedIndexChange = {
+                            icon = MiuixIcons.Glass.Pin,
+                            onClick = {
                                 showActionMenu = false
                                 onTogglePin()
                             },
                         )
-                        DropdownImpl(
-                            item = renameItem,
-                            optionSize = 4,
-                            isSelected = false,
-                            index = 1,
-                            onSelectedIndexChange = {
+                        GlassPopupItem(
+                            text = renameText,
+                            icon = MiuixIcons.Glass.Edit,
+                            onClick = {
                                 showActionMenu = false
                                 onRename()
                             },
                         )
-                        DropdownImpl(
-                            item = exportItem,
-                            optionSize = 4,
-                            isSelected = false,
-                            index = 2,
-                            onSelectedIndexChange = {
+                        GlassPopupItem(
+                            text = exportText,
+                            icon = MiuixIcons.Glass.Download,
+                            onClick = {
                                 showActionMenu = false
                                 onExport()
                             },
                         )
-                        DropdownImpl(
-                            item = deleteItem,
-                            optionSize = 4,
-                            isSelected = false,
-                            index = 3,
-                            dropdownColors = deleteColors,
-                            onSelectedIndexChange = {
+                        HorizontalDivider(
+                            modifier = Modifier.padding(
+                                horizontal = GlassPopupDefaults.DividerPaddingHorizontal,
+                                vertical = GlassPopupDefaults.DividerPaddingVertical,
+                            ),
+                            thickness = GlassPopupDefaults.DividerThickness,
+                        )
+                        GlassPopupItem(
+                            text = deleteText,
+                            icon = MiuixIcons.Glass.Delete,
+                            contentColor = MiuixTheme.colorScheme.error,
+                            onClick = {
                                 showActionMenu = false
                                 onDelete()
                             },
@@ -991,8 +962,15 @@ private fun EmptyConversations(isSearching: Boolean) {
         Box(
             modifier = Modifier
                 .size(44.dp)
-                .clip(RoundedCornerShape(14.dp))
-                .background(badgeBg),
+                .then(
+                    if (isCoui) {
+                        Modifier
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(badgeBg)
+                    } else {
+                        Modifier.squircleSurface(color = badgeBg, cornerRadius = 14.dp)
+                    },
+                ),
             contentAlignment = Alignment.Center,
         ) {
             Icon(
