@@ -2,7 +2,6 @@ package io.github.mangi.eta.officialpreview
 
 import android.app.Application
 import android.graphics.Bitmap
-import android.graphics.Canvas
 import android.os.Looper
 import android.os.SystemClock
 import android.view.View
@@ -318,7 +317,7 @@ class OfficialUiReviewTest {
             }
             fun capture(suffix: String) {
                 val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-                val canvas = Canvas(bitmap)
+                val canvas = SoftwareRenderCanvas(bitmap)
                 host.draw(canvas)
                 android.view.inspector.WindowInspector.getGlobalWindowViews().filter { it !== activity.window.decorView }
                     .forEach { window ->
@@ -327,7 +326,7 @@ class OfficialUiReviewTest {
                             val y = if (style == AppearanceUiStyle.COUI) (height - window.height).coerceAtLeast(0)
                                 else ((height - window.height) / 2).coerceAtLeast(0)
                             val layer = Bitmap.createBitmap(window.width, window.height, Bitmap.Config.ARGB_8888)
-                            window.draw(Canvas(layer))
+                            window.draw(SoftwareRenderCanvas(layer))
                             canvas.drawBitmap(layer, x.toFloat(), y.toFloat(), null)
                             layer.recycle()
                         }

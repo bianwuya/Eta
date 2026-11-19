@@ -86,7 +86,8 @@ class SubscriptionEntryRegressionTest(private val style: AppearanceUiStyle, priv
         CodexUsageFixture(context, id).use {
             withService { requests ->
                 ProductionUiHarness(style, dark) { ModelProviderDetailScreen(providerId = id, onBack = {}) }.use { ui ->
-                    openDropdown(ui, "认证方式"); ui.click("账号登录")
+                    openDropdown(ui, context.getString(io.github.mangi.eta.R.string.provider_i18n_auth_method))
+                    ui.click(context.getString(io.github.mangi.eta.R.string.provider_i18n_auth_account_login))
                     ui.await("subscription authentication wired") { ui.texts().any { it.contains("60.0%") } }
                     val save = context.getString(io.github.mangi.eta.R.string.page_save_configuration_817af1)
                     visible(ui, save); ui.click(save)

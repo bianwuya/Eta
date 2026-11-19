@@ -1,7 +1,6 @@
 package io.github.mangi.eta.ui.app
 
 import android.graphics.Bitmap
-import android.graphics.Canvas
 import android.os.Looper
 import android.os.SystemClock
 import android.view.View
@@ -21,6 +20,7 @@ import androidx.compose.ui.semantics.SemanticsNode
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
 import io.github.mangi.eta.EtaApp
+import io.github.mangi.eta.officialpreview.SoftwareRenderCanvas
 import io.github.mangi.eta.agent.auth.ProviderAccountSummary
 import io.github.mangi.eta.data.model.AppearanceSettings
 import io.github.mangi.eta.data.model.AppearanceUiStyle
@@ -461,7 +461,7 @@ class RestoredNavigationAndAccountsTest(private val uiStyle: AppearanceUiStyle) 
                 val width = decor.width.takeIf { it > 0 } ?: 1080
                 val height = decor.height.takeIf { it > 0 } ?: 2400
                 val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-                val canvas = Canvas(bitmap)
+                val canvas = SoftwareRenderCanvas(bitmap)
                 decor.draw(canvas)
                 val pixels = IntArray(width * height)
                 bitmap.getPixels(pixels, 0, width, 0, 0, width, height)

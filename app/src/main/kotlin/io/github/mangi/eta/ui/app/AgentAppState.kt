@@ -883,7 +883,7 @@ internal class AgentAppState(
                             acknowledgeRuntimeResult = true,
                         )
                     }
-                    AgentRunArchiveStore.remove(appContext, runId)
+                    // persistRunResult clears this archive only after durable save and successful ACK.
                 }
                 AgentRuntimeClient.AttachOutcome.NotActive -> {
                     val external = withContext(Dispatchers.Main) { runId in externalRunIds }

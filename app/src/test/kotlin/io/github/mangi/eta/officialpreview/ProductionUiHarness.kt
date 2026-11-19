@@ -2,6 +2,8 @@ package io.github.mangi.eta.officialpreview
 
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.RuntimeShader
 import android.os.Looper
 import android.os.SystemClock
 import android.view.MotionEvent
@@ -38,7 +40,7 @@ internal class ProductionUiHarness(val style: AppearanceUiStyle, dark: Boolean =
     private val recomposer = Recomposer(scope.coroutineContext)
     val host = ComposeView(activity)
     private val renderBuffer = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-    private val renderCanvas = Canvas(renderBuffer)
+    private val renderCanvas = SoftwareRenderCanvas(renderBuffer)
     init {
         scope.launch { recomposer.runRecomposeAndApplyChanges() }
         host.setParentCompositionContext(recomposer)
@@ -89,6 +91,20 @@ internal class ProductionUiHarness(val style: AppearanceUiStyle, dark: Boolean =
         assertTrue(actionNode(node, SemanticsActions.OnClick).config[SemanticsActions.OnClick].action!!.invoke())
         advance()
     }
+    fun tap(text: String) {
+        val point = find(text)?.boundsInRoot?.center ?: error("Missing tappable '$text'; visible: ${texts()}")
+        val down = SystemClock.uptimeMillis()
+        MotionEvent.obtain(down, down, MotionEvent.ACTION_DOWN, point.x, point.y, 0).also {
+            host.dispatchTouchEvent(it)
+            it.recycle()
+        }
+        frame()
+        MotionEvent.obtain(down, SystemClock.uptimeMillis(), MotionEvent.ACTION_UP, point.x, point.y, 0).also {
+            host.dispatchTouchEvent(it)
+            it.recycle()
+        }
+        advance()
+    }
     fun scrollTo(text: String) {
         repeat(18) {
             if (find(text) != null) return
@@ -122,12 +138,12 @@ internal class ProductionUiHarness(val style: AppearanceUiStyle, dark: Boolean =
         val output = File(System.getenv("ETA_UI_REVIEW_OUTPUT") ?: "build/g6-ui")
         output.mkdirs()
         val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(bitmap)
+        val canvas = SoftwareRenderCanvas(bitmap)
         host.draw(canvas)
         android.view.inspector.WindowInspector.getGlobalWindowViews().filter { it !== activity.window.decorView }.forEach { window ->
             if (window.width > 0 && window.height > 0) {
                 val layer = Bitmap.createBitmap(window.width, window.height, Bitmap.Config.ARGB_8888)
-                window.draw(Canvas(layer))
+                window.draw(SoftwareRenderCanvas(layer))
                 canvas.drawBitmap(layer, ((width - window.width) / 2).coerceAtLeast(0).toFloat(),
                     (if (style == AppearanceUiStyle.COUI) height - window.height else (height - window.height) / 2).coerceAtLeast(0).toFloat(), null)
                 layer.recycle()
@@ -152,5 +168,18 @@ internal class ProductionUiHarness(val style: AppearanceUiStyle, dark: Boolean =
     }
     override fun close() {
         host.disposeComposition(); recomposer.cancel(); scope.cancel(); controller.pause().stop().destroy(); renderBuffer.recycle()
+    }
+}
+
+/** Keeps Robolectric software drawing alive without changing production Glass or semantics. */
+internal class SoftwareRenderCanvas(bitmap: Bitmap) : Canvas(bitmap) {
+    override fun drawRect(left: Float, top: Float, right: Float, bottom: Float, paint: Paint) {
+        if (paint.shader !is RuntimeShader) {
+            super.drawRect(left, top, right, bottom, paint)
+            return
+        }
+        // NATIVE graphics still rejects RuntimeShader on a software Bitmap. Preserve the paint's
+        // alpha/blend mode for this test-only surface; real device shader rendering is untouched.
+        super.drawRect(left, top, right, bottom, Paint(paint).apply { shader = null })
     }
 }
