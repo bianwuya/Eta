@@ -83,7 +83,13 @@ class EtaPortableBackupTest {
         assertEquals(prefs.app.selectedProviderId, SettingsDataStore.settings().selectedProviderId)
         assertEquals(prefs.app.selectedModelId, SettingsDataStore.settings().selectedModelId)
         assertOldData()
-        assertTrue(context.cacheDir.listFiles().orEmpty().isEmpty())
+        // Room leaves eta.db.lck in this test cache even after close. Restrict the
+        // cleanup assertion to temporary prefixes owned by portable backup.
+        EtaDatabase.closeForTests()
+        val residualCache = context.cacheDir.listFiles().orEmpty()
+            .filter { it.name.startsWith("eta-portable-") || it.name.startsWith("eta_backup_") }
+            .map { it.name }
+        assertTrue("Residual backup cache entries: $residualCache", residualCache.isEmpty())
     }
 
     @Test fun validationFailureInAnotherSelectedCategoryPreventsDataReplacement() = runBlocking {
