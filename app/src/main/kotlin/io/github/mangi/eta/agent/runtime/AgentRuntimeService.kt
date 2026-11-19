@@ -1857,9 +1857,9 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         val selected = RuntimeNotificationSelection.select(snapshots)?.let { snapshot ->
             visibleRuns.firstOrNull { it.runId == snapshot.runId }
         }
-        val targetRun = owner ?: selected ?: visibleRuns.firstOrNull() ?: activeRuns.firstOrNull()
+        val targetRun = selected ?: owner ?: visibleRuns.firstOrNull() ?: activeRuns.firstOrNull()
         val allActiveRunsSilent = activeRuns.isNotEmpty() && visibleRuns.isEmpty() && owner == null
-        val status = if (owner != null && guiState.userPaused) {
+        val status = if (targetRun?.runId == guiState.ownerRunId && guiState.userPaused) {
             AgentOverlayStatus.Paused
         } else {
             targetRun?.overlayState?.status

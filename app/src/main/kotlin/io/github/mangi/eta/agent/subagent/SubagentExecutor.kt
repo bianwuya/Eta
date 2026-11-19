@@ -1198,7 +1198,7 @@ internal class SubagentExecutor(
         private const val PROGRESS_THROTTLE_NANOS = 200_000_000L
         private const val MAX_SNAPSHOT_PROMPT_CHARS = 4_000
         private const val MAX_STEP_DETAIL_CHARS = 2_000
-        private const val MAX_OUTPUT_CHARS = 128_000
-        private const val MAX_STEPS = 256
+        private const val MAX_OUTPUT_CHARS = 12_000
+        private const val MAX_STEPS = 48
     }
 }

@@ -173,12 +173,6 @@ internal class AgentContextCompactor(
                 result.put(index, retained)
             }
         }
-        if (result.toString().length >= messages.toString().length) {
-            throw failure(
-                "CONTEXT_NO_REDUCTION",
-                AppStrings.get(R.string.compactor_err_no_reduction, "摘要未能缩小上下文，原始上下文已保留。"),
-            )
-        }
         return CompactionOutcome(
             messages = result,
             archiveId = archiveId,

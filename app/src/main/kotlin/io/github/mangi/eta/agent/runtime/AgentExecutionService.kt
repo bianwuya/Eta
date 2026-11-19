@@ -144,10 +144,6 @@ internal class AgentExecutionService : Service() {
             this, 0, openIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-        val stop = PendingIntent.getService(
-            this, 1, Intent(this, AgentExecutionService::class.java).setAction(ACTION_STOP),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
         val taskCount = if (activeRunCount > 0) activeRunCount else leases.count()
         val publicNotification = Notification.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_notification)
@@ -167,22 +163,13 @@ internal class AgentExecutionService : Service() {
             .setOngoing(true)
             .setOnlyAlertOnce(true)
         val stopToken = run?.let { leases.token("run:${it.runId}") }
-        if (status != null) {
-            builder.addAction(Notification.Action.Builder(null, getString(R.string.execution_action_open), open).build())
-            if (run != null && stopToken != null) {
-                val stopIntent = Intent(this, AgentExecutionService::class.java).setAction(ACTION_STOP_RUN)
-                    .setData(Uri.Builder().scheme("eta-task").authority("stop").appendPath(run.runId).appendPath(stopToken).build())
-                    .putExtra(EXTRA_RUN_ID, run.runId).putExtra(EXTRA_LEASE_TOKEN, stopToken)
-                val runStop = PendingIntent.getService(this, 1, stopIntent,
-                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-                builder.addAction(Notification.Action.Builder(null, getString(R.string.task_stop), runStop).build())
-            } else {
-                builder.addAction(Notification.Action.Builder(null, getString(R.string.execution_action_stop), stop).build())
-            }
-        } else {
-            builder
-                .setContentText(resources.getQuantityString(R.plurals.execution_summary, taskCount, taskCount))
-                .addAction(Notification.Action.Builder(null, getString(R.string.execution_stop), stop).build())
+        if (run != null && stopToken != null) {
+            val stopIntent = Intent(this, AgentExecutionService::class.java).setAction(ACTION_STOP_RUN)
+                .setData(Uri.Builder().scheme("eta-task").authority("stop").appendPath(run.runId).appendPath(stopToken).build())
+                .putExtra(EXTRA_RUN_ID, run.runId).putExtra(EXTRA_LEASE_TOKEN, stopToken)
+            val runStop = PendingIntent.getService(this, 1, stopIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+            builder.addAction(Notification.Action.Builder(null, getString(R.string.task_stop), runStop).build())
         }
 
         // GUI 运行或虚拟屏微缩镜显示期间退回普通前台通知，避免顶部同时出现两个胶囊冲突。
@@ -203,8 +190,6 @@ internal class AgentExecutionService : Service() {
             }
             // 请求方法从 API 36.1 才公开；标准 extra 也可供支持该协议的 API 36 系统读取。
             builder.extras.putBoolean("android.requestPromotedOngoing", true)
-        } else if (status != null) {
-            builder.setContentText(resources.getQuantityString(R.plurals.execution_summary, taskCount, taskCount))
         }
         return builder.build()
     }

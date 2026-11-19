@@ -287,14 +287,7 @@ internal fun SubagentInspectorContent(
     val pulse = rememberDrawPhasePulse(active = running)
     val isCoui = LocalUiStyle.current == AppearanceUiStyle.COUI
     val requestStats = rememberSubagentSettingsSummary(snapshot.subagentId)
-    val stepKeys = remember(snapshot.steps) {
-        val occurrences = mutableMapOf<String, Int>()
-        snapshot.steps.map { step ->
-            val occurrence = occurrences.getOrDefault(step.id, 0)
-            occurrences[step.id] = occurrence + 1
-            "step:${step.id.length}:${step.id}:$occurrence"
-        }
-    }
+    val stepKeys = remember(snapshot.steps) { subagentStepKeys(snapshot.steps) }
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -536,6 +529,15 @@ internal fun SubagentInspectorContent(
                 )
             }
         }
+    }
+}
+
+internal fun subagentStepKeys(steps: List<SubagentStepSnapshot>): List<String> {
+    val occurrences = mutableMapOf<String, Int>()
+    return steps.map { step ->
+        val occurrence = occurrences.getOrDefault(step.id, 0)
+        occurrences[step.id] = occurrence + 1
+        "step:${step.id.length}:${step.id}:$occurrence"
     }
 }
 

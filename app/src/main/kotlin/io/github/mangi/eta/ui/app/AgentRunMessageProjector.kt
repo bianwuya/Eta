@@ -517,7 +517,10 @@ internal class AgentRunMessageProjector(
                         io.github.mangi.eta.agent.subagent.SubagentActivitySnapshot.decode(raw)?.let { it to raw }
                     }
                 } else emptyList()
-                val merged = candidates.maxByOrNull { it.first.updatedAt }
+                val merged = candidates.reduceOrNull { selected, candidate ->
+                    // candidates 按“已有快照、终态事件”排列；并列时让后到的合法终态生效。
+                    if (candidate.first.updatedAt >= selected.first.updatedAt) candidate else selected
+                }
                 val mergedStatus = merged?.first?.status
                 val failedSnapshot = if (subagent && (event.success == false || failedBeforeSnapshot)) {
                     failureSnapshotFor(merged?.first, event)

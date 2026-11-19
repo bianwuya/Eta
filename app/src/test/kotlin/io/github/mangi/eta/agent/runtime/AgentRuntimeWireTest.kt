@@ -10,10 +10,13 @@ import io.github.mangi.eta.agent.model.AgentModelClient
 import io.github.mangi.eta.data.model.ModelReasoningCapabilities
 import io.github.mangi.eta.data.model.ProviderAuthModes
 import io.github.mangi.eta.data.model.ReasoningEffort
+import io.github.mangi.eta.core.AppStrings
 import java.io.File
 import java.io.FileOutputStream
 import java.io.ByteArrayOutputStream
 import kotlinx.serialization.json.Json
+import org.junit.After
+import org.junit.Before
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertFalse
@@ -29,6 +32,9 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [33, 36], application = Application::class)
 class AgentRuntimeWireTest {
+    @Before fun resetAppStringsBefore() = AppStrings.resetForTest()
+    @After fun resetAppStringsAfter() = AppStrings.resetForTest()
+
     @Test
     fun concurrentTransferDirectoryCreationAcceptsDirectoryCreatedByAnotherCaller() {
         val directory = object : File("concurrent-transfer-directory") {
@@ -680,7 +686,7 @@ class AgentRuntimeWireTest {
             """{"action":"type","url":"https://user:password@example.com/private?q=token#fragment","text":"secret input"}"""
         )
 
-        assertEquals("Enter content · example.com", summary)
+        assertEquals("输入内容 · example.com", summary)
     }
 
     @Test
@@ -691,7 +697,7 @@ class AgentRuntimeWireTest {
             toolName = "browser_use",
             result = AgentModelClient.ToolResult(content = content.format("false")),
         )
-        assertEquals("Failed", failure)
+        assertEquals("失败", failure)
 
         val success = AgentModelClient.summarizeToolResult(
             toolName = "browser_use",
@@ -711,7 +717,7 @@ class AgentRuntimeWireTest {
             """{"uri":"https://user:password@example.com/private/access_token/value?q=secret#fragment"}"""
         )
 
-        assertEquals("Open in external app · https · example.com", summary)
+        assertEquals("交给外部应用 · https · example.com", summary)
     }
 
     @Test

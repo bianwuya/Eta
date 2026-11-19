@@ -2,6 +2,7 @@ package io.github.mangi.eta.local.subagentdisplay
 
 import io.github.mangi.eta.agent.subagent.SubagentActivitySnapshot
 import io.github.mangi.eta.agent.subagent.SubagentStepSnapshot
+import io.github.mangi.eta.ui.components.subagentStepKeys
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -25,7 +26,7 @@ class RecentFixesDisplayIntegrationTest {
         val encoded = snapshot.encodeForWire(12_000)
         assertTrue(encoded.length <= 12_000)
         val decoded = requireNotNull(SubagentActivitySnapshot.decode(encoded))
-        val keys = decoded.steps.map { it.id }
+        val keys = subagentStepKeys(decoded.steps)
         assertEquals("Bounded transport must preserve unique inspector keys", keys.size, keys.toSet().size)
     }
     @Test
@@ -39,7 +40,8 @@ class RecentFixesDisplayIntegrationTest {
         assertTrue(encoded.length <= 16_000)
         val decoded = requireNotNull(SubagentActivitySnapshot.decode(encoded))
         assertTrue(decoded.steps.last().id.startsWith("step-100"))
-        assertEquals(decoded.steps.size, decoded.steps.map { it.id }.toSet().size)
+        val keys = subagentStepKeys(decoded.steps)
+        assertEquals(keys.size, keys.toSet().size)
     }
 
 }

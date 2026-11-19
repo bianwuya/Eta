@@ -103,8 +103,16 @@ internal data class SubagentActivitySnapshot(
 
     fun encode(): String = json.encodeToString(this)
 
-    fun encodeForWire(maxChars: Int = WIRE_BUDGET_CHARS): String =
-        boundedForWire(maxChars).encode()
+    fun encodeForWire(maxChars: Int = WIRE_BUDGET_CHARS): String {
+        val budget = maxChars.coerceAtLeast(MIN_WIRE_BUDGET_CHARS)
+        val bounded = boundedForWire(budget)
+        val encoded = bounded.encode()
+        if (encoded.length <= budget) return encoded
+        // 默认字段在极限预算下占用过多空间；省略默认值，解码后仍恢复同一统计与状态契约。
+        return compactJson.encodeToString(bounded).also { compact ->
+            check(compact.length <= budget) { "Subagent wire snapshot exceeds budget" }
+        }
+    }
 
     /**
      * 按真实序列化长度将快照收敛到 [maxChars] 个 UTF-16 单元内，同时保持 JSON 合法。
@@ -130,6 +138,7 @@ internal data class SubagentActivitySnapshot(
             output = normalizedBase.output.truncateWithEllipsis(MAX_OUTPUT_CHARS),
             error = normalizedBase.error?.truncateWithEllipsis(MAX_ERROR_CHARS),
             totalToolSteps = preservedToolSteps,
+            previewTruncated = true,
         )
         if (candidate.encode().length <= budget) return candidate
 
@@ -223,7 +232,18 @@ internal data class SubagentActivitySnapshot(
             candidate = SubagentActivitySnapshot(
                 subagentId = candidate.subagentId.takeUtf16Safe(24),
                 subagentType = candidate.subagentType.takeUtf16Safe(24).ifBlank { SubagentProfile.DEFAULT_TYPE },
+                resumed = candidate.resumed,
                 status = candidate.status,
+                detailId = candidate.detailId.takeUtf16Safe(MAX_ID_CHARS),
+                previewTruncated = true,
+                totalSteps = candidate.totalSteps,
+                updatedAt = candidate.updatedAt,
+                contextTokens = candidate.contextTokens,
+                contextWindow = candidate.contextWindow,
+                compactionCount = candidate.compactionCount,
+                contextReading = candidate.contextReading,
+                contextRequestState = candidate.contextRequestState,
+                historyIncomplete = candidate.historyIncomplete,
                 usage = candidate.usage,
                 totalToolSteps = preservedToolSteps,
                 omittedSteps = candidate.omittedSteps,

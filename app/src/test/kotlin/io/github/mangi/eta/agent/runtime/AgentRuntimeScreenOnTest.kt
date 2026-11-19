@@ -199,7 +199,7 @@ class AgentRuntimeScreenOnTest {
 
             guiControl.release()
             service.assertExecutionStatus(guiRun.overlayState.status, 2, guiRun.runId)
-            service.assertExecutionStatus(background.overlayState.status, 2, background.runId)
+            service.assertExecutionStatus(AgentOverlayStatus.GeneratingAnswer, 2, guiRun.runId)
             assertFalse(executionSuppressed())
             assertNull(guiCoordinator.state.value.ownerRunId)
             assertTrue(AgentRuntimeService.keepScreenOn.value)

@@ -2,9 +2,12 @@ package io.github.mangi.eta.agent.runtime
 
 import android.app.Application
 import io.github.mangi.eta.agent.model.AgentModelClient
+import io.github.mangi.eta.core.AppStrings
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
+import org.junit.After
+import org.junit.Before
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -15,6 +18,9 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [36], application = Application::class)
 class AgentRuntimeServiceStopTest {
+    @Before fun resetAppStringsBefore() = AppStrings.resetForTest()
+    @After fun resetAppStringsAfter() = AppStrings.resetForTest()
+
     private fun register(service: AgentRuntimeService, results: MutableList<AgentRuntimeWire.RunResult>, prepared: Boolean = true): RuntimeRunRegistry.Run {
         val registry = AgentRuntimeService::class.java.getDeclaredField("runs").apply { isAccessible = true }.get(service) as RuntimeRunRegistry
         val request = AgentRuntimeWire.RunRequest("service-stop", "inspect",
