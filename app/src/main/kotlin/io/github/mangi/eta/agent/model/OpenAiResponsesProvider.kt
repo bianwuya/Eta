@@ -61,6 +61,7 @@ internal object OpenAiResponsesProvider : AgentProviderClient {
             "当前 Provider 未配置为 Responses API"
         }
         val body = buildRequestJson(config, request.messages, request.effectiveTools, request.purpose)
+            .apply { OpenAiPromptCache.apply(this, request) }
             .toString()
             .toRequestBody(JSON_MEDIA_TYPE)
         val headers = okhttp3.Headers.Builder()
