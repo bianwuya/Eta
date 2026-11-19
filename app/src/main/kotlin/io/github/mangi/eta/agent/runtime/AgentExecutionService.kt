@@ -275,6 +275,7 @@ internal class AgentExecutionService : Service() {
                 currentArchivedSource = archivedSource
                 currentArchivedKey = archivedKey
                 currentStartedAtEpochMs = startedAtEpochMs
+                val previousSuppressLiveUpdate = this.suppressLiveUpdate
                 this.suppressLiveUpdate = suppressLiveUpdate
                 val count = if (activeRunCount > 0) activeRunCount else leases.count()
                 val selected = RuntimeNotificationSelection.select(snapshots)
@@ -284,7 +285,7 @@ internal class AgentExecutionService : Service() {
                     snapshots.joinToString { "${it.runId}:${it.handoffSource}:${it.guiStatus}:${it.phase}:${it.interactionAt}" }
                 if (signature == publishedSignature) return@post
                 publishedSignature = signature
-                val critical = previousCount != activeRunCount ||
+                val critical = previousCount != activeRunCount || previousSuppressLiveUpdate != suppressLiveUpdate ||
                     previousSelected?.runId != selected?.runId || previousSelected?.phase != selected?.phase ||
                     status == AgentOverlayStatus.Stopping ||
                     previousRuns.map { it.runId to it.guiStatus } != snapshots.map { it.runId to it.guiStatus }
