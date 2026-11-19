@@ -170,6 +170,14 @@ internal class AgentExecutionService : Service() {
             val runStop = PendingIntent.getService(this, 1, stopIntent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
             builder.addAction(Notification.Action.Builder(null, getString(R.string.task_stop), runStop).build())
+        } else if (status != null && run == null) {
+            // 兼容尚无 ActiveRunSnapshot 的旧入口；有快照时绝不提供可能误停其他 run 的全局按钮。
+            val stop = PendingIntent.getService(
+                this, 1, Intent(this, AgentExecutionService::class.java).setAction(ACTION_STOP),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+            builder.addAction(Notification.Action.Builder(null, getString(R.string.execution_action_open), open).build())
+            builder.addAction(Notification.Action.Builder(null, getString(R.string.execution_action_stop), stop).build())
         }
 
         // GUI 运行或虚拟屏微缩镜显示期间退回普通前台通知，避免顶部同时出现两个胶囊冲突。

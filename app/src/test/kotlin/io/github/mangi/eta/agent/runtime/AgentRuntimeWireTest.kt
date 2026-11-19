@@ -703,7 +703,7 @@ class AgentRuntimeWireTest {
             toolName = "browser_use",
             result = AgentModelClient.ToolResult(content = content.format("true")),
         )
-        assertEquals("Article extracted · example.com · \"Example\" · ~11 chars · 2 elements · Truncated", success)
+        assertEquals("已提取正文 · example.com · 《Example》 · 约 11 字 · 2 个元素 · 已截断", success)
 
         listOf("user:password", "secret body", "private", "token", "ok=").forEach { leaked ->
             assertTrue("$leaked leaked: $success", !success.contains(leaked))

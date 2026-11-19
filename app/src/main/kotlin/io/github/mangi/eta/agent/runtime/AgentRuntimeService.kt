@@ -1859,7 +1859,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         }
         val targetRun = selected ?: owner ?: visibleRuns.firstOrNull() ?: activeRuns.firstOrNull()
         val allActiveRunsSilent = activeRuns.isNotEmpty() && visibleRuns.isEmpty() && owner == null
-        val status = if (targetRun?.runId == guiState.ownerRunId && guiState.userPaused) {
+        val status = if (targetRun != null && targetRun.runId == guiState.ownerRunId && guiState.userPaused) {
             AgentOverlayStatus.Paused
         } else {
             targetRun?.overlayState?.status

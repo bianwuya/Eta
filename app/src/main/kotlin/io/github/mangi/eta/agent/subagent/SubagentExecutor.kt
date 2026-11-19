@@ -579,8 +579,6 @@ internal class SubagentExecutor(
             if (parentController.isCancelled) {
                 throw AgentRunCancelledException()
             }
-            if (!cancelled) publishSnapshot(force = true)
-
             val result = AgentModelClient.ToolResult(
                 content = SubagentTaskResult.runtimeFailure(errorMessage).attach(JSONObject()
                     .put("ok", false)

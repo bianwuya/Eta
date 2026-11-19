@@ -133,11 +133,14 @@ internal data class SubagentActivitySnapshot(
             subagentType = normalizedBase.subagentType.takeUtf16Safe(MAX_TYPE_CHARS),
             description = normalizedBase.description.truncateWithEllipsis(MAX_DESCRIPTION_CHARS),
             prompt = normalizedBase.prompt.truncateWithEllipsis(MAX_PROMPT_CHARS),
-            model = normalizedBase.model.takeUtf16Safe(MAX_MODEL_CHARS),
+            model = normalizedBase.model.takeIf { it.length <= MAX_MODEL_CHARS }.orEmpty(),
             currentAction = normalizedBase.currentAction.truncateWithEllipsis(MAX_ACTION_CHARS),
             output = normalizedBase.output.truncateWithEllipsis(MAX_OUTPUT_CHARS),
             error = normalizedBase.error?.truncateWithEllipsis(MAX_ERROR_CHARS),
             totalToolSteps = preservedToolSteps,
+            steps = normalizedBase.steps.takeLast(MAX_WIRE_STEPS),
+            omittedSteps = normalizedBase.omittedSteps +
+                (normalizedBase.steps.size - MAX_WIRE_STEPS).coerceAtLeast(0),
             previewTruncated = true,
         )
         if (candidate.encode().length <= budget) return candidate
@@ -270,6 +273,7 @@ internal data class SubagentActivitySnapshot(
 
         private const val MIN_WIRE_BUDGET_CHARS = 512
         private const val RECENT_STEPS_PRIORITY_COUNT = 4
+        private const val MAX_WIRE_STEPS = 48
         private const val MAX_ID_CHARS = 64
         private const val MAX_TYPE_CHARS = 48
         private const val MAX_DESCRIPTION_CHARS = 120
