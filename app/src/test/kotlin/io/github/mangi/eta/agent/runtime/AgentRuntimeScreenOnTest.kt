@@ -191,7 +191,7 @@ class AgentRuntimeScreenOnTest {
             val guiControl = guiCoordinator.openRun(guiRun.runId, guiRun.session.controller)
             guiControl.withAction { }
             service.assertExecutionStatus(guiRun.overlayState.status, 2, guiRun.runId)
-            service.assertExecutionStatus(AgentOverlayStatus.GeneratingAnswer, 2)
+            service.assertExecutionStatus(AgentOverlayStatus.GeneratingAnswer, 2, guiRun.runId)
             assertTrue(executionSuppressed())
             assertEquals(guiRun.runId, guiCoordinator.state.value.ownerRunId)
             assertTrue(AgentRuntimeService.keepScreenOn.value)
@@ -199,7 +199,7 @@ class AgentRuntimeScreenOnTest {
 
             guiControl.release()
             service.assertExecutionStatus(guiRun.overlayState.status, 2, guiRun.runId)
-            service.assertExecutionStatus(background.overlayState.status, 2)
+            service.assertExecutionStatus(background.overlayState.status, 2, background.runId)
             assertFalse(executionSuppressed())
             assertNull(guiCoordinator.state.value.ownerRunId)
             assertTrue(AgentRuntimeService.keepScreenOn.value)

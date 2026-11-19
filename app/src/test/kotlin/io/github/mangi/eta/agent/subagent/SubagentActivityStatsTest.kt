@@ -367,7 +367,7 @@ class SubagentActivityStatsTest {
         )
         assertEquals(snapshot, SubagentActivitySnapshot.decode(snapshot.encode()))
         for (limit in listOf(512, 2_000, 12_000)) {
-            val encoded = snapshot.encodeBounded(limit)
+            val encoded = snapshot.encodeForWire(limit)
             assertTrue(encoded.length <= limit)
             val preview = SubagentActivitySnapshot.decode(encoded)
             assertNotNull(preview)

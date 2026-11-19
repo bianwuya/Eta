@@ -411,6 +411,7 @@ class ConversationPanePanelTest {
                         onNewConversation = {},
                         onConversationSelected = {},
                         onConversationTogglePin = {},
+                        onActiveTaskSelected = {},
                         onConversationRename = {},
                         onConversationExport = {},
                         onConversationDelete = {},

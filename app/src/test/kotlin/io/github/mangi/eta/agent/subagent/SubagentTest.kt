@@ -369,7 +369,7 @@ class SubagentTest {
     @Test
     fun boundedSnapshotRetainsSmallPayloadAndHandlesOversizedStepMetadata() {
         val small = SubagentActivitySnapshot(subagentId = "sub_1", description = "任务")
-        assertEquals(small.encode(), small.encodeBounded(16_000))
+        assertEquals(small.encode(), small.encodeForWire(16_000))
         val large = small.copy(steps = (1..100).map { index ->
             SubagentStepSnapshot(
                 id = "step-$index" + "x".repeat(2_000),
@@ -378,7 +378,7 @@ class SubagentTest {
                 toolName = "read_file".repeat(2_000),
             )
         })
-        val encoded = large.encodeBounded(16_000)
+        val encoded = large.encodeForWire(16_000)
         assertTrue(encoded.length <= 16_000)
         val preview = requireNotNull(SubagentActivitySnapshot.decode(encoded))
         assertEquals("sub_1", preview.subagentId)

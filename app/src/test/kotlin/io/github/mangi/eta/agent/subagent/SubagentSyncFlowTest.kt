@@ -77,6 +77,6 @@ class SubagentSyncFlowTest {
         val snapshot = tracker.snapshot()
         assertEquals(SubagentActivitySnapshot.STATUS_COMPLETED, snapshot.status)
         assertEquals("最终 summary", snapshot.output)
-        assertTrue(tracker.snapshot().encodeBounded(12_000).length <= 12_000)
+        assertTrue(tracker.snapshot().encodeForWire(12_000).length <= 12_000)
     }
 }

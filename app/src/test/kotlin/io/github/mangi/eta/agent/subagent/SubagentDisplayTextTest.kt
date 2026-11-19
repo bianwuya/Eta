@@ -14,7 +14,7 @@ class SubagentDisplayTextTest {
     }
     @Test fun previewsAlwaysDeclareTruncationAndRetainDetailReference() {
         val snapshot = SubagentActivitySnapshot(subagentId = "child", detailId = "task-unique", prompt = "x".repeat(32_000))
-        val preview = requireNotNull(SubagentActivitySnapshot.decode(snapshot.encodeBounded(2000)))
+        val preview = requireNotNull(SubagentActivitySnapshot.decode(snapshot.encodeForWire(2000)))
         assertTrue(preview.previewTruncated)
         assertEquals("task-unique", preview.detailId)
         assertTrue(preview.prompt.length < snapshot.prompt.length)

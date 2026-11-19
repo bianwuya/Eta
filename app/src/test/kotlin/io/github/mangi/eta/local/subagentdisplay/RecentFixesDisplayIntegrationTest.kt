@@ -22,7 +22,7 @@ class RecentFixesDisplayIntegrationTest {
                 )
             },
         )
-        val encoded = snapshot.encodeBounded(12_000)
+        val encoded = snapshot.encodeForWire(12_000)
         assertTrue(encoded.length <= 12_000)
         val decoded = requireNotNull(SubagentActivitySnapshot.decode(encoded))
         val keys = decoded.steps.map { it.id }
@@ -35,7 +35,7 @@ class RecentFixesDisplayIntegrationTest {
                 kind = SubagentStepSnapshot.KIND_TOOL, title = "标题".repeat(2000),
                 toolName = "read_file".repeat(2000))
         })
-        val encoded = snapshot.encodeBounded(16_000)
+        val encoded = snapshot.encodeForWire(16_000)
         assertTrue(encoded.length <= 16_000)
         val decoded = requireNotNull(SubagentActivitySnapshot.decode(encoded))
         assertTrue(decoded.steps.last().id.startsWith("step-100"))
