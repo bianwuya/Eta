@@ -144,6 +144,10 @@ internal class AgentExecutionService : Service() {
             this, 0, openIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
+        val stop = PendingIntent.getService(
+            this, 1, Intent(this, AgentExecutionService::class.java).setAction(ACTION_STOP),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
         val taskCount = if (activeRunCount > 0) activeRunCount else leases.count()
         val publicNotification = Notification.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_notification)

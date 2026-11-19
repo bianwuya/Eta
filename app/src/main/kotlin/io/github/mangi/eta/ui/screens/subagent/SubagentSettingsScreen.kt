@@ -39,6 +39,8 @@ import com.itos.coui.icons.CouiIcons
 import com.itos.coui.layout.Divider
 import com.itos.coui.layout.Group
 import com.itos.coui.menu.rememberCouiWindowBackdrop
+import com.itos.coui.text.CouiTextKind
+import com.itos.coui.text.Text as CouiText
 import com.itos.coui.theme.CouiTheme
 import io.github.mangi.eta.EtaApp
 import io.github.mangi.eta.R

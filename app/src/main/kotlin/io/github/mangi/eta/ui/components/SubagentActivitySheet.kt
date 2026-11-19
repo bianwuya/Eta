@@ -450,11 +450,10 @@ internal fun SubagentInspectorContent(
                 }
             }
             val error = snapshot.error?.takeIf { it.isNotBlank() && failed }
-                ?: if (failed) stringResource(R.string.subagent_status_incomplete) else null
-            if (error != null) {
+            if (failed) {
                 item(key = "error") {
                     Text(
-                        text = error,
+                        text = error ?: stringResource(R.string.subagent_status_incomplete),
                         style = MiuixTheme.textStyles.footnote1,
                         color = StatusError,
                         modifier = Modifier

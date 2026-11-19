@@ -410,6 +410,16 @@ internal class AgentRuntimeRunExecutor(
                 } else {
                     null
                 }
+            val combinedToolFilter: ((JSONArray) -> JSONArray)? = when {
+                scheduledToolFilter != null && crossConversationOrigin -> { sourceTools ->
+                    ConversationMessagingPolicy.filterOriginRunTools(scheduledToolFilter.invoke(sourceTools))
+                }
+                scheduledToolFilter != null -> scheduledToolFilter
+                crossConversationOrigin -> { sourceTools ->
+                    ConversationMessagingPolicy.filterOriginRunTools(sourceTools)
+                }
+                else -> null
+            }
             val runToolExecutor = AgentModelClient.ToolExecutor { call ->
                 if (crossConversationOrigin && ConversationMessagingPolicy.isOriginBlockedTool(call.name)) {
                     AgentModelClient.ToolResult(
@@ -514,7 +524,6 @@ internal class AgentRuntimeRunExecutor(
                 prompt = request.prompt,
                 assistantScreenContext = request.assistantScreenContext,
                 extraSystemContext = scheduledRunContext?.buildSystemGuidance().orEmpty(),
-                toolFilter = scheduledToolFilter,
                 toolExecutor = runToolExecutor,
                 images = request.images,
                 history = request.history,
@@ -523,11 +532,7 @@ internal class AgentRuntimeRunExecutor(
                 memoryContext = memoryContext,
                 additionalTools = runTools,
                 executionContext = executor.terminalExecutionContext,
-                toolFilter = if (crossConversationOrigin) {
-                    { tools -> ConversationMessagingPolicy.filterOriginRunTools(tools) }
-                } else {
-                    null
-                },
+                toolFilter = combinedToolFilter,
             ) { event ->
                 timing.accept(event)
                 acceptEvent(

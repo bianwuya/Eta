@@ -319,7 +319,8 @@ internal data class SubagentActivitySnapshot(
             val description = args.optString("description").trim()
                 .replace(Regex("\\s+"), " ")
                 .truncateWithEllipsis(80)
-            val prompt = args.optString("prompt").trim().truncateWithEllipsis(MAX_PROMPT_CHARS)
+            val fullPrompt = args.optString("prompt").trim()
+            val prompt = fullPrompt.truncateWithEllipsis(MAX_PROMPT_CHARS)
             SubagentActivitySnapshot(
                 previewTruncated = fullPrompt.length > prompt.length,
                 subagentId = resumeId,

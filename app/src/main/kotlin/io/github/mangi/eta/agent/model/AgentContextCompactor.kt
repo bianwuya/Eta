@@ -172,6 +172,7 @@ internal class AgentContextCompactor(
                 GeminiEphemeralState.markRunStart(retained)
                 result.put(index, retained)
             }
+        }
         if (result.toString().length >= messages.toString().length) {
             throw failure(
                 "CONTEXT_NO_REDUCTION",

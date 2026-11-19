@@ -156,7 +156,14 @@ internal class AgentLoop(
             val completedRound = try {
                 modelRetry.complete(
                     initialRound = round,
-                    request = ProviderRequest(config, requestMessages, roundTools, sessionId, purpose, pendingToolResultImages),
+                    request = ProviderRequest(
+                        config = config,
+                        messages = requestMessages,
+                        tools = roundTools,
+                        sessionId = sessionId,
+                        purpose = purpose,
+                        toolResultImages = pendingToolResultImages,
+                    ),
                     provider = provider,
                     controller = runController,
                     onEvent = { event ->

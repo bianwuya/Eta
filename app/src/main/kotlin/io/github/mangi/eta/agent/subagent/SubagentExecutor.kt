@@ -52,6 +52,10 @@ internal class SubagentExecutor(
         io.github.mangi.eta.agent.model.ProviderClientFactory::getClient,
     private val candidateConfigs: (() -> List<AgentModelClient.ModelConfig>)? = null,
 ) {
+    private val latestSnapshots = ConcurrentHashMap<String, String>()
+
+    fun latestSnapshotJson(toolCallId: String): String? = latestSnapshots[toolCallId]
+
     fun execute(
         parentRound: Int,
         toolCall: AgentModelClient.ToolCall,
