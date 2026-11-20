@@ -377,6 +377,22 @@ class EtaVoicePanelTouchTest {
             panel.assertTopCornerShadowNoRectangularCut()
         }
 
+    @Test
+    fun errorPanelHasNoHistoryButtonAndKeepsComposerAcrossThemes() {
+        for (style in AppearanceUiStyle.entries) {
+            for (mode in listOf(AppearanceThemeMode.LIGHT, AppearanceThemeMode.DARK)) {
+                withPanel(appearance = AppearanceSettings(uiStyle = style, themeMode = mode)) { panel ->
+                    panel.state.value = EtaVoiceUiState(phase = EtaVoicePhase.ERROR)
+                    panel.advance()
+                    assertFalse(panel.hasText(R.string.task_view_history))
+                    assertFalse(panel.hasText(R.string.voice_tasks_all))
+                    assertTrue(panel.hasMicrophone())
+                    panel.saveScreenshot("voice-error-${style.name}-${mode.name}.png")
+                }
+            }
+        }
+    }
+
     private fun withPanel(
         recognitionEnabled: Boolean = true,
         initialFrames: Int = 180,
@@ -517,6 +533,19 @@ class EtaVoicePanelTouchTest {
         fun gainWindowFocus() = onGainWindowFocus()
 
         fun hasTextInput(): Boolean = findTextInput(root().semanticsOwner.unmergedRootSemanticsNode) != null
+
+        fun hasText(resource: Int): Boolean = findByText(activity.getString(resource)) != null
+
+        fun saveScreenshot(name: String) {
+            val output = java.io.File("build/reports/power-notifications", name)
+            requireNotNull(output.parentFile).mkdirs()
+            val view = root().view
+            val bitmap = Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888)
+            try {
+                view.draw(Canvas(bitmap))
+                output.outputStream().use { assertTrue(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
+            } finally { bitmap.recycle() }
+        }
 
         fun textInputFocused(): Boolean = findTextInput(root().semanticsOwner.unmergedRootSemanticsNode)
             ?.config?.getOrNull(SemanticsProperties.Focused) == true

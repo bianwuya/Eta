@@ -1017,6 +1017,7 @@ internal class AgentAppState(
         withLoadedConversations(setOf(id)) {
             withContext(Dispatchers.Main) {
                 val current = conversationsById[id]
+                val isNewConversation = current == null
                 val active = runStore.activeRunId(id)
                 if (active != null && active != runId) return@withContext null
                 runConversationHints[runId] = id
@@ -1037,6 +1038,7 @@ internal class AgentAppState(
                 if (id !in conversationUpdatedAt) conversationUpdatedAt = conversationUpdatedAt + (id to run.createdAt)
                 startReattachedRun(runId, id, run.operation)
                 refreshConversationSummaries()
+                if (isNewConversation) persistConversations()
                 if (voiceQueue.any { it.steeringRunId.isNotBlank() }) scope.launch { reconcileSteering(runId) }
                 id
             }
@@ -3228,9 +3230,7 @@ internal class AgentAppState(
     }
 
     private fun refreshConversationSummaries() {
-        val activeConversationIds = activeRunSnapshots.mapTo(hashSetOf()) { it.conversationId }
         val summaries = conversationsById.entries
-            .filterNot { it.key in activeConversationIds }
             .sortedWith(
                 compareByDescending<Map.Entry<String, AgentChatHomeUiState>> { (id, _) ->
                     id in conversationPinnedIds
@@ -3294,7 +3294,7 @@ internal class AgentAppState(
         val query = conversationPaneState.searchQuery.trim()
         conversationPaneState = conversationPaneState.copy(
             selectedConversationId = selectedConversationId,
-            activeTasks = activeRunSnapshots.map(::activeTaskUi).filter {
+            activeTasks = activeRunSnapshots.filter { it.conversationId !in conversationsById }.map(::activeTaskUi).filter {
                 query.isBlank() || it.title.contains(query, ignoreCase = true)
             },
             conversations = if (query.isBlank()) {

@@ -19,10 +19,16 @@ import io.github.mangi.eta.agent.overlay.AgentOverlayStatus
 import io.github.mangi.eta.agent.overlay.localizedText
 import io.github.mangi.eta.core.AndroidAgentLogger
 import io.github.mangi.eta.core.safeLogType
+import io.github.mangi.eta.data.db.EtaDatabase
 import io.github.mangi.eta.local.runtime.ExecutionKeepAlive
 import io.github.mangi.eta.ui.MainActivity
 import io.github.mangi.eta.agent.terminal.TerminalDaemonRecovery
 import java.util.concurrent.atomic.AtomicLong
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 
 /** Holds execution leases; only explicitly opted-in terminal services may restart. */
 internal class AgentExecutionService : Service() {
@@ -33,6 +39,8 @@ internal class AgentExecutionService : Service() {
     private val owner = ownerSequence.incrementAndGet()
     private var foregroundActive = false
     @Volatile private var startRejected = false
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private var conversationTitles: Map<String, String> = emptyMap()
 
     override fun onCreate() {
         super.onCreate()
@@ -43,6 +51,14 @@ internal class AgentExecutionService : Service() {
             NotificationChannel(CHANNEL, getString(R.string.execution_channel), NotificationManager.IMPORTANCE_LOW),
         )
         ensureForeground()
+        serviceScope.launch {
+            EtaDatabase.get(this@AgentExecutionService).conversationDao().observeConversationIdentities().collect { rows ->
+                val selected = RuntimeNotificationSelection.select(activeRunSnapshots)
+                val previousTitle = selected?.let(::notificationRunTitle)
+                conversationTitles = rows.associate { it.id to it.title }
+                if (foregroundActive && selected?.let(::notificationRunTitle) != previousTitle) refreshNotification()
+            }
+        }
     }
 
     private fun ensureForeground() {
@@ -88,6 +104,7 @@ internal class AgentExecutionService : Service() {
 
     override fun onDestroy() {
         if (instance === this) instance = null
+        serviceScope.cancel()
         // 销毁时同样收回本服务拥有的任务。回收在独立有界工作线程上完成，不阻塞 Main。
         stopQueue.close(leases.drainOwner(owner))
         keepAlive.release()
@@ -182,14 +199,19 @@ internal class AgentExecutionService : Service() {
 
         // GUI 运行或虚拟屏微缩镜显示期间退回普通前台通知，避免顶部同时出现两个胶囊冲突。
         if (status != null && !suppressLiveUpdate && Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA) {
+            val shortStatus = when {
+                run?.phase == AgentRuntimeWire.RunPhase.Committing -> phaseText(this, run)
+                status == AgentOverlayStatus.Stopping -> status.shortText()
+                run != null && run.phase != AgentRuntimeWire.RunPhase.Running -> phaseText(this, run)
+                else -> status.shortText()
+            }
+            val shortTitle = run?.let(::notificationConversationTitle)?.let { title ->
+                val points = title.codePoints().limit(3).toArray()
+                String(points, 0, points.size)
+            }
             builder
                 .setStyle(Notification.BigTextStyle().bigText(""))
-                .setShortCriticalText(when {
-                    run?.phase == AgentRuntimeWire.RunPhase.Committing -> phaseText(this, run)
-                    status == AgentOverlayStatus.Stopping -> status.shortText()
-                    run != null -> phaseText(this, run)
-                    else -> status.shortText()
-                })
+                .setShortCriticalText(shortTitle?.let { "$it·$shortStatus" } ?: shortStatus)
             if (startedAtSnapshot > 0L) {
                 builder
                     .setWhen(startedAtSnapshot)
@@ -203,18 +225,24 @@ internal class AgentExecutionService : Service() {
     }
 
     private fun notificationRunTitle(run: AgentRuntimeWire.ActiveRunSnapshot): String {
-        // Presentation titles can be raw prompts or filenames; never send them to system UI.
-        val label = when (run.handoffSource) {
+        return notificationConversationTitle(run) ?: when (run.handoffSource) {
             AgentRuntimeWire.ETA_VOICE_HANDOFF_SOURCE -> getString(R.string.task_source_assistant)
             AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE -> getString(R.string.task_source_chat)
             else -> getString(R.string.task_source_external)
         }
-        val id = java.security.MessageDigest.getInstance("SHA-256")
-            .digest(run.runId.toByteArray(Charsets.UTF_8)).take(4).joinToString("") { "%02x".format(it) }
-        return "$label · $id"
     }
 
-    /** 状态栏胶囊约 7 个字符可完整显示；更长时只取动作，具体目标留在应用内。 */
+    private fun notificationConversationTitle(run: AgentRuntimeWire.ActiveRunSnapshot): String? {
+        // Saved (including renamed) titles take precedence. The assistant supplies its initial
+        // conversation title in the archive payload; a chat snapshot can instead be a raw prompt.
+        conversationTitles[run.conversationId]?.trim()?.takeIf { it.isNotBlank() }?.let { return it }
+        if (run.handoffSource == AgentRuntimeWire.ETA_VOICE_HANDOFF_SOURCE) {
+            run.title.trim().takeIf { it.isNotBlank() }?.let { return it }
+        }
+        return null
+    }
+
+    /** 胶囊使用短状态，给会话标题前缀留出空间；展开通知显示完整标题。 */
     private fun AgentOverlayStatus.shortText(): String = when (this) {
         is AgentOverlayStatus.RunningTool, is AgentOverlayStatus.HostedToolRunning -> getString(R.string.execution_chip_running)
         AgentOverlayStatus.Paused -> getString(R.string.overlay_paused)
@@ -281,7 +309,7 @@ internal class AgentExecutionService : Service() {
                 val selected = RuntimeNotificationSelection.select(snapshots)
                 val previousSelected = RuntimeNotificationSelection.select(previousRuns)
                 val headline = executionHeadline(context, status, count)
-                val signature = "$headline|$conversationId|$archivedSource|$archivedKey|$count|${status != null}|$startedAtEpochMs|$suppressLiveUpdate|" +
+                val signature = "$headline|${executionText(context, status, count, selected)}|$conversationId|$archivedSource|$archivedKey|$count|${status != null}|$startedAtEpochMs|$suppressLiveUpdate|" +
                     snapshots.joinToString { "${it.runId}:${it.handoffSource}:${it.guiStatus}:${it.phase}:${it.interactionAt}" }
                 if (signature == publishedSignature) return@post
                 publishedSignature = signature

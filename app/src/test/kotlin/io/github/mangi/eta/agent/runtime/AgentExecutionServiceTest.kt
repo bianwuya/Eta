@@ -9,6 +9,9 @@ import android.os.Looper
 import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.overlay.AgentOverlayStatus
 import io.github.mangi.eta.ui.MainActivity
+import io.github.mangi.eta.data.db.EtaDatabase
+import org.junit.After
+import org.junit.Before
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -25,6 +28,18 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [33, 34], application = Application::class)
 class AgentExecutionServiceTest {
+    @Before fun openDatabaseForCurrentSdk() {
+        EtaDatabase.closeForTests()
+        // The notification now observes Room. Initialise its native runtime before
+        // background collection, and close it before Robolectric changes SDK sandboxes.
+        EtaDatabase.get(RuntimeEnvironment.getApplication()).openHelper.writableDatabase
+    }
+
+    @After fun closeDatabaseForCurrentSdk() {
+        shadowOf(Looper.getMainLooper()).idle()
+        EtaDatabase.closeForTests()
+    }
+
     @Test
     fun zeroRunTerminalLeaseHasNoRunStopAndOldGlobalActionIsHarmless() {
         val context = RuntimeEnvironment.getApplication()
@@ -138,7 +153,7 @@ class AgentExecutionServiceTest {
             val method = AgentExecutionService::class.java.getDeclaredMethod("notification").apply { isAccessible = true }
             listOf("短私密提示", "https://example.invalid/?token=secret", "/storage/private/file.txt", "token=secret").forEach { prompt ->
                 val run = AgentRuntimeWire.ActiveRunSnapshot("privacy", "conversation", title = prompt,
-                    handoffSource = AgentRuntimeWire.ETA_VOICE_HANDOFF_SOURCE)
+                    handoffSource = AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE)
                 AgentExecutionService.updateRunStatus(context, AgentOverlayStatus.HostedToolRunning(prompt), 1, listOf(run))
                 shadowOf(Looper.getMainLooper()).idle()
                 val notification = method.invoke(controller.get()) as Notification

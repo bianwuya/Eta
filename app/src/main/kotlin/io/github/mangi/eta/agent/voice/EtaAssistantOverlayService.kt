@@ -423,8 +423,6 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                                 }
                                 TextButton(text = getString(R.string.voice_tasks_new), modifier = Modifier.fillMaxWidth(),
                                     onClick = ::chooseNewTask)
-                                TextButton(text = getString(R.string.voice_tasks_all), modifier = Modifier.fillMaxWidth(),
-                                    onClick = ::openAllTasks)
                             }
                         }
                     }
@@ -479,7 +477,6 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                         handoffRunning = handoffInProgress,
                         exitRequested = handoffExitRequested,
                         onOpenConversation = ::openConversation,
-                        onRecoverHistory = ::openVoiceHistory,
                     )
                 }
             }
@@ -856,14 +853,6 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
         presentEntryInput()
     }
 
-    private fun openAllTasks() {
-        choicePending = false
-        startActivity(Intent(this, MainActivity::class.java)
-            .setAction(MainActivity.ACTION_OPEN_ACTIVE_TASKS)
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP))
-        dismissAndStop()
-    }
-
     private fun continueVoiceRun(run: AgentRuntimeWire.ActiveRunSnapshot) {
         if (activeRunId != null) return
         if (pendingVoiceSubmissions.containsKey(run.runId)) {
@@ -925,15 +914,6 @@ internal class EtaAssistantOverlayService : Service(), LifecycleOwner, SavedStat
                 }
             }
         }
-    }
-
-    private fun openVoiceHistory() {
-        startActivity(Intent(this, MainActivity::class.java)
-            .setAction(MainActivity.ACTION_OPEN_ARCHIVED_CONVERSATION)
-            .putExtra(MainActivity.EXTRA_HANDOFF_SOURCE, AgentRuntimeWire.ETA_VOICE_HANDOFF_SOURCE)
-            .putExtra(MainActivity.EXTRA_CONVERSATION_KEY, conversationKey)
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP))
-        dismissAndStop()
     }
 
     private fun newConversationKey(): String = "eta_assistant_${UUID.randomUUID()}"

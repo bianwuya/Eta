@@ -35,6 +35,36 @@ class PowerRunConversationIntegrationTest {
     }
     @After fun close() { EtaDatabase.closeForTests() }
 
+    @Test fun runningPowerConversationIsVisibleWithoutOpeningNotificationAndKeepsRenamedTitle() {
+        RuntimeMessengerFixture().use { fixture ->
+            val request = fixture.request("visible-power", "visible-key")
+            val run = fixture.admit(request).also { it.prepared(request) }
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+            try {
+                val app = AgentAppState(fixture.context, scope)
+                fixture.await { AgentRuntimeWire.MSG_ATTACH_RUN in fixture.messages }
+                val row = app.conversationPaneState.conversations.singleOrNull { it.id == run.conversationId }
+                assertNotNull("A running power conversation must remain in the conversation list", row)
+                assertTrue(requireNotNull(row).isActiveRun)
+                assertFalse(app.conversationPaneState.activeTasks.any { it.runId == run.runId })
+                fixture.await {
+                    fixture.result(fixture.worker { runBlocking {
+                        EtaDatabase.get(fixture.context).conversationDao().conversation(run.conversationId) != null
+                    } })
+                }
+                ui(fixture, scope) { app.renameConversation(run.conversationId, "整理旅行计划") }
+                assertEquals("整理旅行计划", app.conversationPaneState.conversations.single { it.id == run.conversationId }.title)
+                assertTrue(ui(fixture, scope) { app.openRunConversation(run.runId) })
+                fixture.complete(run, AgentRuntimeWire.RunResult(run.runId, true, "done"))
+                fixture.await { !app.homeState.isStreaming }
+                val finished = app.conversationPaneState.conversations.single { it.id == run.conversationId }
+                assertEquals("整理旅行计划", finished.title)
+                assertFalse(finished.isActiveRun)
+                assertFalse(AgentRuntimeWire.MSG_START_RUN in fixture.messages)
+            } finally { cancelAndAwait(fixture, scope) }
+        }
+    }
+
     @Test fun runningInputReplayAndLiveEventsUseOneSubscriptionAndNeverStart() {
         RuntimeMessengerFixture().use { fixture ->
             val request = fixture.request("power-live", "power-key")
